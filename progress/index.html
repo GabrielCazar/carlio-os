@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#10151d">
+  <title>CarlioOS — progresso</title>
+  <style>
+    :root{color-scheme:dark;--bg:#10151d;--panel:#19222e;--line:#2d3a4a;--text:#eaf0f6;--muted:#a9b6c5;--accent:#79d3bd;--warn:#f3c969}
+    *{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at 80% 0,#263b48 0,transparent 40%),var(--bg);color:var(--text);font:16px/1.55 system-ui,sans-serif}
+    main{max-width:1100px;margin:auto;padding:42px 22px 70px}header{margin-bottom:30px}h1{font-size:clamp(2.2rem,6vw,4rem);line-height:1.05;margin:8px 0}h2{font-size:1.15rem;margin:0 0 8px}p{color:var(--muted);margin:8px 0}.eyebrow{color:var(--accent);letter-spacing:.14em;text-transform:uppercase;font-size:.78rem;font-weight:700}.status{display:inline-block;border:1px solid #76602d;color:var(--warn);border-radius:999px;padding:3px 10px;font-size:.8rem;font-weight:650}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px;margin:20px 0 30px}.card{background:color-mix(in srgb,var(--panel),transparent 8%);border:1px solid var(--line);border-radius:14px;padding:18px}.card.active{border-color:#438d7a;box-shadow:inset 3px 0 var(--accent)}.phase{display:flex;align-items:center;justify-content:space-between;gap:10px}.meter{height:7px;background:#2a3542;border-radius:9px;margin:14px 0 8px;overflow:hidden}.meter span{display:block;height:100%;background:var(--accent);border-radius:inherit}.meter.pending span{width:0}.meter.current span{width:55%}.meter.complete span{width:100%}.label{font-size:.76rem;color:var(--muted)}.panel{border-top:1px solid var(--line);padding-top:21px;margin-top:22px}.list{padding-left:20px;color:var(--muted)}.list li{padding:3px 0}.checkgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:12px}.checkgroup{background:color-mix(in srgb,var(--panel),transparent 8%);border:1px solid var(--line);border-radius:12px;padding:16px}.checkgroup h3{font-size:1rem;margin:0 0 8px}.checklist{list-style:none;padding:0;margin:0;color:var(--muted)}.checklist li{padding:4px 0}.done{color:var(--accent)}.doing{color:var(--warn)}.pill{display:inline-block;background:#253340;border-radius:5px;padding:2px 7px;color:#dce9f1;font:.84rem ui-monospace,monospace}a{color:var(--accent)}footer{margin-top:32px;color:var(--muted);font-size:.88rem}
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="eyebrow">Sistema operacional em Rust · idioma padrão pt_BR</div>
+    <h1>CarlioOS</h1>
+    <p>Base x86_64 com boot Limine, testes em QEMU e seis fases com relatórios e critérios de aceite.</p>
+    <span class="status">Fase 2 — formato v2 em validação</span>
+  </header>
+  <section aria-label="Fases do projeto" class="grid">
+    <article class="card"><div class="phase"><h2>01 · Inicialização</h2><span class="label">CONCLUÍDA</span></div><p>Boot BIOS/UEFI via Limine; mapa/HHDM, PCI, watchdog PIT, IDT e IST para double fault. Driver AHCI experimental validado no QEMU com disco descartável.</p><div class="meter complete"><span></span></div><span class="label">Escopo fechado para dependência mínima da fase 2. AHCI físico local/NAS e outros drivers seguem como expansão futura.</span><p><a href="../reports/fase-1-inicializacao.md">Relatório da fase</a> · <a href="../docs/HARDWARE-BASE.md">Hardware-base</a></p></article>
+    <article class="card active"><div class="phase"><h2>02 · Armazenamento protegido</h2><span class="label">EM DESENVOLVIMENTO</span></div><p>Hermione v2: diretórios alternados, commit copy-on-write com flush, scrub, checksums e recuperação de erro AHCI via COMRESET.</p><div class="meter current"><span></span></div><span class="label">21 testes host e QEMU local/NAS-KVM passaram. Cifra, journal geral, árvore de diretórios e montagem normal seguem pendentes.</span><p><a href="../reports/fase-2-armazenamento.md">Relatório da fase</a> · <a href="../docs/HERMIONE.md">Projeto Hermione</a></p></article>
+    <article class="card"><div class="phase"><h2>03 · Segurança e contas</h2><span class="label">PLANEJADA</span></div><p>Ring 3, processos isolados, syscalls validadas e permissões efetivas.</p><div class="meter pending"><span></span></div><a href="../reports/fase-3-seguranca.md">Relatório da fase</a></article>
+    <article class="card"><div class="phase"><h2>04 · Aplicações Linux</h2><span class="label">PLANEJADA</span></div><p>AppImage, Snap, Flatpak, DEB, RPM e Arch; ABI e execução em sandbox. systemd está definido como gerenciador de serviços futuro da userland Linux-compatible.</p><div class="meter pending"><span></span></div><a href="../reports/fase-4-aplicacoes-linux.md">Relatório da fase</a></article>
+    <article class="card"><div class="phase"><h2>05 · Windows Mode</h2><span class="label">PLANEJADA</span></div><p>VM Windows licenciada, AD DS e validação de Duo Desktop/Falcon no convidado.</p><div class="meter pending"><span></span></div><a href="../reports/fase-5-windows-mode.md">Relatório da fase</a></article>
+    <article class="card"><div class="phase"><h2>06 · Interface e plataformas</h2><span class="label">PLANEJADA</span></div><p>Desktop baseado no KDE Plasma, elementos do Budgie e barra superior inspirada no Omarchy. Gerenciador de arquivos nativo com SSH/SFTP/SCP, SMB, FTP, HTTP e HTTPS.</p><div class="meter pending"><span></span></div><span class="label">Depende da rede TCP/IP e drivers da fase 1, além das credenciais/permissões das fases 2 e 3.</span><p><a href="../reports/fase-6-interface-plataformas.md">Relatório da fase</a></p></article>
+  </section>
+  <section class="panel" aria-labelledby="phase1-checklist">
+    <h2 id="phase1-checklist">Checklist · Fase 1 — Inicialização</h2>
+    <div class="checkgrid">
+      <article class="checkgroup"><h3>Boot e plataforma</h3><ul class="checklist">
+        <li class="done">☑ Boot Limine BIOS e UEFI — QEMU local e NAS/KVM</li>
+        <li class="done">☑ Mapa de memória, HHDM e bases física/virtual do kernel</li>
+        <li class="done">☑ Splash e terminal serial em pt_BR</li>
+        <li class="done">☑ Panic e exceções capturados; #UD e double fault validados</li>
+        <li class="done">☑ Watchdog PIT detecta loop sem progresso; QEMU validado</li>
+        <li class="done">☑ Dumps de teste guardados em logs no host</li>
+        <li>☐ Persistir dumps no armazenamento do próprio kernel</li>
+      </ul></article>
+      <article class="checkgroup"><h3>PCI e dispositivos</h3><ul class="checklist">
+        <li class="done">☑ Enumeração PCI somente leitura</li>
+        <li class="done">☑ Classificação AHCI para máquina, NAS e QEMU</li>
+        <li class="doing">◐ AHCI DMA QEMU: IDENTIFY, READ e WRITE passaram</li>
+        <li class="done">☑ Disco descartável positivo e ausência de disco negativa no QEMU</li>
+        <li>☐ Validar timeout/erro e controladores da máquina e NAS</li>
+        <li>☐ Pilha TCP/IP e sockets para os protocolos remotos da fase 6</li>
+        <li>☐ VGA/framebuffer, USB, Ethernet, Wi‑Fi, Bluetooth e áudio</li>
+      </ul></article>
+      <article class="checkgroup"><h3>Validação e encerramento</h3><ul class="checklist">
+        <li class="done">☑ 14 testes host locais; 14 na última execução NAS</li>
+        <li class="done">☑ Boot smoke BIOS/UEFI local e NAS/KVM</li>
+        <li class="done">☑ Panic, #UD, double fault e watchdog intencionais no QEMU</li>
+        <li class="done">☑ AHCI IDENTIFY/WRITE/READ em imagem raw descartável no QEMU</li>
+        <li>☐ Testar falhas AHCI e controladores físicos</li>
+        <li>☐ Validar drivers e falhas antes de fechar a fase</li>
+      </ul></article>
+    </div>
+    <p>Checklist detalhada e logs: <a href="../reports/fase-1-inicializacao.md">relatório da fase 1</a>.</p>
+  </section>
+  <section class="panel" aria-labelledby="phase2-checklist">
+    <h2 id="phase2-checklist">Checklist · Fase 2 — armazenamento</h2>
+    <div class="checkgrid">
+      <article class="checkgroup"><h3>Formato e operações</h3><ul class="checklist">
+        <li class="done">☑ Contrato BlockDevice com setores de 512 bytes</li>
+        <li class="done">☑ Superbloco versionado e CRC estrutural</li>
+        <li class="done">☑ Diretório de 12 arquivos e checagem de extents</li>
+        <li class="done">☑ Formatar, montar, listar, gravar, ler e excluir</li>
+        <li class="done">☑ Checksums e rejeição de metadados/dados corrompidos</li>
+        <li class="done">☑ Duas gerações de diretório, flush ordenado e recuperação de escrita parcial</li>
+        <li class="done">☑ Scrub e buffer de leitura protegido por verificação prévia</li>
+        <li class="doing">◐ Limite atual: sem journal geral, cifra, árvore de diretórios ou montagem normal</li>
+      </ul></article>
+      <article class="checkgroup"><h3>Drivers e boot</h3><ul class="checklist">
+        <li class="done">☑ ISO inclui carregamento Limine para BIOS e UEFI</li>
+        <li class="done">☑ QEMU Q35 enumera AHCI PCI integrado</li>
+        <li class="done">☑ Build storage-test liga camada de bloco ao DMA AHCI</li>
+        <li class="done">☑ FLUSH CACHE e recuperação COMRESET após erro de comando</li>
+        <li class="done">☑ Disco QCOW2 descartável de 20 GiB criado e conectado no NAS</li>
+        <li class="done">☑ fs-teste v1 passou na VM NAS (confirmação do usuário)</li>
+        <li class="done">☑ VM gráfica atualizada para ISO v2; QCOW2 preservado</li>
+        <li class="done">☑ Teste local Hermione v2 passou (confirmação do usuário)</li>
+        <li class="doing">◐ Guardar captura serial em arquivo</li>
+        <li class="done">☑ Recuperar canal AHCI via COMRESET após erro induzido em QEMU</li>
+        <li>☐ Testar timeout e remoção do disco durante I/O</li>
+      </ul></article>
+      <article class="checkgroup"><h3>Validação e segurança</h3><ul class="checklist">
+        <li class="done">☑ 21 testes host locais e NAS passaram</li>
+        <li class="done">☑ Hermione v2 passou no QEMU local e NAS/KVM, inclusive após erro AHCI</li>
+        <li class="done">☑ Boots BIOS/UEFI NAS/KVM passaram sem disco de escrita</li>
+        <li class="doing">◐ Recuperação de diretório rasgado passou em teste host</li>
+        <li>☐ Journal geral e corte de energia no QEMU</li>
+        <li>☐ KDF, cifra autenticada, bloqueio e limpeza de chaves</li>
+        <li>☐ Redundância, scrub persistente e reparo validado</li>
+      </ul></article>
+    </div>
+    <p>Checklist detalhada e logs: <a href="../reports/fase-2-armazenamento.md">relatório da fase 2</a>.</p>
+  </section>
+  <section class="panel" aria-labelledby="phase6-checklist">
+    <h2 id="phase6-checklist">Direção planejada · Fase 6 — desktop e arquivos</h2>
+    <div class="checkgrid">
+      <article class="checkgroup"><h3>Ambiente visual</h3><ul class="checklist">
+        <li>☐ Desktop baseado no KDE Plasma</li>
+        <li>☐ Elementos visuais e de interação do Budgie</li>
+        <li>☐ Barra superior inspirada no Omarchy</li>
+      </ul></article>
+      <article class="checkgroup"><h3>Gerenciador de arquivos nativo</h3><ul class="checklist">
+        <li>☐ Arquivos locais e operações básicas</li>
+        <li>☐ SSH/SFTP/SCP, SMB e FTP</li>
+        <li>☐ HTTP/HTTPS para abrir e transferir arquivos</li>
+        <li>☐ Depender da rede da fase 1 e das credenciais/permissões da fase 3</li>
+      </ul></article>
+    </div>
+    <p>Escopo e critérios: <a href="../reports/fase-6-interface-plataformas.md">relatório da fase 6</a>.</p>
+  </section>
+  <section class="panel"><h2>Estado validado</h2><ul class="list"><li>21 testes host passaram localmente e no NAS; boots BIOS/UEFI NAS/KVM passaram sem disco de escrita.</li><li>QEMU local e NAS/KVM validaram Hermione v2, FLUSH CACHE, remontagem e checksum antes e depois de erro AHCI com COMRESET.</li><li>O usuário confirmou que o teste manual v1 e o teste local v2 passaram. A saída serial do v2 não foi gravada em arquivo.</li><li>Kernel normal ainda não monta volumes; escrita de filesystem segue restrita à build storage-test. Journal geral, cifra e montagem de boot continuam pendentes.</li><li>O teste host simula setor de diretório parcialmente gravado e comprova fallback para a geração anterior; corte de energia real continua pendente.</li></ul></section>
+  <section class="panel"><h2>Idioma e compatibilidade</h2><p>Mensagens próprias do núcleo e do sistema são pt_BR. O terminal inicial aceita comandos ASCII sem acentos para funcionar em consoles seriais antigos. Pacotes e execução de aplicações são avaliados separadamente; Windows Mode usa VM Windows licenciada.</p></section>
+  <footer>Roadmap e critérios: <a href="../docs/ROADMAP.md">docs/ROADMAP.md</a></footer>
+</main>
+</body>
+</html>

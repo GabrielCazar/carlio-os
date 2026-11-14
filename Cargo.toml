@@ -1,0 +1,28 @@
+[package]
+name = "carlio-os"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[features]
+crash-test = []
+storage-test = []
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "carlio-kernel"
+path = "src/main.rs"
+test = false
+bench = false
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+lto = true
+codegen-units = 1
+opt-level = "s"
+

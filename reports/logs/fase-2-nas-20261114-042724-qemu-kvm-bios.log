@@ -1,0 +1,12 @@
+
+CarlioOS | núcleo Rust x86_64 | fase 1
+Aviso: terminal de diagnóstico em ring 0; não é uma fronteira de segurança.
+Digite 'ajuda' para ver os comandos.
+
+carlio> ajuda
+Comandos: ajuda, sobre, usuario, permissoes, limpar, parar.
+carlio> sobre
+CarlioOS é um sistema operacional experimental x86_64 escrito em Rust.
+carlio> parar
+Processador parado.
+--- mensagens do QEMU ---

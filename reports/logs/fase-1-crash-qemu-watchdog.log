@@ -1,0 +1,29 @@
+[2J[H+----------------------------------------------------+
+| carlIO OS | Criado por João G.R.Santos             |
+| Sistema operacional experimental x86_64            |
++----------------------------------------------------+
+Núcleo Rust · inicialização serial
+
+IDT: exceções 0-31 registradas; IRQs externos permanecem desativados.
+Aviso: terminal de diagnóstico em ring 0; não é uma fronteira de segurança.
+Mapa de memória Limine: regiões usáveis=3, RAM usável MiB=510; HHDM e bases físico/virtual do kernel disponíveis.
+Inventário PCI (somente leitura):
+PCI 00:01.0 1234:1111 vídeo
+PCI 00:02.0 8086:10d3 rede
+PCI 00:1f.2 8086:2922 SATA/AHCI (QEMU: reconhecido; driver AHCI experimental)
+AHCI QEMU indisponível: dispositivo nao encontrado.
+Controladores relevantes encontrados: 3
+Watchdog PIT ativo: prazo de 5 s sem progresso.
+Digite 'ajuda' para ver os comandos.
+
+carlio> hang-teste
+
+=== WATCHDOG: SEM PROGRESSO ===
+RIP: 0xffffffff80001c87  CS: 0x0000000000000008  RFLAGS: 0x0000000000010246
+RAX=0x0000000000000000 RBX=0xffff80001ff97f38 RCX=0x0000000000000000 RDX=0x000000000000000a
+RSI=0x0000000000000068 RDI=0x000000000000000a RBP=0x0000000000000000
+R8=0x0000000000000000 R9=0x0000000000000c00 R10=0x0000000000000800 R11=0x0000000000000020
+R12=0x0000000000000000 R13=0x0000000000000002 R14=0x000000000000000a R15=0x8080808080808080
+Sistema interrompido; diagnóstico serial somente leitura.
+
+--- mensagens do QEMU ---

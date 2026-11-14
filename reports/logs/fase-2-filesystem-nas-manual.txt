@@ -1,0 +1,12 @@
+Registro da validação manual Hermione — NAS
+Data: 2026-11-14
+Dispositivo: /tmp/carlioos-plasma/carlioos-filesystem-test.qcow2 (QCOW2, 20 GiB)
+Conexão: QEMU Q35, disco SATA/AHCI, ISO de teste via Limine.
+Formato testado: v1, antes da atualização para v2.
+Resultado: usuário confirmou que o comando fs-teste passou na VM.
+
+Limite da evidência: a sessão foi iniciada com -serial vc. A saída serial foi
+exibida no console virtual do QEMU, mas não foi direcionada a um arquivo; este
+registro documenta a confirmação do usuário e não reproduz a saída do kernel.
+O harness NAS/KVM validou depois a v2. O usuário confirmou também que o teste
+local v2 passou. A saída serial desta execução não foi capturada em arquivo.

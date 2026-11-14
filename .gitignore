@@ -1,0 +1,7 @@
+# Artefatos regeneráveis de compilação
+/build/
+/target/
+
+# Arquivos temporários de editores e sistema
+*~
+.DS_Store

@@ -1,0 +1,20 @@
+
+CarlioOS | núcleo Rust x86_64 | fase 1
+Aviso: terminal de diagnóstico em ring 0; não é uma fronteira de segurança.
+Mapa de memória Limine: regiões usáveis=3, RAM usável MiB=510; HHDM disponível.
+Inventário PCI (somente leitura):
+PCI 00:01.0 1234:1111 vídeo
+PCI 00:02.0 8086:10d3 rede
+PCI 00:1f.2 8086:2922 SATA/AHCI
+Controladores relevantes encontrados: 3
+Digite 'ajuda' para ver os comandos.
+
+carlio> ajuda
+Comandos: ajuda, sobre, usuario, permissoes, erros, limpar, parar.
+carlio> erros
+Erros registrados: 0
+carlio> sobre
+CarlioOS é um sistema operacional experimental x86_64 escrito em Rust.
+carlio> parar
+Processador parado.
+--- mensagens do QEMU ---
