@@ -167,8 +167,9 @@ impl<const N: usize> ElfDynamicMetadata<N> {
                         if needed_count == N {
                             return Err(ElfError::TooManyDependencies);
                         }
-                        needed[needed_count] =
-                            u32::try_from(value).map_err(|_| ElfError::DynamicMetadataInvalid)?;
+                        needed[needed_count] = value
+                            .try_into()
+                            .map_err(|_| ElfError::DynamicMetadataInvalid)?;
                         needed_count += 1;
                     }
                     DT_STRTAB => {
@@ -1017,6 +1018,44 @@ mod tests {
         assert_eq!(
             metadata.dependencies().collect::<std::vec::Vec<_>>(),
             ["libc.so.6", "libm.so.6"]
+        );
+    }
+
+    #[test]
+    fn dynamic_metadata_rejects_u64_needed_offset_overflow() {
+        let mut bytes = vec![0u8; 512];
+        bytes[..120].copy_from_slice(&fixture());
+        bytes[56..58].copy_from_slice(&3u16.to_le_bytes());
+        let load = 64 + PROGRAM_HEADER_SIZE;
+        bytes[load..load + 4].copy_from_slice(&PT_LOAD.to_le_bytes());
+        bytes[load + 8..load + 16].copy_from_slice(&256u64.to_le_bytes());
+        bytes[load + 16..load + 24].copy_from_slice(&0x500000u64.to_le_bytes());
+        bytes[load + 32..load + 40].copy_from_slice(&128u64.to_le_bytes());
+        bytes[load + 40..load + 48].copy_from_slice(&128u64.to_le_bytes());
+        let dynamic = load + PROGRAM_HEADER_SIZE;
+        bytes[dynamic..dynamic + 4].copy_from_slice(&PT_DYNAMIC.to_le_bytes());
+        bytes[dynamic + 8..dynamic + 16].copy_from_slice(&256u64.to_le_bytes());
+        bytes[dynamic + 16..dynamic + 24].copy_from_slice(&0x500000u64.to_le_bytes());
+        bytes[dynamic + 32..dynamic + 40].copy_from_slice(&80u64.to_le_bytes());
+        bytes[dynamic + 40..dynamic + 48].copy_from_slice(&80u64.to_le_bytes());
+        for (index, (tag, value)) in [
+            (DT_STRTAB, 0x500060u64),
+            (DT_STRSZ, 21),
+            (DT_NEEDED, u64::from(u32::MAX) + 1),
+            (DT_NULL, 0),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let at = 256 + index * 16;
+            bytes[at..at + 8].copy_from_slice(&tag.to_le_bytes());
+            bytes[at + 8..at + 16].copy_from_slice(&value.to_le_bytes());
+        }
+        bytes[352..373].copy_from_slice(b"\0libc.so.6\0libm.so.6\0");
+
+        assert_eq!(
+            ElfDynamicMetadata::<4>::parse(&bytes),
+            Err(ElfError::DynamicMetadataInvalid)
         );
     }
 
