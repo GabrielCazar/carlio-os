@@ -1,5 +1,18 @@
 # Relatório — Fase 2: memória e execução
 
+### Revalidação do probe CPL3 simultâneo — 2026-11-16 — gate reprovado
+
+O experimento com três tarefas ainda não comprova preempção CPL3 simultânea em
+dois APs nem quiescência do reaper. O boot despacha as tarefas, mas QEMU captura
+`#GP` durante retorno de interrupção (`iretq`, erro `0x18`); o teste BIOS para
+antes dos marcadores de sobreposição CPL3 e ACK de quiescência. Evidência:
+[QEMU BIOS local](logs/phase2-3-final-qemu-bios-20261116-202313.log).
+
+O gate permanece aberto. Não afirmar conclusão da Fase 2 nem liberar stack, VM
+ou page tables com base neste experimento. A correção precisa demonstrar o
+retorno seguro de interrupção nos APs e repetir BIOS/UEFI, NAS/KVM, três tarefas
+e ACK de todas as CPUs antes de remover esta pendência.
+
 ## Regressão do reaper e auditoria do gate CPL3 nos APs (2026-11-16)
 
 Adicionado teste host negativo que coloca dois processos em CPUs distintas e
