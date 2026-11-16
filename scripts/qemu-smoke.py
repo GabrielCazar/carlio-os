@@ -19,13 +19,26 @@ def main() -> int:
     parser.add_argument("--firmware", type=Path, help="Imagem OVMF para testar UEFI")
     parser.add_argument("--log", required=True, type=Path)
     parser.add_argument("--timeout", type=int, default=25)
+    parser.add_argument("--cpus", type=int, default=4, help="CPUs virtuais para o teste SMP")
+    parser.add_argument("--memory", default="512M", help="RAM guest QEMU (ex.: 5G, 32G)")
+    parser.add_argument("--herm-image", type=Path, help="imagem HermFS descartável anexada ao AHCI")
+    parser.add_argument("--expect-rootfs", choices=("initialized", "mounted"),
+                        help="exige mensagem positiva de inicialização ou remontagem do rootfs")
     args = parser.parse_args()
+    if not 1 <= args.cpus <= 64:
+        parser.error("--cpus deve estar entre 1 e 64")
+    if args.expect_rootfs and not args.herm_image:
+        parser.error("--expect-rootfs exige --herm-image")
 
     command = [
         "qemu-system-x86_64",
         "-machine", "q35",
         "-accel", args.accel,
-        "-m", "512M",
+        "-m", args.memory,
+        "-smp", str(args.cpus),
+        "-nic", "none",
+        "-netdev", "user,id=net0",
+        "-device", "e1000e,netdev=net0",
         "-cdrom", str(args.iso.resolve()),
         "-boot", "d",
         "-serial", "stdio",
@@ -48,6 +61,11 @@ def main() -> int:
             "-drive", f"if=pflash,format=raw,unit=0,readonly=on,file={code_image}",
             "-drive", f"if=pflash,format=raw,unit=1,file={vars_copy}",
         ))
+    if args.herm_image:
+        image_path = args.herm_image.resolve()
+        if not image_path.is_file():
+            parser.error(f"imagem Hermione ausente: {image_path}")
+        command.extend(("-drive", f"if=ide,format=raw,file={image_path}"))
 
     process = subprocess.Popen(
         command,
@@ -62,10 +80,12 @@ def main() -> int:
     output = bytearray()
     errors = bytearray()
     stage = 0
+    serial_probe_sent = False
     checks = (
         (b"Digite 'ajuda'", b"ajuda\r"),
-        ("Comandos: ajuda, sobre, usuario, permissoes, erros, limpar, parar.".encode(), b"erros\r"),
-        (b"Erros registrados:", b"sobre\r"),
+        ("Comandos: ajuda, sobre, usuario, permissoes, erros, logs, limpar, parar.".encode(), b"erros\r"),
+        (b"Erros registrados:", b"logs\r"),
+        (b"# Eventos do kernel (buffer vol\xc3\xa1til)", b"sobre\r"),
         ("carlIO OS | Criado por João G.R.Santos".encode(), None),
         ("Sistema operacional experimental x86_64 escrito em Rust.".encode(), b"parar\r"),
         ("Processador parado.".encode(), None),
@@ -81,6 +101,11 @@ def main() -> int:
                 if key.data == "serial":
                     output.extend(chunk)
                     haystack = bytes(output)
+                    if (not serial_probe_sent
+                            and b"ABI Linux: probe CPL3 aguardando byte de entrada serial." in haystack):
+                        process.stdin.write(b"Q")
+                        process.stdin.flush()
+                        serial_probe_sent = True
                 else:
                     errors.extend(chunk)
                     haystack = bytes(errors)
@@ -112,13 +137,35 @@ def main() -> int:
         sys.stderr.write(errors.decode("utf-8", errors="replace"))
         return 1
 
+    if args.expect_rootfs:
+        marker = (b"Hermione rootfs inicial persistido" if args.expect_rootfs == "initialized"
+                  else b"Hermione rootfs persistente montado")
+        if marker not in output:
+            sys.stderr.write(f"Rootfs não confirmou estado {args.expect_rootfs}. Log: {args.log}\n")
+            sys.stderr.write(output.decode("utf-8", errors="replace"))
+            return 1
+
     if any(signature not in output for signature in (
         b"SATA/AHCI", b" v\xc3\xaddeo", b" rede",
+        b"NIC Intel 82574L: filas DMA TX/RX ativas",
+        b"DHCP IPv4: concessao recebida",
+        b"Ring 3: GDT, TSS, RSP0 e seletores de usu\xc3\xa1rio configurados; CPL continua 0.",
+        "Framebuffer Limine: RGB ativo; renderização de pixels validada.".encode(),
         "Criado por João G.R.Santos".encode(),
+        b"ABI Linux: read(0) CPL3 recebeu entrada serial.",
+        "ABI Linux: mmap/munmap CPL3 alocou, gravou e liberou páginas do processo.".encode(),
+        "; alocação, escrita, leitura e liberação passaram.".encode(),
+        "Ring 3 rotinas: ELF carregado em CPL3, scheduler e preempção entre dois CR3 passaram; pilhas recuperadas pelo reaper.".encode(),
+        ", faults isolados=1.".encode(),
+        "TLB SMP: shootdowns enviados=".encode(),
+        "Heap kernel: regiões dinâmicas, alinhamento, escrita/leitura, expansão e liberação passaram.".encode(),
+        f"SMP Limine: CPUs detectadas={args.cpus}, APs iniciadas={args.cpus - 1}, aguardadas={args.cpus - 1}; APs aguardam despacho de tarefa, scheduler ainda desativado.".encode(),
+        f"SMP trabalho: CPUs AP={args.cpus - 1}, tarefas concluídas={args.cpus - 1}, resultados válidos={args.cpus - 1}; despacho de prova concluído.".encode(),
     )):
         sys.stderr.write(f"Inventario PCI ou tela inicial incompletos. Log: {args.log}\n")
         sys.stderr.write(output.decode("utf-8", errors="replace"))
         return 1
+
 
     print(output.decode("utf-8", errors="replace"), end="")
     print(f"Teste QEMU aprovado ({args.accel}); log: {args.log}")

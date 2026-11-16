@@ -24,11 +24,13 @@ def main() -> int:
 
     disk = None
     if not args.without_disk:
+        # Respeita TMPDIR para permitir confinar imagens descartáveis ao sandbox da execução.
         disk = tempfile.NamedTemporaryFile(prefix="carlio-ahci-disposable-", suffix=".img", delete=False)
         disk.truncate(16 * 1024 * 1024)
         disk.close()
     qemu = [
         "qemu-system-x86_64", "-machine", "q35", "-accel", args.accel, "-m", "512M",
+        "-smp", "4",
         "-cdrom", str(args.iso.resolve()),
         "-boot", "d", "-serial", "stdio", "-monitor", "none", "-display", "none",
         "-no-reboot", "-no-shutdown",
@@ -44,11 +46,17 @@ def main() -> int:
     serial = bytearray()
     errors = bytearray()
     sent = False
+    probe_sent = False
     fs_sent = False
     fs_passed_once = False
     disk_test_passed = False
     passed = False
     deadline = time.monotonic() + args.timeout
+
+    def has_complete_marker(marker: bytes) -> bool:
+        return any(line.endswith(b"\n") and marker in line
+                   for line in serial.splitlines(keepends=True))
+
     try:
         while time.monotonic() < deadline:
             for key, _ in selector.select(timeout=0.2):
@@ -57,11 +65,16 @@ def main() -> int:
                     continue
                 if key.data == "serial":
                     serial.extend(chunk)
+                    if (not probe_sent and
+                            b"ABI Linux: probe CPL3 aguardando byte de entrada serial." in serial):
+                        process.stdin.write(b"x")
+                        process.stdin.flush()
+                        probe_sent = True
                     if not args.without_disk and not sent and b"carlio> " in serial:
                         process.stdin.write(b"fs-teste\r")
                         process.stdin.flush()
                         sent = True
-                    fs_pass_marker = b"Hermione: formatacao, montagem, escrita e leitura persistente passaram.\r\n"
+                    fs_pass_marker = b"Hermione: volume persistente, espelhamento, journal/commit, remontagem e scrub passaram.\r\n"
                     disk_pass_marker = b"AHCI: IDENTIFY, WRITE, READ e erro do controlador verificados.\r\n"
                     if not args.without_disk and fs_pass_marker in serial and not fs_passed_once:
                         fs_passed_once = True
@@ -81,14 +94,14 @@ def main() -> int:
                             b"Digite 'ajuda' para ver os comandos.\r\n" in serial):
                         passed = True
                         return 0
-                    if (b"AHCI: teste falhou:" in serial
-                            or (not args.without_disk and "AHCI QEMU indisponível:".encode() in serial)):
+                    if (has_complete_marker(b"AHCI: teste falhou:")
+                            or (not args.without_disk and "AHCI indisponível:".encode() in serial)):
                         break
                 else:
                     errors.extend(chunk)
-            if (b"AHCI: teste falhou:" in serial
+            if (has_complete_marker(b"AHCI: teste falhou:")
                     or (not args.without_disk and
-                        "AHCI QEMU indisponível:".encode() in serial)):
+                        "AHCI indisponível:".encode() in serial)):
                 break
             if process.poll() is not None:
                 break

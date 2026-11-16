@@ -35,8 +35,35 @@ impl PciFunction {
         self.class == 0x02
     }
 
+    /// Identifica os controladores Ethernet de referência sem habilitar BARs
+    /// nem reivindicar suporte de rede.
+    pub const fn network_model(self) -> Option<NetworkModel> {
+        if !self.is_network() {
+            return None;
+        }
+        match (self.vendor_id, self.device_id) {
+            (0x10ec, 0x8168) => Some(NetworkModel::RealtekRtl8111Nas),
+            (0x8086, 0x15d7) => Some(NetworkModel::IntelI219Local),
+            (0x8086, 0x10d3) => Some(NetworkModel::Intel82574Qemu),
+            _ => Some(NetworkModel::Unsupported),
+        }
+    }
+
     pub const fn is_video(self) -> bool {
         self.class == 0x03
+    }
+
+    /// Modelos iGPU Intel previstos na máquina local e no servidor. A
+    /// classificação não habilita BARs nem equivale a modesetting/aceleração.
+    pub const fn integrated_graphics_model(self) -> Option<IntegratedGraphicsModel> {
+        if !self.is_video() || self.vendor_id != 0x8086 {
+            return None;
+        }
+        match self.device_id {
+            0x1916 => Some(IntegratedGraphicsModel::IntelHdGraphics520),
+            0x0152 => Some(IntegratedGraphicsModel::IntelIvyBridgeGt1),
+            _ => Some(IntegratedGraphicsModel::UnsupportedIntel),
+        }
     }
 
     pub const fn is_usb(self) -> bool {
@@ -50,6 +77,21 @@ pub enum AhciModel {
     IntelNas,
     IntelQemu,
     Unsupported,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NetworkModel {
+    RealtekRtl8111Nas,
+    IntelI219Local,
+    Intel82574Qemu,
+    Unsupported,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IntegratedGraphicsModel {
+    IntelHdGraphics520,
+    IntelIvyBridgeGt1,
+    UnsupportedIntel,
 }
 
 #[cfg(test)]
@@ -125,6 +167,79 @@ mod tests {
                 ..ahci
             }
             .ahci_model(),
+            None
+        );
+    }
+
+    #[test]
+    fn identifies_server_and_development_ethernet_without_claiming_driver_support() {
+        let ethernet = PciFunction {
+            bus: 0,
+            device: 0,
+            function: 0,
+            vendor_id: 0x10ec,
+            device_id: 0x8168,
+            class: 2,
+            subclass: 0,
+            programming_interface: 0,
+        };
+        assert_eq!(
+            ethernet.network_model(),
+            Some(NetworkModel::RealtekRtl8111Nas)
+        );
+        assert_eq!(
+            PciFunction {
+                vendor_id: 0x8086,
+                device_id: 0x15d7,
+                ..ethernet
+            }
+            .network_model(),
+            Some(NetworkModel::IntelI219Local)
+        );
+        assert_eq!(
+            PciFunction {
+                device_id: 0x9999,
+                ..ethernet
+            }
+            .network_model(),
+            Some(NetworkModel::Unsupported)
+        );
+        assert_eq!(
+            PciFunction {
+                class: 3,
+                ..ethernet
+            }
+            .network_model(),
+            None
+        );
+    }
+
+    #[test]
+    fn classifies_supported_intel_integrated_graphics_ids() {
+        let gpu = PciFunction {
+            bus: 0,
+            device: 2,
+            function: 0,
+            vendor_id: 0x8086,
+            device_id: 0x1916,
+            class: 0x03,
+            subclass: 0x00,
+            programming_interface: 0,
+        };
+        assert_eq!(
+            gpu.integrated_graphics_model(),
+            Some(IntegratedGraphicsModel::IntelHdGraphics520)
+        );
+        assert_eq!(
+            PciFunction {
+                device_id: 0x0152,
+                ..gpu
+            }
+            .integrated_graphics_model(),
+            Some(IntegratedGraphicsModel::IntelIvyBridgeGt1)
+        );
+        assert_eq!(
+            PciFunction { class: 0x02, ..gpu }.integrated_graphics_model(),
             None
         );
     }

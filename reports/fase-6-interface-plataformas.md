@@ -38,7 +38,8 @@ relatórios para cada perfil.
 
 ## Estado comprovado
 
-Não há interface gráfica, framebuffer, mouse, teclado, imagens, gerenciador de
-arquivos remoto ou suporte ARM64. O ambiente Plasma/Budgie/Omarchy e os
-protocolos SSH/SFTP, SMB, FTP, HTTP e HTTPS são objetivos planejados. Apenas a
-consola serial está prevista no kernel mínimo.
+Não há interface gráfica, mouse, teclado, imagens, gerenciador de arquivos
+remoto ou suporte ARM64. Há framebuffer RGB de firmware com desenho por CPU e
+um buffer de texto VGA em memória; ainda não há modesetting Intel nem desktop.
+Plasma/Budgie/Omarchy e os protocolos SSH/SFTP, SMB, FTP, HTTP e HTTPS seguem
+planejados. Consulte o [relatório de vídeo](fase-video.md).

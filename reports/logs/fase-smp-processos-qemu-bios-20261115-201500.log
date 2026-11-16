@@ -1,0 +1,50 @@
+[2J[H+----------------------------------------------------+
+| carlIO OS | Criado por João G.R.Santos             |
+| Sistema operacional experimental x86_64            |
++----------------------------------------------------+
+Núcleo Rust · inicialização serial
+
+Framebuffer Limine: RGB ativo; renderização de pixels validada.
+IDT: exceções 0-31 registradas; IRQs externos permanecem desativados.
+Ring 3: GDT, TSS, RSP0 e seletores de usuário configurados; CPL continua 0.
+Aviso: terminal de diagnóstico em ring 0; não é uma fronteira de segurança.
+Mapa de memória Limine: regiões usáveis=3, RAM usável MiB=504; HHDM e bases físico/virtual do kernel disponíveis.
+Allocator físico: frames livres até 32 GiB=129247, sem RAM acima de 4 GiB; teste usa frame baixo; alocação, escrita, leitura e liberação passaram.
+LAPIC xAPIC ativo no BSP; vetor de shootdown remoto 0xF1 instalado.
+SMP Limine: CPUs detectadas=4, APs iniciadas=3, aguardadas=3; APs aguardam despacho de tarefa, scheduler ainda desativado.
+SMP trabalho: CPUs AP=3, tarefas concluídas=3, resultados válidos=3; despacho de prova concluído.
+Heap kernel: regiões dinâmicas, alinhamento, escrita/leitura, expansão e liberação passaram.
+Inventário PCI (somente leitura):
+PCI 00:01.0 1234:1111 vídeo
+PCI 00:02.0 8086:10d3 rede (controlador não suportado)
+PCI 00:1f.2 8086:2922 SATA/AHCI (QEMU: reconhecido; driver AHCI experimental)
+AHCI indisponível: dispositivo nao encontrado.
+Controladores relevantes encontrados: 3
+Runtime de processos: preparando tarefas CPL3.
+
+=
+=== == CAPTURA DCAPTE EXCECAO CPU ===
+Vetor: URA DE EXC13ECAO CPU ===
+ Vetor: 13 ( ( ##GP proteç�DE d�o geralivisão por zero )
+Código ) 
+dC�e e�digro de ro: erro:0 0xx00000000000000000000000000000000
+R
+RIP: 0xIP: 0x0R0untime: fault CPL3 vet0000ori00000z000000a0000d00o=000000000   CS: C6 S0x: 0x;0 encerrando 0somente 00a t000a00000000ref0000a.00
+0000000000 0  RFL RFLAGS: 0x000Ru000n00t00i00m00e00:
+RAX=0x0000000000000000 RBX=0x0000000000000000 RCX=0x0AGS000000000000000 tarefas encerradas;: 0x 0t00r o0cas de000000000000
+RAX=0x0000000000000000 RB timer=X=0x0000000000000000RDX=0 RCX=0x0000000000000000 RDX=0xx000, trocas de CR3=0000000000000000000000000000000
+
+RRSI=,SI=0x0000000000000000 R fa0x000000000uDIl0000000 RDI=0x=0ts isoladosx0000000000000000 RBP=0x00000000=00000000000000000 RBP=0x00100000000000000000000.
+R8=0x
+0000000000000
+R0008=0x0000 0000000000R9=0x000000000 R9=0x0V000000000000000M de000000b0000 ug: entered=R R10=0x1010=0x000000000000000000 pr ee000000R100m1=0xpted=000000000 00fa00000ult= R11=0x00000000 
+R12=0xk0ernel-isolated=000000000000000
+R121 fault-result=00000000000007ff.
+=0x0000000000000000 R13=0x0000000000000000 R14=0x0000000000000000 R15=0x0000000000000000
+Sistema interrompido; diagnóstico serial somente leitura.
+000000000000000 R13=0x0000000000000000 R14=0x0000000000000000 R15=0x0000000000000000
+Sistema interrompido; diagnóstico serial somente leitura.
+LAPIC: ACKs obtidos=1, esperados=3.
+LAPIC: falha fatal no shootdown remoto: ACK remoto expirou.
+
+--- mensagens do QEMU ---

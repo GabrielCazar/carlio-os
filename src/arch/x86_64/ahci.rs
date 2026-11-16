@@ -1,4 +1,5 @@
-//! Driver AHCI polling inicial. I/O de escrita só existe no build de teste.
+//! Driver AHCI polling. O adaptador de bloco mantém o I/O serializado e
+//! respeita o limite de setores reportado pelo IDENTIFY.
 
 use carlio_os::{errors::KernelError, pci::PciFunction};
 use core::{
@@ -57,11 +58,80 @@ static mut DMA: DmaMemory = DmaMemory {
 #[derive(Clone, Copy)]
 struct Controller {
     port: *mut u32,
+    map: AddressMap,
     #[cfg_attr(not(feature = "storage-test"), allow(dead_code))]
     sectors: u64,
 }
 
 static mut CONTROLLER: Option<Controller> = None;
+static BLOCK_IO_LOCK: carlio_os::sync::IrqSpinLock<()> = carlio_os::sync::IrqSpinLock::new(());
+
+/// Dispositivo de bloco AHCI descoberto pelo kernel.
+/// Não executa I/O durante a construção; o chamador escolhe quando montar ou
+/// escrever. Proteção contra uso simultâneo é compartilhada pelo HBA.
+pub struct AhciBlockDevice {
+    map: AddressMap,
+    sectors: u64,
+}
+
+pub fn block_device() -> Result<AhciBlockDevice, KernelError> {
+    let controller = unsafe { CONTROLLER }.ok_or(KernelError::DeviceNotFound)?;
+    if controller.sectors == 0 {
+        return Err(KernelError::DeviceNotFound);
+    }
+    Ok(AhciBlockDevice {
+        map: controller.map,
+        sectors: controller.sectors,
+    })
+}
+
+impl carlio_os::hermione::BlockDevice for AhciBlockDevice {
+    fn sector_count(&self) -> u64 {
+        self.sectors
+    }
+
+    fn read_sector(
+        &mut self,
+        lba: u64,
+        out: &mut [u8; carlio_os::hermione::SECTOR_SIZE],
+    ) -> Result<(), carlio_os::hermione::FsError> {
+        if lba >= self.sectors {
+            return Err(carlio_os::hermione::FsError::Device);
+        }
+        let _guard = BLOCK_IO_LOCK.lock();
+        command(&self.map, 0x25, lba, false, false, true)
+            .map_err(|_| carlio_os::hermione::FsError::Device)?;
+        let source = unsafe { core::ptr::addr_of!(DMA.sector).cast::<u8>() };
+        for (index, byte) in out.iter_mut().enumerate() {
+            *byte = unsafe { ptr::read_volatile(source.add(index)) };
+        }
+        Ok(())
+    }
+
+    fn write_sector(
+        &mut self,
+        lba: u64,
+        data: &[u8; carlio_os::hermione::SECTOR_SIZE],
+    ) -> Result<(), carlio_os::hermione::FsError> {
+        if lba >= self.sectors {
+            return Err(carlio_os::hermione::FsError::Device);
+        }
+        let _guard = BLOCK_IO_LOCK.lock();
+        let target = unsafe { core::ptr::addr_of_mut!(DMA.sector).cast::<u8>() };
+        for (index, byte) in data.iter().enumerate() {
+            unsafe { ptr::write_volatile(target.add(index), *byte) };
+        }
+        compiler_fence(Ordering::SeqCst);
+        command(&self.map, 0x35, lba, true, false, true)
+            .map_err(|_| carlio_os::hermione::FsError::Device)
+    }
+
+    fn flush(&mut self) -> Result<(), carlio_os::hermione::FsError> {
+        let _guard = BLOCK_IO_LOCK.lock();
+        command(&self.map, 0xea, 0, false, false, false)
+            .map_err(|_| carlio_os::hermione::FsError::Device)
+    }
+}
 
 #[derive(Clone, Copy)]
 struct AddressMap {
@@ -91,6 +161,38 @@ impl AddressMap {
         unsafe { map_mmio(self, virtual_address, physical_address)? };
         Ok(virtual_address as *mut u32)
     }
+}
+
+/// Mapeia um BAR PCI de memória usando o mesmo HHDM/pagetables dos drivers.
+/// O chamador habilita memória/bus mastering após validar o dispositivo.
+pub unsafe fn map_pci_bar(
+    function: PciFunction,
+    bar_offset: u8,
+    hhdm: u64,
+    kernel_physical: u64,
+    kernel_virtual: u64,
+) -> Result<*mut u8, KernelError> {
+    if bar_offset < 0x10 || bar_offset > 0x24 || bar_offset & 3 != 0 {
+        return Err(KernelError::UnsupportedDevice);
+    }
+    let map = AddressMap {
+        hhdm,
+        kernel_physical,
+        kernel_virtual,
+    };
+    let low = pci_read(function, bar_offset);
+    if low & 1 != 0 || low & 0xffff_fff0 == 0 {
+        return Err(KernelError::DeviceInitFailed);
+    }
+    let bar_type = (low >> 1) & 3;
+    let physical = match bar_type {
+        0 => (low & !0xf) as u64,
+        2 if bar_offset <= 0x20 => {
+            ((pci_read(function, bar_offset + 4) as u64) << 32) | (low as u64 & !0xf)
+        }
+        _ => return Err(KernelError::UnsupportedDevice),
+    };
+    Ok(map.mmio(physical)?.cast::<u8>())
 }
 
 unsafe fn map_mmio(
@@ -166,7 +268,14 @@ pub unsafe fn initialize(
     kernel_physical: u64,
     kernel_virtual: u64,
 ) -> Result<u64, KernelError> {
-    if function.ahci_model() != Some(carlio_os::pci::AhciModel::IntelQemu) {
+    if !matches!(
+        function.ahci_model(),
+        Some(
+            carlio_os::pci::AhciModel::IntelQemu
+                | carlio_os::pci::AhciModel::IntelNas
+                | carlio_os::pci::AhciModel::IntelRstLocal
+        )
+    ) {
         return Err(KernelError::UnsupportedDevice);
     }
     let map = AddressMap {
@@ -208,10 +317,16 @@ pub unsafe fn initialize(
             continue;
         }
         prepare_port(port, &map)?;
-        unsafe { CONTROLLER = Some(Controller { port, sectors: 0 }) };
+        unsafe {
+            CONTROLLER = Some(Controller {
+                port,
+                sectors: 0,
+                map,
+            })
+        };
         identify(&map)?;
         let sectors = identify_capacity();
-        unsafe { CONTROLLER = Some(Controller { port, sectors }) };
+        unsafe { CONTROLLER = Some(Controller { port, sectors, map }) };
         return Ok(sectors);
     }
     Err(KernelError::DeviceNotFound)
@@ -250,63 +365,10 @@ pub unsafe fn disposable_disk_test() -> Result<(), KernelError> {
 
 #[cfg(feature = "storage-test")]
 pub unsafe fn disposable_filesystem_test() -> Result<(), KernelError> {
-    use carlio_os::hermione::{BlockDevice, FsError, HermioneVolume, SECTOR_SIZE};
+    use carlio_os::hermione::HermioneVolume;
 
-    struct Disk {
-        map: AddressMap,
-        sectors: u64,
-    }
-    impl BlockDevice for Disk {
-        fn sector_count(&self) -> u64 {
-            self.sectors
-        }
-        fn read_sector(&mut self, lba: u64, out: &mut [u8; SECTOR_SIZE]) -> Result<(), FsError> {
-            if lba >= self.sectors {
-                return Err(FsError::Device);
-            }
-            unsafe {
-                transfer_sector(&self.map, lba, false).map_err(|_| FsError::Device)?;
-            }
-            let source = unsafe { core::ptr::addr_of!(DMA.sector).cast::<u8>() };
-            for (index, byte) in out.iter_mut().enumerate() {
-                *byte = unsafe { ptr::read_volatile(source.add(index)) };
-            }
-            Ok(())
-        }
-        fn write_sector(&mut self, lba: u64, data: &[u8; SECTOR_SIZE]) -> Result<(), FsError> {
-            if lba >= self.sectors {
-                return Err(FsError::Device);
-            }
-            let target = unsafe { core::ptr::addr_of_mut!(DMA.sector).cast::<u8>() };
-            for (index, byte) in data.iter().enumerate() {
-                unsafe {
-                    ptr::write_volatile(target.add(index), *byte);
-                }
-            }
-            compiler_fence(Ordering::SeqCst);
-            unsafe {
-                transfer_sector(&self.map, lba, true).map_err(|_| FsError::Device)?;
-            }
-            Ok(())
-        }
-
-        fn flush(&mut self) -> Result<(), FsError> {
-            command(&self.map, 0xea, 0, false, false, false).map_err(|_| FsError::Device)
-        }
-    }
-
-    let controller = unsafe { CONTROLLER }.ok_or(KernelError::DeviceNotFound)?;
-    let map = unsafe {
-        AddressMap {
-            hhdm: core::ptr::addr_of!(super::HHDM_OFFSET).read_volatile(),
-            kernel_physical: core::ptr::addr_of!(super::KERNEL_PHYSICAL_BASE).read_volatile(),
-            kernel_virtual: core::ptr::addr_of!(super::KERNEL_VIRTUAL_BASE).read_volatile(),
-        }
-    };
-    let disk = Disk {
-        map,
-        sectors: controller.sectors,
-    };
+    let _controller = unsafe { CONTROLLER }.ok_or(KernelError::DeviceNotFound)?;
+    let disk = block_device()?;
     super::write("Hermione: formatando superbloco/diretorio...\r\n");
     let mut volume = HermioneVolume::format(disk).map_err(|_| KernelError::ControllerError)?;
     let expected = b"Hermione persistiu no disco QEMU descartavel.";
@@ -325,23 +387,11 @@ pub unsafe fn disposable_filesystem_test() -> Result<(), KernelError> {
     if &output[..count] != expected {
         return Err(KernelError::ControllerError);
     }
-    Ok(())
-}
-
-#[cfg(feature = "storage-test")]
-unsafe fn transfer_sector(map: &AddressMap, lba: u64, write: bool) -> Result<(), KernelError> {
-    let controller = unsafe { CONTROLLER }.ok_or(KernelError::DeviceNotFound)?;
-    if lba >= controller.sectors {
+    let scrub = volume.scrub().map_err(|_| KernelError::ControllerError)?;
+    if scrub.files_verified != 1 || scrub.copies_repaired != 0 {
         return Err(KernelError::ControllerError);
     }
-    command(
-        map,
-        if write { 0x35 } else { 0x25 },
-        lba,
-        write,
-        false,
-        true,
-    )
+    Ok(())
 }
 
 fn prepare_port(port: *mut u32, map: &AddressMap) -> Result<(), KernelError> {
@@ -481,18 +531,24 @@ fn recover_port(port: *mut u32, map: &AddressMap) -> Result<(), KernelError> {
     let command = unsafe { read_reg(port, PORT_CMD) } & !CMD_ST;
     unsafe { write_reg(port, PORT_CMD, command) };
     if !poll_clear(port, PORT_CMD, CMD_CR) {
+        #[cfg(feature = "storage-test")]
+        super::write("AHCI recovery: timeout parando command engine.\r\n");
         return Err(KernelError::IoTimeout);
     }
 
     let command = unsafe { read_reg(port, PORT_CMD) } & !CMD_FRE;
     unsafe { write_reg(port, PORT_CMD, command) };
     if !poll_clear(port, PORT_CMD, CMD_FR) {
+        #[cfg(feature = "storage-test")]
+        super::write("AHCI recovery: timeout parando FIS receive engine.\r\n");
         return Err(KernelError::IoTimeout);
     }
 
     let sctl = unsafe { read_reg(port, PORT_SCTL) };
     unsafe { write_reg(port, PORT_SCTL, (sctl & !0xf) | 1) };
     if !super::idt::wait_ticks(2) {
+        #[cfg(feature = "storage-test")]
+        super::write("AHCI recovery: PIT nao avancou durante COMRESET.\r\n");
         return Err(KernelError::IoTimeout);
     }
     unsafe { write_reg(port, PORT_SCTL, sctl & !0xf) };
@@ -509,6 +565,8 @@ fn recover_port(port: *mut u32, map: &AddressMap) -> Result<(), KernelError> {
         core::hint::spin_loop();
     }
     if !link_ready {
+        #[cfg(feature = "storage-test")]
+        super::write("AHCI recovery: link nao voltou apos COMRESET.\r\n");
         return Err(KernelError::DeviceNotFound);
     }
 
@@ -516,7 +574,12 @@ fn recover_port(port: *mut u32, map: &AddressMap) -> Result<(), KernelError> {
         write_reg(port, PORT_SERR, u32::MAX);
         write_reg(port, 0x10 / 4, u32::MAX);
     }
-    prepare_port(port, map)
+    let prepared = prepare_port(port, map);
+    #[cfg(feature = "storage-test")]
+    if prepared.is_err() {
+        super::write("AHCI recovery: falha ao reiniciar command engine.\r\n");
+    }
+    prepared
 }
 
 fn poll_clear(base: *mut u32, register: usize, mask: u32) -> bool {

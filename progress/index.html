@@ -4,119 +4,117 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#10151d">
-  <title>CarlioOS — progresso</title>
+  <title>CarlioOS — mapa de progresso</title>
   <style>
-    :root{color-scheme:dark;--bg:#10151d;--panel:#19222e;--line:#2d3a4a;--text:#eaf0f6;--muted:#a9b6c5;--accent:#79d3bd;--warn:#f3c969}
-    *{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at 80% 0,#263b48 0,transparent 40%),var(--bg);color:var(--text);font:16px/1.55 system-ui,sans-serif}
-    main{max-width:1100px;margin:auto;padding:42px 22px 70px}header{margin-bottom:30px}h1{font-size:clamp(2.2rem,6vw,4rem);line-height:1.05;margin:8px 0}h2{font-size:1.15rem;margin:0 0 8px}p{color:var(--muted);margin:8px 0}.eyebrow{color:var(--accent);letter-spacing:.14em;text-transform:uppercase;font-size:.78rem;font-weight:700}.status{display:inline-block;border:1px solid #76602d;color:var(--warn);border-radius:999px;padding:3px 10px;font-size:.8rem;font-weight:650}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px;margin:20px 0 30px}.card{background:color-mix(in srgb,var(--panel),transparent 8%);border:1px solid var(--line);border-radius:14px;padding:18px}.card.active{border-color:#438d7a;box-shadow:inset 3px 0 var(--accent)}.phase{display:flex;align-items:center;justify-content:space-between;gap:10px}.meter{height:7px;background:#2a3542;border-radius:9px;margin:14px 0 8px;overflow:hidden}.meter span{display:block;height:100%;background:var(--accent);border-radius:inherit}.meter.pending span{width:0}.meter.current span{width:55%}.meter.complete span{width:100%}.label{font-size:.76rem;color:var(--muted)}.panel{border-top:1px solid var(--line);padding-top:21px;margin-top:22px}.list{padding-left:20px;color:var(--muted)}.list li{padding:3px 0}.checkgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:12px}.checkgroup{background:color-mix(in srgb,var(--panel),transparent 8%);border:1px solid var(--line);border-radius:12px;padding:16px}.checkgroup h3{font-size:1rem;margin:0 0 8px}.checklist{list-style:none;padding:0;margin:0;color:var(--muted)}.checklist li{padding:4px 0}.done{color:var(--accent)}.doing{color:var(--warn)}.pill{display:inline-block;background:#253340;border-radius:5px;padding:2px 7px;color:#dce9f1;font:.84rem ui-monospace,monospace}a{color:var(--accent)}footer{margin-top:32px;color:var(--muted);font-size:.88rem}
+    :root{color-scheme:dark;--bg:#10151d;--panel:#19222e;--line:#344254;--text:#edf3f8;--muted:#b1bdc9;--done:#17483e;--done-line:#4aa990;--doing:#51411c;--doing-line:#e7bd54;--pending:#202b38;--pending-line:#56677b;--blocked:#462c31;--blocked-line:#bd707b;--accent:#8ce1cb}
+    *{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at 78% 0,#263b48 0,transparent 42%),var(--bg);color:var(--text);font:15px/1.45 system-ui,sans-serif}main{max-width:1500px;margin:auto;padding:36px 24px 60px}header{display:flex;justify-content:space-between;align-items:end;gap:24px;margin-bottom:22px}.eyebrow{color:var(--accent);letter-spacing:.13em;text-transform:uppercase;font-size:.75rem;font-weight:750}h1{font-size:clamp(2rem,5vw,3.5rem);line-height:1.05;margin:6px 0}p{color:var(--muted);margin:7px 0}.summary{max-width:850px}.legend{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end}.key,.state{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:999px;padding:4px 9px;color:var(--muted);font-size:.75rem;white-space:nowrap}.dot{width:8px;height:8px;border-radius:50%;display:inline-block}.dot.done{background:var(--done-line)}.dot.doing{background:var(--doing-line)}.dot.pending{background:var(--pending-line)}.dot.blocked{background:var(--blocked-line)}
+    .treemap{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));grid-template-rows:repeat(3,minmax(245px,auto));grid-template-areas:"p1 p2 p2 p3" "p4 p2 p2 p3" "p5 p6 p7 p8";gap:10px}.phase{min-width:0;min-height:0;border:1px solid var(--line);border-radius:15px;background:color-mix(in srgb,var(--panel),transparent 4%);padding:13px;display:flex;flex-direction:column;overflow:hidden}.phase[data-phase="1"]{grid-area:p1}.phase[data-phase="2"]{grid-area:p2;border-color:#438d7a;box-shadow:inset 0 3px var(--accent)}.phase[data-phase="3"]{grid-area:p3}.phase[data-phase="4"]{grid-area:p4}.phase[data-phase="5"]{grid-area:p5}.phase[data-phase="6"]{grid-area:p6}.phase[data-phase="7"]{grid-area:p7}.phase[data-phase="8"]{grid-area:p8}.phase-head{display:flex;justify-content:space-between;align-items:start;gap:8px;margin:0 0 9px}.phase h2{font-size:1rem;line-height:1.2;margin:0}.phase-no{color:var(--accent);font-variant-numeric:tabular-nums}.phase-link{font-size:.72rem;white-space:nowrap}.tasks{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));grid-auto-rows:minmax(68px,1fr);gap:7px;flex:1}.phase[data-phase="2"] .tasks,.phase[data-phase="3"] .tasks{grid-template-columns:repeat(2,minmax(0,1fr));grid-auto-rows:minmax(100px,1fr)}.task{min-width:0;border:1px solid var(--pending-line);border-radius:10px;padding:8px 9px;background:var(--pending);overflow:hidden}.task.done{background:var(--done);border-color:color-mix(in srgb,var(--done-line),transparent 35%)}.task.doing{background:var(--doing);border-color:color-mix(in srgb,var(--doing-line),transparent 28%)}.task.blocked{background:var(--blocked);border-color:color-mix(in srgb,var(--blocked-line),transparent 30%)}.task h3{font-size:.82rem;line-height:1.2;margin:0 0 4px}.task p{font-size:.72rem;line-height:1.3;margin:0;color:#d1dbe3}.sub{display:block;color:#c0ccd6;font-size:.68rem;line-height:1.3;margin-top:4px}.phase-foot{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-top:8px}.phase-foot p{font-size:.7rem;margin:0}.phase-foot a,footer a{color:var(--accent)}.status-word{font-size:.68rem;font-weight:750;letter-spacing:.04em;text-transform:uppercase}.task.done .status-word{color:#a6f0dd}.task.doing .status-word{color:#ffe29a}.task.blocked .status-word{color:#f3b5bd}.task.pending .status-word{color:#c1cfdd}
+    .notes{margin-top:16px;border-top:1px solid var(--line);padding-top:12px;display:flex;gap:10px;flex-wrap:wrap}.note{flex:1 1 260px;border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:#151d27}.note strong{font-size:.8rem}.note p{font-size:.75rem}footer{margin-top:20px;color:var(--muted);font-size:.8rem}
+    @media(max-width:1050px){.treemap{grid-template-columns:repeat(2,minmax(0,1fr));grid-template-rows:none;grid-template-areas:"p2 p2" "p3 p1" "p3 p4" "p5 p6" "p7 p8"}.phase{min-height:260px}.phase[data-phase="2"],.phase[data-phase="3"]{min-height:430px}}
+    @media(max-width:620px){main{padding:25px 13px 40px}header{display:block}.legend{justify-content:flex-start;margin-top:14px}.treemap{display:flex;flex-direction:column}.phase,.phase[data-phase="2"],.phase[data-phase="3"]{min-height:unset}.tasks,.phase[data-phase="2"] .tasks,.phase[data-phase="3"] .tasks{grid-auto-rows:minmax(82px,auto)}}
   </style>
 </head>
 <body>
 <main>
   <header>
-    <div class="eyebrow">Sistema operacional em Rust · idioma padrão pt_BR</div>
-    <h1>CarlioOS</h1>
-    <p>Base x86_64 com boot Limine, testes em QEMU e seis fases com relatórios e critérios de aceite.</p>
-    <span class="status">Fase 2 — formato v2 em validação</span>
+    <div class="summary">
+      <div class="eyebrow">Mapa de progresso · kernel CarlioOS em Rust · x86-64</div>
+      <h1>Fases, tarefas e subtarefas</h1>
+      <p>As áreas maiores representam as fases com mais trabalho técnico. Cada bloco mostra o estado da tarefa e suas subtarefas; selecione o relatório para ver evidências e limites.</p>
+    </div>
+    <nav class="legend" aria-label="Legenda de estados">
+      <span class="key"><i class="dot done"></i>Validado</span><span class="key"><i class="dot doing"></i>Em andamento</span><span class="key"><i class="dot pending"></i>Pendente</span><span class="key"><i class="dot blocked"></i>Dependência</span>
+    </nav>
   </header>
-  <section aria-label="Fases do projeto" class="grid">
-    <article class="card"><div class="phase"><h2>01 · Inicialização</h2><span class="label">CONCLUÍDA</span></div><p>Boot BIOS/UEFI via Limine; mapa/HHDM, PCI, watchdog PIT, IDT e IST para double fault. Driver AHCI experimental validado no QEMU com disco descartável.</p><div class="meter complete"><span></span></div><span class="label">Escopo fechado para dependência mínima da fase 2. AHCI físico local/NAS e outros drivers seguem como expansão futura.</span><p><a href="../reports/fase-1-inicializacao.md">Relatório da fase</a> · <a href="../docs/HARDWARE-BASE.md">Hardware-base</a></p></article>
-    <article class="card active"><div class="phase"><h2>02 · Armazenamento protegido</h2><span class="label">EM DESENVOLVIMENTO</span></div><p>Hermione v2: diretórios alternados, commit copy-on-write com flush, scrub, checksums e recuperação de erro AHCI via COMRESET.</p><div class="meter current"><span></span></div><span class="label">21 testes host e QEMU local/NAS-KVM passaram. Cifra, journal geral, árvore de diretórios e montagem normal seguem pendentes.</span><p><a href="../reports/fase-2-armazenamento.md">Relatório da fase</a> · <a href="../docs/HERMIONE.md">Projeto Hermione</a></p></article>
-    <article class="card"><div class="phase"><h2>03 · Segurança e contas</h2><span class="label">PLANEJADA</span></div><p>Ring 3, processos isolados, syscalls validadas e permissões efetivas.</p><div class="meter pending"><span></span></div><a href="../reports/fase-3-seguranca.md">Relatório da fase</a></article>
-    <article class="card"><div class="phase"><h2>04 · Aplicações Linux</h2><span class="label">PLANEJADA</span></div><p>AppImage, Snap, Flatpak, DEB, RPM e Arch; ABI e execução em sandbox. systemd está definido como gerenciador de serviços futuro da userland Linux-compatible.</p><div class="meter pending"><span></span></div><a href="../reports/fase-4-aplicacoes-linux.md">Relatório da fase</a></article>
-    <article class="card"><div class="phase"><h2>05 · Windows Mode</h2><span class="label">PLANEJADA</span></div><p>VM Windows licenciada, AD DS e validação de Duo Desktop/Falcon no convidado.</p><div class="meter pending"><span></span></div><a href="../reports/fase-5-windows-mode.md">Relatório da fase</a></article>
-    <article class="card"><div class="phase"><h2>06 · Interface e plataformas</h2><span class="label">PLANEJADA</span></div><p>Desktop baseado no KDE Plasma, elementos do Budgie e barra superior inspirada no Omarchy. Gerenciador de arquivos nativo com SSH/SFTP/SCP, SMB, FTP, HTTP e HTTPS.</p><div class="meter pending"><span></span></div><span class="label">Depende da rede TCP/IP e drivers da fase 1, além das credenciais/permissões das fases 2 e 3.</span><p><a href="../reports/fase-6-interface-plataformas.md">Relatório da fase</a></p></article>
+
+  <section class="treemap" aria-label="Treemap de fases e tarefas do CarlioOS">
+    <article class="phase" data-phase="1">
+      <div class="phase-head"><h2><span class="phase-no">01</span> · Boot e hardware mínimo</h2><a class="phase-link" href="../reports/fase-1-inicializacao.md">Evidências ↗</a></div>
+      <div class="tasks">
+        <div class="task done"><h3>Boot BIOS/UEFI</h3><p>Limine, mapa Limine, HHDM e serial.</p><span class="sub">QEMU local e NAS/KVM</span></div>
+        <div class="task done"><h3>Diagnóstico</h3><p>IDT, panic, watchdog e logs voláteis.</p><span class="sub">Faults intencionais no QEMU</span></div>
+        <div class="task done"><h3>PCI / AHCI de prova</h3><p>Identificação e I/O em mídia descartável.</p><span class="sub">Driver físico e remoção ainda não suportados</span></div>
+        <div class="task doing"><h3>Vídeo e dispositivos</h3><p>Framebuffer Limine validado.</p><span class="sub">USB, rede, modesetting e áudio pendentes</span></div>
+      </div>
+    </article>
+
+    <article class="phase" data-phase="2">
+      <div class="phase-head"><h2><span class="phase-no">02</span> · Memória, processos e SMP</h2><a class="phase-link" href="../reports/fase-2-memoria-execucao.md">Relatório ↗</a></div>
+      <div class="tasks">
+        <div class="task done"><h3>Allocator físico até 32 GiB</h3><p>Bitmap Limine; aloca, acessa e libera frame acima de 4 GiB.</p><span class="sub">QEMU TCG 32 GiB BIOS/UEFI; NAS KVM 5 GiB BIOS/UEFI. 32 GiB KVM excede RAM do NAS.</span></div>
+        <div class="task done"><h3>VM e CR3 próprio</h3><p>Page tables x86-64, espaços user owned, permissões RX/NX.</p><span class="sub">Provas BIOS/UEFI locais e NAS/KVM</span></div>
+        <div class="task done"><h3>ELF64 em CPL3</h3><p>Fixture ET_EXEC, PT_LOAD, stack user e saída SYS_EXIT.</p><span class="sub">Loader existe; origem ainda é fixture, sem VFS/argv/env</span></div>
+        <div class="task done"><h3>Troca e preempção no BSP</h3><p>IRQ0 troca frame, CR3 e RSP0 entre duas tarefas.</p><span class="sub">Reaper recupera pilhas e espaços da prova</span></div>
+        <div class="task doing"><h3>Heap global expansível</h3><p>First-fit protegido por lock IRQ-safe; novas arenas são ligadas a frames do allocator.</p><span class="sub">Expansão validada; allocator geral, memória por processo e stress SMP pendentes</span></div>
+        <div class="task doing"><h3>Faults e ownership genérico</h3><p>Fault CPL3 registra vetor, código e endereço; reap_with permite cleanup e retry sem perder a causa.</p><span class="sub">Validação host adicionada; bundle de recursos ainda fica fora de Process nas fixtures de boot</span></div>
+        <div class="task doing"><h3>Scheduler SMP</h3><p>Filas prontas por CPU, roubo de trabalho, GDT/TSS e stacks RSP0/IST independentes; timer LAPIC nos APs.</p><span class="sub">Boot BIOS/UEFI local e NAS/KVM passou com 4 CPUs e 18 shootdowns. Falta carga CPL3 concorrente validada nos APs.</span></div>
+        <div class="task doing"><h3>Runtime de processos</h3><p>Despacho e fault/saída identificam CPU; AP sem trabalho volta ao loop ocioso.</p><span class="sub">100 testes e boots 4 CPU BIOS/UEFI local/NAS passaram; falta workload CPL3 SMP, tabela dinâmica e ownership completo</span></div>
+      </div>
+      <div class="phase-foot"><p><span class="status-word">Fase aberta</span> · Swap fica condicionado à fase de bloco/VM confiável.</p><a href="../reports/logs/fase2-ram32g-qemu-bios-20261115.log">Boot 32 GiB ↗</a></div>
+    </article>
+
+    <article class="phase" data-phase="3">
+      <div class="phase-head"><h2><span class="phase-no">03</span> · Bloco e filesystems</h2><a class="phase-link" href="../reports/fase-3-bloco-filesystems.md">Relatório ↗</a></div>
+      <div class="tasks">
+        <div class="task done"><h3>BlockDevice / Hermione v3</h3><p>Volume, journal redo, espelho, scrub e reparo.</p><span class="sub">Testes host/QEMU em mídia descartável</span></div>
+        <div class="task doing"><h3>Capacidade de disco 2 TiB</h3><p>Formato agora aceita 2^32 setores; teste de imagem esparsa lê/escreve o último LBA.</p><span class="sub">Driver físico, timeout/remoção e interoperabilidade continuam pendentes</span></div>
+        <div class="task doing"><h3>AHCI e DMA</h3><p>I/O experimental em QEMU.</p><span class="sub">Hardware físico, timeout e hot removal sem validação</span></div>
+        <div class="task doing"><h3>Mounts e interoperabilidade</h3><p>VFS delega leitura para Hermione, FAT32 8.3 e subconjunto ext4.</p><span class="sub">Syscalls ainda usam VFS inline; descoberta de partição, mount no boot e recursos completos pendentes</span></div>
+        <div class="task pending"><h3>Swap e persistência</h3><p>Dependem de VM e bloco confiáveis.</p><span class="sub">Não habilitar antes dos testes de falha</span></div>
+        <div class="task pending"><h3>Integridade e segurança</h3><p>Hermione segue experimental.</p><span class="sub">Cifra, chaves, scrub persistente e drivers físicos pendentes</span></div>
+      </div>
+    </article>
+
+    <article class="phase" data-phase="4">
+      <div class="phase-head"><h2><span class="phase-no">04</span> · VFS, contas e rede</h2><a class="phase-link" href="../reports/fase-3-seguranca.md">Relatório ↗</a></div>
+      <div class="tasks">
+        <div class="task doing"><h3>Política POSIX</h3><p>UID/GID, grupos, rwx, umask e I/O em biblioteca VFS host.</p><span class="sub">Enforcement no kernel pendente</span></div>
+        <div class="task doing"><h3>VFS FHS</h3><p>Snapshot do VFS persistido no Hermione; openat/create/truncate/read/write usam a mesma árvore.</p><span class="sub">Boot AHCI de inicialização e remontagem passou em imagem QEMU; 32 nós e arquivos de 512 bytes</span></div>
+        <div class="task doing"><h3>Contas e login</h3><p>Contas serializadas/remontadas pelo Hermione; processos carregam UID/GID, grupos e umask no scheduler.</p><span class="sub">Validação de hash/KDF segura é backend; sessão ainda não é criada pelo login de boot nem aplicada às operações VFS/syscall</span></div>
+        <div class="task pending"><h3>Rede de servidor</h3><p>NICs identificadas.</p><span class="sub">Drivers, TCP/IP, DNS e serviços pendentes</span></div>
+      </div>
+    </article>
+
+    <article class="phase" data-phase="5">
+      <div class="phase-head"><h2><span class="phase-no">05</span> · ABI Linux, Arch e Ubuntu</h2><a class="phase-link" href="../reports/fase-4-aplicacoes-linux.md">Plano ↗</a></div>
+      <div class="tasks">
+        <div class="task doing"><h3>Syscall dispatcher inicial</h3><p>SYSCALL CPL3: identidade/grupos, I/O serial/VFS, mmap/munmap anônimo, uname Linux x86_64 e libc freestanding inicial.</p><span class="sub">Parser de PT_INTERP/DT_NEEDED e lookup host de símbolos versionados; integração dinâmica, brk CPL3, mmap de arquivo, sinais e ABI ampla pendentes</span></div>
+        <div class="task doing"><h3>Userlands Arch + Ubuntu</h3><p>ABI Linux compartilhada; static PIE com relocação RELATIVE, planner host ALPM e base de metadados ELF dinâmico.</p><span class="sub">Ainda sem carregamento de interpretador/.so, resolução real via GNU version tables, rootfs instalado ou validação de binários reais</span></div>
+        <div class="task doing"><h3>Pacotes</h3><p>ALPM resolve dependências nomeadas/versionadas em ordem de instalação.</p><span class="sub">Sem repositórios/assinaturas, extração, instalação, transações ou rollback; demais formatos pendentes</span></div>
+        <div class="task pending"><h3>Base Arch + zsh</h3><p>pacman/ALPM deve instalar base e zsh no rootfs.</p><span class="sub">Sem extração/transação de pacotes, libc/linker e execução de binários reais</span></div>
+      </div>
+    </article>
+
+    <article class="phase" data-phase="6">
+      <div class="phase-head"><h2><span class="phase-no">06</span> · Desktop e agentes</h2><a class="phase-link" href="../reports/fase-6-interface-plataformas.md">Plano ↗</a></div>
+      <div class="tasks">
+        <div class="task pending"><h3>Plasma / SDDM</h3><p>Não instalável ainda: depende de linker, rootfs/ALPM, libc, threads/futex, DBus, entrada e driver gráfico/compositor.</p></div>
+        <div class="task pending"><h3>Agentes</h3><p>ChatGPT/Ollama opcionais.</p><span class="sub">Rede, TLS e credenciais protegidas</span></div>
+      </div>
+    </article>
+
+    <article class="phase" data-phase="7">
+      <div class="phase-head"><h2><span class="phase-no">07</span> · ISO beta instalável</h2><a class="phase-link" href="../docs/ROADMAP.md">Critérios ↗</a></div>
+      <div class="tasks">
+        <div class="task pending"><h3>Instalador seguro</h3><p>Prévia, destino explícito e preservação de discos.</p></div>
+        <div class="task pending"><h3>Recuperação</h3><p>Atualização, rollback e diagnóstico.</p><span class="sub">Validar em hardware e mídia descartável</span></div>
+      </div>
+    </article>
+
+    <article class="phase" data-phase="8">
+      <div class="phase-head"><h2><span class="phase-no">08</span> · Programas Windows</h2><a class="phase-link" href="../reports/fase-8-aplicacoes-windows-nativas.md">Plano ↗</a></div>
+      <div class="tasks">
+        <div class="task pending"><h3>PE/COFF e APIs</h3><p>Compatibilidade Windows isolada ou VM.</p><span class="sub">Meta pós-beta; não implica suporte atual a .exe</span></div>
+      </div>
+    </article>
   </section>
-  <section class="panel" aria-labelledby="phase1-checklist">
-    <h2 id="phase1-checklist">Checklist · Fase 1 — Inicialização</h2>
-    <div class="checkgrid">
-      <article class="checkgroup"><h3>Boot e plataforma</h3><ul class="checklist">
-        <li class="done">☑ Boot Limine BIOS e UEFI — QEMU local e NAS/KVM</li>
-        <li class="done">☑ Mapa de memória, HHDM e bases física/virtual do kernel</li>
-        <li class="done">☑ Splash e terminal serial em pt_BR</li>
-        <li class="done">☑ Panic e exceções capturados; #UD e double fault validados</li>
-        <li class="done">☑ Watchdog PIT detecta loop sem progresso; QEMU validado</li>
-        <li class="done">☑ Dumps de teste guardados em logs no host</li>
-        <li>☐ Persistir dumps no armazenamento do próprio kernel</li>
-      </ul></article>
-      <article class="checkgroup"><h3>PCI e dispositivos</h3><ul class="checklist">
-        <li class="done">☑ Enumeração PCI somente leitura</li>
-        <li class="done">☑ Classificação AHCI para máquina, NAS e QEMU</li>
-        <li class="doing">◐ AHCI DMA QEMU: IDENTIFY, READ e WRITE passaram</li>
-        <li class="done">☑ Disco descartável positivo e ausência de disco negativa no QEMU</li>
-        <li>☐ Validar timeout/erro e controladores da máquina e NAS</li>
-        <li>☐ Pilha TCP/IP e sockets para os protocolos remotos da fase 6</li>
-        <li>☐ VGA/framebuffer, USB, Ethernet, Wi‑Fi, Bluetooth e áudio</li>
-      </ul></article>
-      <article class="checkgroup"><h3>Validação e encerramento</h3><ul class="checklist">
-        <li class="done">☑ 14 testes host locais; 14 na última execução NAS</li>
-        <li class="done">☑ Boot smoke BIOS/UEFI local e NAS/KVM</li>
-        <li class="done">☑ Panic, #UD, double fault e watchdog intencionais no QEMU</li>
-        <li class="done">☑ AHCI IDENTIFY/WRITE/READ em imagem raw descartável no QEMU</li>
-        <li>☐ Testar falhas AHCI e controladores físicos</li>
-        <li>☐ Validar drivers e falhas antes de fechar a fase</li>
-      </ul></article>
-    </div>
-    <p>Checklist detalhada e logs: <a href="../reports/fase-1-inicializacao.md">relatório da fase 1</a>.</p>
+
+  <section class="notes" aria-label="Limites e próximos gates">
+    <article class="note"><strong>ABI Arch/Plasma em andamento</strong><p>148 testes da biblioteca, 1 do carlio-logs e 4 do herm-fs passaram localmente e no NAS; QEMU BIOS/UEFI local e NAS/KVM passaram. Uma imagem AHCI Hermione descartável inicializou o rootfs e foi remontada em segundo boot QEMU. Rootfs limitado a 32 nós e arquivos de 512 bytes; isso não instala a base Arch. Planner ALPM gera ordem topológica para dependências comuns, sem extração/instalação ou semântica libalpm completa. Ainda faltam linker dinâmico, libc, binários reais e zsh executável. Evidências: <a href="../reports/fase-4-aplicacoes-linux.md">relatório fase 4</a>.</p></article>
+    <article class="note"><strong>32 GiB de RAM</strong><p>QEMU TCG local passou BIOS/UEFI e tocou frame acima de 4 GiB. NAS/KVM passou com 5 GiB. KVM de 32 GiB foi recusado porque o host NAS tem 8 GiB.</p></article>
+    <article class="note"><strong>2 TiB de disco</strong><p>Imagem esparsa de 2 TiB passou leitura/escrita do último LBA; AHCI físico, falhas e remoção continuam sem teste. Não usar mídia com dados reais durante validação.</p></article>
   </section>
-  <section class="panel" aria-labelledby="phase2-checklist">
-    <h2 id="phase2-checklist">Checklist · Fase 2 — armazenamento</h2>
-    <div class="checkgrid">
-      <article class="checkgroup"><h3>Formato e operações</h3><ul class="checklist">
-        <li class="done">☑ Contrato BlockDevice com setores de 512 bytes</li>
-        <li class="done">☑ Superbloco versionado e CRC estrutural</li>
-        <li class="done">☑ Diretório de 12 arquivos e checagem de extents</li>
-        <li class="done">☑ Formatar, montar, listar, gravar, ler e excluir</li>
-        <li class="done">☑ Checksums e rejeição de metadados/dados corrompidos</li>
-        <li class="done">☑ Duas gerações de diretório, flush ordenado e recuperação de escrita parcial</li>
-        <li class="done">☑ Scrub e buffer de leitura protegido por verificação prévia</li>
-        <li class="doing">◐ Limite atual: sem journal geral, cifra, árvore de diretórios ou montagem normal</li>
-      </ul></article>
-      <article class="checkgroup"><h3>Drivers e boot</h3><ul class="checklist">
-        <li class="done">☑ ISO inclui carregamento Limine para BIOS e UEFI</li>
-        <li class="done">☑ QEMU Q35 enumera AHCI PCI integrado</li>
-        <li class="done">☑ Build storage-test liga camada de bloco ao DMA AHCI</li>
-        <li class="done">☑ FLUSH CACHE e recuperação COMRESET após erro de comando</li>
-        <li class="done">☑ Disco QCOW2 descartável de 20 GiB criado e conectado no NAS</li>
-        <li class="done">☑ fs-teste v1 passou na VM NAS (confirmação do usuário)</li>
-        <li class="done">☑ VM gráfica atualizada para ISO v2; QCOW2 preservado</li>
-        <li class="done">☑ Teste local Hermione v2 passou (confirmação do usuário)</li>
-        <li class="doing">◐ Guardar captura serial em arquivo</li>
-        <li class="done">☑ Recuperar canal AHCI via COMRESET após erro induzido em QEMU</li>
-        <li>☐ Testar timeout e remoção do disco durante I/O</li>
-      </ul></article>
-      <article class="checkgroup"><h3>Validação e segurança</h3><ul class="checklist">
-        <li class="done">☑ 21 testes host locais e NAS passaram</li>
-        <li class="done">☑ Hermione v2 passou no QEMU local e NAS/KVM, inclusive após erro AHCI</li>
-        <li class="done">☑ Boots BIOS/UEFI NAS/KVM passaram sem disco de escrita</li>
-        <li class="doing">◐ Recuperação de diretório rasgado passou em teste host</li>
-        <li>☐ Journal geral e corte de energia no QEMU</li>
-        <li>☐ KDF, cifra autenticada, bloqueio e limpeza de chaves</li>
-        <li>☐ Redundância, scrub persistente e reparo validado</li>
-      </ul></article>
-    </div>
-    <p>Checklist detalhada e logs: <a href="../reports/fase-2-armazenamento.md">relatório da fase 2</a>.</p>
-  </section>
-  <section class="panel" aria-labelledby="phase6-checklist">
-    <h2 id="phase6-checklist">Direção planejada · Fase 6 — desktop e arquivos</h2>
-    <div class="checkgrid">
-      <article class="checkgroup"><h3>Ambiente visual</h3><ul class="checklist">
-        <li>☐ Desktop baseado no KDE Plasma</li>
-        <li>☐ Elementos visuais e de interação do Budgie</li>
-        <li>☐ Barra superior inspirada no Omarchy</li>
-      </ul></article>
-      <article class="checkgroup"><h3>Gerenciador de arquivos nativo</h3><ul class="checklist">
-        <li>☐ Arquivos locais e operações básicas</li>
-        <li>☐ SSH/SFTP/SCP, SMB e FTP</li>
-        <li>☐ HTTP/HTTPS para abrir e transferir arquivos</li>
-        <li>☐ Depender da rede da fase 1 e das credenciais/permissões da fase 3</li>
-      </ul></article>
-    </div>
-    <p>Escopo e critérios: <a href="../reports/fase-6-interface-plataformas.md">relatório da fase 6</a>.</p>
-  </section>
-  <section class="panel"><h2>Estado validado</h2><ul class="list"><li>21 testes host passaram localmente e no NAS; boots BIOS/UEFI NAS/KVM passaram sem disco de escrita.</li><li>QEMU local e NAS/KVM validaram Hermione v2, FLUSH CACHE, remontagem e checksum antes e depois de erro AHCI com COMRESET.</li><li>O usuário confirmou que o teste manual v1 e o teste local v2 passaram. A saída serial do v2 não foi gravada em arquivo.</li><li>Kernel normal ainda não monta volumes; escrita de filesystem segue restrita à build storage-test. Journal geral, cifra e montagem de boot continuam pendentes.</li><li>O teste host simula setor de diretório parcialmente gravado e comprova fallback para a geração anterior; corte de energia real continua pendente.</li></ul></section>
-  <section class="panel"><h2>Idioma e compatibilidade</h2><p>Mensagens próprias do núcleo e do sistema são pt_BR. O terminal inicial aceita comandos ASCII sem acentos para funcionar em consoles seriais antigos. Pacotes e execução de aplicações são avaliados separadamente; Windows Mode usa VM Windows licenciada.</p></section>
-  <footer>Roadmap e critérios: <a href="../docs/ROADMAP.md">docs/ROADMAP.md</a></footer>
+  <footer>Documentação: <a href="../docs/ROADMAP.md">roadmap</a> · <a href="../docs/ARQUITETURA-KERNEL.md">arquitetura</a> · <a href="../docs/USERLAND.md">layout lógico da userland</a> · <a href="../reports/logs/painel-validacao.md">índice de logs</a>.</footer>
 </main>
 </body>
 </html>

@@ -1,0 +1,165 @@
+warning: constant `COM1` is never used
+  --> src/main.rs:14:7
+   |
+14 | const COM1: u16 = 0x3f8;
+   |       ^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: constant `INPUT_LIMIT` is never used
+  --> src/main.rs:15:7
+   |
+15 | const INPUT_LIMIT: usize = 128;
+   |       ^^^^^^^^^^^
+
+warning: constant `SERIAL_POLL_LIMIT` is never used
+  --> src/main.rs:16:7
+   |
+16 | const SERIAL_POLL_LIMIT: usize = 1_000_000;
+   |       ^^^^^^^^^^^^^^^^^
+
+warning: constant `ERROR_LOG_CAPACITY` is never used
+  --> src/main.rs:17:7
+   |
+17 | const ERROR_LOG_CAPACITY: usize = 16;
+   |       ^^^^^^^^^^^^^^^^^^
+
+warning: static `ERROR_LOG` is never used
+  --> src/main.rs:19:12
+   |
+19 | static mut ERROR_LOG: ErrorLog<ERROR_LOG_CAPACITY> = ErrorLog::new();
+   |            ^^^^^^^^^
+
+warning: static `HHDM_OFFSET` is never used
+  --> src/main.rs:20:12
+   |
+20 | static mut HHDM_OFFSET: u64 = 0;
+   |            ^^^^^^^^^^^
+
+warning: static `KERNEL_PHYSICAL_BASE` is never used
+  --> src/main.rs:21:12
+   |
+21 | static mut KERNEL_PHYSICAL_BASE: u64 = 0;
+   |            ^^^^^^^^^^^^^^^^^^^^
+
+warning: static `KERNEL_VIRTUAL_BASE` is never used
+  --> src/main.rs:22:12
+   |
+22 | static mut KERNEL_VIRTUAL_BASE: u64 = 0;
+   |            ^^^^^^^^^^^^^^^^^^^
+
+warning: function `shell` is never used
+   --> src/main.rs:152:4
+    |
+152 | fn shell() -> ! {
+    |    ^^^^^
+
+warning: function `startup_screen` is never used
+   --> src/main.rs:253:4
+    |
+253 | fn startup_screen() {
+    |    ^^^^^^^^^^^^^^
+
+warning: function `serial_init` is never used
+   --> src/main.rs:262:4
+    |
+262 | fn serial_init() {
+    |    ^^^^^^^^^^^
+
+warning: function `serial_write` is never used
+   --> src/main.rs:274:4
+    |
+274 | fn serial_write(byte: u8) -> bool {
+    |    ^^^^^^^^^^^^
+
+warning: function `serial_read` is never used
+   --> src/main.rs:292:4
+    |
+292 | fn serial_read() -> Result<u8, KernelError> {
+    |    ^^^^^^^^^^^
+
+warning: function `write` is never used
+   --> src/main.rs:307:4
+    |
+307 | fn write(text: &str) {
+    |    ^^^^^
+
+warning: function `record_error` is never used
+   --> src/main.rs:315:4
+    |
+315 | fn record_error(error: KernelError) {
+    |    ^^^^^^^^^^^^
+
+warning: function `report_errors` is never used
+   --> src/main.rs:326:4
+    |
+326 | fn report_errors() {
+    |    ^^^^^^^^^^^^^
+
+warning: function `write_u32` is never used
+   --> src/main.rs:385:4
+    |
+385 | fn write_u32(mut number: u32) {
+    |    ^^^^^^^^^
+
+warning: function `out` is never used
+   --> src/main.rs:532:11
+    |
+532 | unsafe fn out(port: u16, value: u8) {
+    |           ^^^
+
+warning: function `input` is never used
+   --> src/main.rs:538:11
+    |
+538 | unsafe fn input(port: u16) -> u8 {
+    |           ^^^^^
+
+warning: `carlio-os` (bin "carlio-kernel" test) generated 19 warnings
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.01s
+     Running unittests src/lib.rs (target/debug/build/carlio-os/6e43105b026db393/out/carlio_os-6e43105b026db393)
+
+running 27 tests
+test errors::tests::keeps_recent_errors_and_counts_overwrites ... ok
+test hermione::tests::flushes_new_data_before_publishing_directory ... ok
+test hermione::tests::format_write_read_and_mount_persist ... ok
+test hermione::tests::mount_rejects_corrupt_superblock_and_directory ... ok
+test hermione::tests::mount_rejects_invalid_duplicate_names_and_oversized_extents ... ok
+test hermione::tests::rejects_bad_names_missing_files_and_small_buffers ... ok
+test hermione::tests::detects_data_corruption_and_frees_deleted_extent ... ok
+test hermione::tests::failed_replace_keeps_old_file_visible_after_mount ... ok
+test hermione::tests::torn_directory_commit_falls_back_to_previous_generation ... ok
+test memory::tests::frame_allocator_allocates_and_reuses_aligned_frames ... ok
+test memory::tests::frame_allocator_rejects_invalid_and_double_frees ... ok
+test memory::tests::hhdm_translation_rejects_overflow ... ok
+test memory::tests::translates_kernel_addresses_with_checked_arithmetic ... ok
+test pci::tests::classifies_target_driver_families ... ok
+test pci::tests::identifies_known_ahci_ids_and_rejects_other_modes ... ok
+test pci::tests::identifies_server_and_development_ethernet_without_claiming_driver_support ... ok
+test storage::tests::rejects_out_of_range_and_missing_snapshots ... ok
+test storage::tests::scrub_detects_corruption ... ok
+test storage::tests::writes_are_copy_on_write_and_snapshot_restores_old_root ... ok
+test tests::herm_fs_cli_points_to_hermione_module ... ok
+test tests::rejects_unknown_and_empty_commands ... ok
+test userland::apps::tests::catalog_checks_vfs_execute_permission_before_dispatch ... ok
+test tests::guest_cannot_change_system_state ... ok
+test vfs::tests::creates_modular_system_layout_and_checks_owner_group_other_bits ... ok
+test tests::parses_supported_commands_and_whitespace ... ok
+test vfs::tests::rejects_duplicate_names_and_non_owner_mode_changes ... ok
+test userland::login::tests::creates_session_only_after_verifier_accepts_credentials ... ok
+
+test result: ok. 27 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src/main.rs (target/debug/build/carlio-os/30eb4cdd1ee9cb66/out/carlio_kernel-30eb4cdd1ee9cb66)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/herm-fs.rs (target/debug/build/carlio-os/f18568be1c7475fc/out/herm_fs-f18568be1c7475fc)
+
+running 2 tests
+test tests::help_names_the_tool_and_filesystem ... ok
+test tests::status_does_not_claim_a_mounted_volume ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

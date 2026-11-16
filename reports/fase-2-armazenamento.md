@@ -1,6 +1,24 @@
 # Relatório — Fase 2: armazenamento protegido e Hermione
 
-**Estado:** formato Hermione v2, camada de bloco e recuperação AHCI QEMU em desenvolvimento ativo. Duas cópias de diretório, flush ordenado, recuperação de versão após escrita interrompida, scrub e teste pós-COMRESET passaram em QEMU/KVM com mídia descartável. O kernel normal ainda não monta o volume no boot; o formato não está pronto para dados reais.
+**Estado:** Hermione v2 é um protótipo de armazenamento em desenvolvimento ativo. Duas cópias de diretório, flush ordenado e recuperação simulada de gravação interrompida passaram em host; o fluxo de formato/montagem/escrita/leitura e AHCI passou em QEMU local com mídia descartável. Isso ainda não é journal geral nem teste real de perda de energia. O kernel normal não monta o volume; não usar com dados reais.
+
+## Atualização — validação de diretório
+
+- `mount` agora rejeita nomes vazios ou fora do conjunto ASCII permitido, bytes
+  não nulos após o terminador, nomes duplicados e extents maiores que o número
+  de setores exigido pelo tamanho registrado. Isso limita metadados malformados
+  mesmo quando o CRC estrutural do diretório confere.
+- Testes host incluem diretório duplicado, nome inválido e extent superdimensionado.
+- `cargo test --all-targets`: validação mais recente teve 30 testes aprovados
+  (28 biblioteca e 2 CLI). Saída:
+  [`logs/fase-2-recovery-host-20261115-131800.txt`](logs/fase-2-recovery-host-20261115-131800.txt).
+- O ciclo local host/build/boot BIOS+UEFI e o teste Hermione/AHCI em QEMU TCG
+  passaram. Logs: [`logs/fase-2-recovery-qemu-bios-20261115-131800.log`](logs/fase-2-recovery-qemu-bios-20261115-131800.log),
+  [`logs/fase-2-recovery-qemu-uefi-20261115-131800.log`](logs/fase-2-recovery-qemu-uefi-20261115-131800.log) e
+  [`logs/fase-2-recovery-storage-qemu-local.log`](logs/fase-2-recovery-storage-qemu-local.log).
+- `scripts/test-nas.sh` foi tentado; SSH retornou `No route to host` para
+  `192.168.3.143`. Conforme orientação do usuário, a verificação NAS fica
+  pendente enquanto a conexão estiver indisponível.
 
 ## Escopo
 
@@ -181,10 +199,11 @@ capacidade fixa; este protótipo não deve guardar dados reais.
 - [x] Executar `fs-teste` manualmente na VM gráfica v1 com disco de 20 GiB; o
   usuário confirmou aprovação.
 - [x] Executar o teste local Hermione v2; usuário confirmou que passou.
-- [ ] Capturar e anexar a saída serial do teste v2. A VM usa `-serial vc`, que
-  mostra a serial no console virtual sem gravá-la em arquivo.
+- [x] Capturar e anexar a saída serial do teste v2 local em QEMU:
+  [`logs/fase-2-recovery-storage-qemu-local.log`](logs/fase-2-recovery-storage-qemu-local.log).
 - [ ] Cobrir timeout e remoção do dispositivo durante I/O em QEMU.
-- [ ] Implementar journal geral e teste de corte de energia durante cada etapa.
+- [ ] Implementar journal geral e teste de corte de energia durante cada etapa;
+  a injeção host de falhas de escrita/flush não substitui corte de energia QEMU.
 - [ ] Integrar montagem somente após estabelecer descoberta/seleção segura do
   dispositivo de boot e separação entre mídia do sistema e mídia de dados.
 - [ ] Implementar árvore de diretórios, alocação fragmentada, permissões e
@@ -203,3 +222,18 @@ capacidade fixa; este protótipo não deve guardar dados reais.
 - Resumo NAS v2: [`logs/fase-2-nas-20261114-064105.txt`](logs/fase-2-nas-20261114-064105.txt)
 - Confirmação do teste manual NAS:
   [`logs/fase-2-filesystem-nas-manual.txt`](logs/fase-2-filesystem-nas-manual.txt)
+
+## Atualização — adaptador de bloco e integração de mounts (2026-11-16)
+
+`AhciBlockDevice` agora implementa o contrato `BlockDevice`, serializa comandos
+de leitura/escrita/flush e rejeita LBAs fora da capacidade IDENTIFY. O teste
+Hermione em `storage-test` passou a usar esse adaptador compartilhado. Em mídia
+raw descartável, host (135 testes), QEMU TCG local e QEMU/KVM NAS passaram; os
+testes dedicados confirmaram IDENTIFY, leitura/escrita, erro ATA, remontagem e
+scrub. Isso valida apenas QEMU/KVM: não houve escrita nem teste em disco físico.
+
+Ainda não foi implementado parser GPT/MBR, seleção de partição, montagem no boot,
+scrub com cursor persistente nem cifra/KDF/gestão persistente de chaves. Esses
+gates continuam pendentes antes de qualquer teste de escrita em hardware real.
+Ver [relatório de mounts/interoperabilidade](fase-4-mounts-interoperabilidade.md)
+e os logs `mounts-ahci-final-*` em `logs/`.

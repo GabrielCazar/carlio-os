@@ -1,0 +1,120 @@
+    Checking carlio-os v0.1.0 (/home/gabriel/Work/carlio-os)
+error: constant `COM1` is never used
+  --> src/main.rs:31:7
+   |
+31 | const COM1: u16 = 0x3f8;
+   |       ^^^^
+   |
+   = note: `-D dead-code` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[expect(dead_code)]` or `#[allow(dead_code)]`
+
+error: constant `INPUT_LIMIT` is never used
+  --> src/main.rs:32:7
+   |
+32 | const INPUT_LIMIT: usize = 128;
+   |       ^^^^^^^^^^^
+
+error: constant `SERIAL_POLL_LIMIT` is never used
+  --> src/main.rs:33:7
+   |
+33 | const SERIAL_POLL_LIMIT: usize = 1_000_000;
+   |       ^^^^^^^^^^^^^^^^^
+
+error: constant `ERROR_LOG_CAPACITY` is never used
+  --> src/main.rs:34:7
+   |
+34 | const ERROR_LOG_CAPACITY: usize = 16;
+   |       ^^^^^^^^^^^^^^^^^^
+
+error: static `ERROR_LOG` is never used
+  --> src/main.rs:40:12
+   |
+40 | static mut ERROR_LOG: ErrorLog<ERROR_LOG_CAPACITY> = ErrorLog::new();
+   |            ^^^^^^^^^
+
+error: static `HHDM_OFFSET` is never used
+  --> src/main.rs:41:12
+   |
+41 | static mut HHDM_OFFSET: u64 = 0;
+   |            ^^^^^^^^^^^
+
+error: static `KERNEL_PHYSICAL_BASE` is never used
+  --> src/main.rs:42:12
+   |
+42 | static mut KERNEL_PHYSICAL_BASE: u64 = 0;
+   |            ^^^^^^^^^^^^^^^^^^^^
+
+error: static `KERNEL_VIRTUAL_BASE` is never used
+  --> src/main.rs:43:12
+   |
+43 | static mut KERNEL_VIRTUAL_BASE: u64 = 0;
+   |            ^^^^^^^^^^^^^^^^^^^
+
+error: function `shell` is never used
+   --> src/main.rs:906:4
+    |
+906 | fn shell() -> ! {
+    |    ^^^^^
+
+error: function `startup_screen` is never used
+    --> src/main.rs:1011:4
+     |
+1011 | fn startup_screen() {
+     |    ^^^^^^^^^^^^^^
+
+error: function `serial_init` is never used
+    --> src/main.rs:1020:4
+     |
+1020 | fn serial_init() {
+     |    ^^^^^^^^^^^
+
+error: function `serial_write` is never used
+    --> src/main.rs:1032:4
+     |
+1032 | fn serial_write(byte: u8) -> bool {
+     |    ^^^^^^^^^^^^
+
+error: function `serial_read` is never used
+    --> src/main.rs:1050:4
+     |
+1050 | fn serial_read() -> Result<u8, KernelError> {
+     |    ^^^^^^^^^^^
+
+error: function `write` is never used
+    --> src/main.rs:1065:4
+     |
+1065 | fn write(text: &str) {
+     |    ^^^^^
+
+error: function `record_error` is never used
+    --> src/main.rs:2375:4
+     |
+2375 | fn record_error(error: KernelError) {
+     |    ^^^^^^^^^^^^
+
+error: function `report_errors` is never used
+    --> src/main.rs:2386:4
+     |
+2386 | fn report_errors() {
+     |    ^^^^^^^^^^^^^
+
+error: function `write_u32` is never used
+    --> src/main.rs:2786:4
+     |
+2786 | fn write_u32(mut number: u32) {
+     |    ^^^^^^^^^
+
+error: function `out` is never used
+    --> src/main.rs:3104:11
+     |
+3104 | unsafe fn out(port: u16, value: u8) {
+     |           ^^^
+
+error: function `input` is never used
+    --> src/main.rs:3110:11
+     |
+3110 | unsafe fn input(port: u16) -> u8 {
+     |           ^^^^^
+
+error: could not compile `carlio-os` (bin "carlio-kernel") due to 19 previous errors
+warning: build failed, waiting for other jobs to finish...

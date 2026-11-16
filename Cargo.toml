@@ -7,6 +7,7 @@ publish = false
 [features]
 crash-test = []
 storage-test = []
+graphics = ["dep:embedded-graphics"]
 
 [lib]
 path = "src/lib.rs"
@@ -17,6 +18,10 @@ path = "src/main.rs"
 test = false
 bench = false
 
+[[bin]]
+name = "carlio-logs"
+path = "src/bin/carlio-logs.rs"
+
 [profile.dev]
 panic = "abort"
 
@@ -25,4 +30,7 @@ panic = "abort"
 lto = true
 codegen-units = 1
 opt-level = "s"
+
+[dependencies]
+embedded-graphics = { version = "0.8.1", default-features = false, optional = true }
 

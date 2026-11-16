@@ -1,0 +1,37 @@
+[2J[H+----------------------------------------------------+
+| carlIO OS | Criado por João G.R.Santos             |
+| Sistema operacional experimental x86_64            |
++----------------------------------------------------+
+Núcleo Rust · inicialização serial
+
+IDT: exceções 0-31 registradas; IRQs externos permanecem desativados.
+Aviso: terminal de diagnóstico em ring 0; não é uma fronteira de segurança.
+Mapa de memória Limine: regiões usáveis=3, RAM usável MiB=510; HHDM e bases físico/virtual do kernel disponíveis.
+Inventário PCI (somente leitura):
+PCI 00:01.0 1234:1111 vídeo
+PCI 00:02.0 8086:10d3 rede (controlador não suportado)
+PCI 00:1f.2 8086:2922 SATA/AHCI (QEMU: reconhecido; driver AHCI experimental)
+AHCI QEMU: dispositivo identificado, setores=32768. Escrita desativada fora do teste dedicado.
+Controladores relevantes encontrados: 3
+Watchdog PIT ativo: prazo de 5 s sem progresso.
+Digite 'ajuda' para ver os comandos.
+
+carlio> fs-teste
+Formatando volume Hermione no disco QEMU descartavel...
+Hermione: formatando superbloco/diretorio...
+Hermione: gravando arquivo...
+Hermione: remontando volume...
+Hermione: lendo e validando checksum...
+Hermione: formatacao, montagem, escrita e leitura persistente passaram.
+carlio> diskteste
+Teste AHCI em disco QEMU descartável...
+AHCI: IDENTIFY, WRITE, READ e erro do controlador verificados.
+carlio> fs-teste
+Formatando volume Hermione no disco QEMU descartavel...
+Hermione: formatando superbloco/diretorio...
+Hermione: gravando arquivo...
+Hermione: remontando volume...
+Hermione: lendo e validando checksum...
+Hermione: formatacao, montagem, escrita e leitura persistente passaram.
+ca
+--- mensagens do QEMU ---
