@@ -809,21 +809,49 @@ no NAS, todos com 4 CPUs, 18 shootdowns e reaper do teste confirmados. Logs:
 [BIOS NAS](logs/fase-smp-processos-ciclo-nas-20261115-193105-qemu-kvm-bios.log) e
 [UEFI NAS](logs/fase-smp-processos-ciclo-nas-20261115-193105-qemu-kvm-uefi.log).
 
-## Mapa VMA inicial para `mmap`, `munmap` e `brk` (2026-11-16)
+### Correção — teste de overflow ELF e revalidação VMA/SMP — 16/11/2026
 
-Foi adicionada em `src/vma.rs` uma tabela ordenada de capacidade fixa para
-reservas de usuário: `mmap` alinhado com first-fit e reutilização de buracos,
-`munmap` com divisão de regiões, política W^X e controle de colisão/crescimento
-de heap por `brk`. Quatro testes host cobrem alinhamento, reutilização, split,
-overflow, proteção inválida e colisão entre heap e mapeamento. A tabela ainda é
-metadado: não aloca frames nem publica mapeamentos nas page tables; syscalls do
-runtime ainda não possuem esse backend. Portanto `mmap/brk` permanecem
-inoperantes via syscall até integrar VMA, ownership físico e address space do
-processo com rollback em falhas.
+`ProcessVm` liga agora a tabela VMA às folhas owned do `OwnedAddressSpace` e às
+page tables: `mmap` anônimo privado aloca/mapa páginas com permissões validadas,
+e `munmap` remove os mapeamentos, ownership e regiões VMA com rollback em
+falhas. Testes host cobrem flags inválidas, overflow, alinhamento, buracos,
+split, colisão, ownership e unmap. O probe CPL3 positivo exercita mmap, escrita
+e munmap; não há ainda probe CPL3 dedicado de `brk`, nem mmap de arquivo ou
+compartilhado.
 
-Validação local completa da ISO em BIOS/UEFI: [host](logs/vma-foundation-20261116-host-20261116-122153.txt),
-[BIOS](logs/vma-foundation-20261116-qemu-bios-20261116-122153.log),
-[UEFI](logs/vma-foundation-20261116-qemu-uefi-20261116-122153.log). A validação
-NAS executou 139 testes da biblioteca e os smokes BIOS/UEFI em KVM: [resumo](logs/kernel-context-switch-nas-20261116-122218.txt),
-[BIOS](logs/kernel-context-switch-nas-20261116-122218-qemu-kvm-bios.log) e
-[UEFI](logs/kernel-context-switch-nas-20261116-122218-qemu-kvm-uefi.log).
+Sintoma: o parser convertia o offset de `DT_NEEDED` de 64 para 32 bits com
+validação, mas faltava regressão negativa explícita no gate host. Causa: não
+havia fixture dinâmica com offset acima de `u32::MAX`. Correção: conversão
+`try_into()` e teste que exige rejeição do valor `u32::MAX + 1` em `src/elf.rs`.
+
+Comandos executados: `CARLIO_TEST_PHASE=fase2-final-20261116
+CARLIO_TEST_QEMU_MEMORY=32G scripts/test-local-iso.sh`,
+`cargo clippy --all-targets -- -D warnings`, e
+`CARLIO_TEST_PHASE=fase2-final-20261116 CARLIO_TEST_QEMU_MEMORY=5G
+CARLIO_TEST_STORAGE=1 scripts/test-nas.sh`. Resultado: `cargo fmt --check`,
+155 testes da biblioteca, 1 de `carlio-logs`, 4 de `herm-fs` e boots BIOS/UEFI
+TCG passaram; Clippy também passou. NAS/KVM passou os mesmos 160 testes host,
+boots BIOS/UEFI e AHCI/Hermione descartável. A ISO local de 32 GiB validou frame
+acima de 4 GiB e 20 ACKs xAPIC. O teste negativo ELF recusa o offset
+`DT_NEEDED = u32::MAX + 1` via conversão `try_into()`.
+
+Evidências: [host + fmt](logs/fase2-final-20261116-host-20261116-192630.txt),
+[Clippy](logs/fase2-final-clippy-20261116.log),
+[BIOS local 32 GiB](logs/fase2-final-20261116-qemu-bios-20261116-192630.log),
+[UEFI local 32 GiB](logs/fase2-final-20261116-qemu-uefi-20261116-192630.log),
+[resumo NAS/KVM 5 GiB](logs/fase2-final-20261116-nas-20261116-192713.txt),
+[BIOS NAS](logs/fase2-final-20261116-nas-20261116-192713-qemu-kvm-bios.log) e
+[UEFI NAS](logs/fase2-final-20261116-nas-20261116-192713-qemu-kvm-uefi.log).
+
+**Estado permanece aberto.** A serial confirma scheduler CPL3 e CR3 apenas no
+BSP; os APs fazem polling/despacho de tarefas curtas e não há execução CPL3
+simultânea concorrente demonstrada. A tabela/pool permanece de capacidade fixa,
+o bundle completo de recursos ainda usa fixtures externas ao `Process`, e não
+há stress concorrente real de VM/allocator. O gate SMP não pode ser substituído
+pelos 20 ACKs de TLB.
+
+Próximo gate: prova diagnóstica com tarefas CPL3 em pelo menos dois APs,
+contadores por CPU, preempção/saída/fault e reaper com confirmação de que nenhuma
+CPU ainda usa a stack/CR3 antes do cleanup. Depois, stress concorrente de VM e
+allocator. Anexar resultados aprovados e falhos em `reports/logs/fase2-smp-*`;
+até isso passar, manter o estado aberto.

@@ -59,21 +59,22 @@ alcança exatamente 2 TiB.
 Esta arquitetura é o contrato alvo. O allocator físico bitmap importa regiões
 `usable` do mapa Limine até 32 GiB. O `PageTableManager` edita a árvore de
 quatro níveis e valida map/unmap. `AddressSpace` cria um PML4, compartilha
-entradas do half kernel e mantém folhas user rastreadas; o smoke troca para o
-CR3 próprio em CPL0 e retorna com teardown. Ownership dos frames mapeados por
-processo já existe, e a prova de boot confina um #PF user, encerra a tarefa e
-recolhe seus recursos. Política genérica de faults, shootdown TLB e sincronização
-SMP ainda não estão resolvidos.
+entradas do half kernel e mantém folhas user rastreadas. `ProcessVm` integra
+VMA, folhas owned e page tables para `mmap/munmap` anônimo privado, com rollback;
+o probe CPL3 aloca, escreve e libera uma página. Ownership dos frames mapeados
+por processo já existe, e a prova confina um #PF user, encerra a tarefa e
+recolhe seus recursos. `SmpPageTableManager` serializa map/unmap e o backend
+xAPIC aguarda ACKs remotos; stress concorrente de VM/allocator e política geral
+de faults continuam pendentes.
 O projeto exige kernel multithread em SMP. Limine agora inicia APs em stacks
-separadas e cada uma grava seu estado inicial atômico. Cada AP pode processar
-uma tarefa limitada de prova via mailbox e depois volta ao polling. Há uma fila
-global de processos em memória fixa, `CpuContext` validado e pool com ownership
-de pilhas privilegiadas. A prova de boot cria duas tarefas CPL3 com CR3s
-distintos; IRQ0 salva e restaura frames e atualiza CR3/RSP0, e o reaper libera
-pilhas e espaços encerrados. A prova é temporária, de uma CPU e de capacidade
-fixa (16 processos/pilhas); não é ainda runtime para serviços persistentes nem
-base dimensionada para servidor. Spinlocks não controlam preempção e o scheduler
-não está integrado aos APs.
+separadas e cada uma grava seu estado inicial atômico. Cada AP processa tarefas
+limitadas via mailbox; após a prova inicial, timer LAPIC e despacho SMP podem
+escalonar processos por CPU. Há filas locais e roubo em tabela fixa de 64
+processos/CPUs, `CpuContext` validado, pool com ownership de pilhas privilegiadas
+e `IrqSpinLock` no scheduler, pool e heap. A prova CPL3, porém, continua no BSP:
+não há carga CPL3 concorrente nos APs comprovada. O reaper libera pilhas e
+espaços da fixture, mas o bundle completo de recursos ainda não pertence ao
+`Process`; não é runtime persistente nem base dimensionada dinamicamente.
 
 Para cargas grandes de VM e arquivos, o desenho alvo precisa provisionar
 processos e memória conforme recursos disponíveis, aplicar limites e pressão de
@@ -91,14 +92,14 @@ controladores físicos, interface de bloco genérica, demais drivers e isolament
 A implementação será migrada em etapas; cada recurso só muda para “suportado”
 após testes positivos, negativos e de falha no QEMU local e no NAS.
 
-O loader ELF64 agora percorre o caminho de criação e execução do probe CPL3:
-segmento PT_LOAD, permissões finais, stack, CR3/RSP0, preempção e SYS_EXIT.
-A origem continua uma fixture embutida, sem integração ao VFS nem ABI para
-argumentos/ambiente. A tabela do scheduler e o pool de pilhas continuam com
-capacidade fixa configurada em compilação. Um #PF user é isolado na prova e
-leva ao encerramento/reaping daquela tarefa. O heap first-fit valida a cadeia
-da arena e o payload exato; seu serviço global de bootstrap usa `IrqSpinLock`,
-mas ainda tem arena estática de 64 KiB e não possui expansão por frames.
+O loader ELF64 percorre o caminho de criação e execução do probe CPL3: segmento
+PT_LOAD, permissões finais, stack, CR3/RSP0, preempção e SYS_EXIT. A prova instala
+a fixture ELF pelo VFS e monta `argc`/`argv`/`envp`, mas não há `execve` geral.
+A tabela do scheduler e o pool de pilhas continuam com capacidade fixa. Um #PF
+user é isolado na prova e leva ao encerramento/reaping daquela tarefa. O heap
+first-fit valida a cadeia da arena e o payload exato; o serviço global usa
+`IrqSpinLock` e expande arenas por frames, com stress concorrente prolongado
+ainda pendente.
 
 O comando `logs` formata o buffer volátil em Markdown na serial. Persistência
 dos logs integra a reserva planejada de 16 GiB no disco de sistema (meta inicial

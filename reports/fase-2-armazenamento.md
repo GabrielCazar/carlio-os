@@ -237,3 +237,40 @@ scrub com cursor persistente nem cifra/KDF/gestão persistente de chaves. Esses
 gates continuam pendentes antes de qualquer teste de escrita em hardware real.
 Ver [relatório de mounts/interoperabilidade](fase-4-mounts-interoperabilidade.md)
 e os logs `mounts-ahci-final-*` em `logs/`.
+
+### Correção — revalidar armazenamento em mídia descartável — 16/11/2026
+
+Sintoma: os resultados anteriores não eram da última árvore com o caso negativo
+de overflow ELF. Causa: a suíte de conversões recebeu um caso novo e exigiu
+rebuild. Repeti o smoke do bloco em ISO `storage-test` atualizada; a escrita
+permaneceu restrita à imagem raw temporária QEMU.
+
+Comando local: `CARLIO_STORAGE_TEST=1 scripts/build-iso.sh` seguido de
+`TMPDIR=/tmp/carlioos-phase2-final-storage-20261116 python3
+scripts/test-ahci-qemu.py --iso build/carlio-os.iso --timeout 60 --log
+reports/logs/fase2-final-storage-qemu-local-20261116.log`. A imagem raw
+temporária de 16 MiB passou IDENTIFY, Hermione formatar/gravar/remontar/ler/scrub,
+WRITE/READ e erro ATA induzido. O temporário ficou em `/tmp/carlioos-*` e foi
+removido pelo harness. Build: [ISO `storage-test`](logs/fase2-final-storage-build-20261116.log).
+
+No NAS, `CARLIO_TEST_PHASE=fase2-final-20261116
+CARLIO_TEST_QEMU_MEMORY=5G CARLIO_TEST_STORAGE=1 scripts/test-nas.sh` passou 160
+testes host, BIOS/UEFI KVM e o mesmo teste Hermione/AHCI em imagem criada sob
+`/tmp/carlioos-test-*/tmp`; o diretório de teste foi removido pelo cleanup do
+script. Logs: [QEMU local](logs/fase2-final-storage-qemu-local-20261116.log),
+[resumo NAS](logs/fase2-final-20261116-nas-20261116-192713.txt),
+[BIOS NAS](logs/fase2-final-20261116-nas-20261116-192713-qemu-kvm-bios.log),
+[UEFI NAS](logs/fase2-final-20261116-nas-20261116-192713-qemu-kvm-uefi.log) e
+[Hermione/AHCI NAS](logs/fase2-final-20261116-nas-20261116-192713-filesystem-qemu-kvm.log).
+
+Isto valida o caminho experimental em QEMU, não segurança para dados reais nem
+um journal geral. Seguem abertos: corte de energia durante commit em QEMU,
+timeout/remoção durante I/O, descoberta/seleção segura de partição e montagem
+no boot, operações concorrentes e criptografia/KDF. Não houve acesso a discos
+físicos.
+
+Próximo gate: falha de energia QEMU injetada entre cada write/flush e recovery
+após reinicialização; depois timeout e remoção virtual em I/O sob `storage-test`.
+Registrar em `reports/logs/fase2-storage-powercut-*` e
+`reports/logs/fase2-storage-timeout-*`; manter o escopo só em imagens descartáveis
+sob `/tmp` e deixar “journal geral” sem alegação até o corte QEMU passar.

@@ -139,11 +139,14 @@ concorrente nos APs e estruturas dinâmicas ainda não foram comprovadas. O prob
 agora carrega ELF ET_EXEC através do VFS de boot e monta `argc`/`argv`/`envp`;
 esse VFS permanece inline/de teste e não oferece `execve` geral.
 
-Revalidação (2026-11-16): 129 testes host local/NAS e boots BIOS/UEFI
-QEMU/KVM passaram após a correção da espera PIT em recovery AHCI. A fase segue
-aberta pelos gates de scheduler CPL3 concorrente nos APs, recursos de processo
-com ownership total e memória sob concorrência real.
-Evidências em [relatório da fase 2](../reports/fase-2-memoria-execucao.md).
+Revalidação (2026-11-16): `cargo fmt --check`, Clippy com `-D warnings`, 160
+testes host, QEMU TCG BIOS/UEFI com 32 GiB e NAS/KVM BIOS/UEFI com 5 GiB
+passaram; os boots verificaram frames acima de 4 GiB e 20 shootdowns com ACK.
+`mmap/munmap` CPL3 passou integrado à VMA/ownership/page tables, e o teste
+negativo ELF rejeita overflow `u64 → u32`. A fase segue aberta: falta stress
+CPL3 concorrente nos APs, ownership completo do bundle de processo e stress
+concorrente real de VM/allocator; `brk` não tem probe CPL3 dedicado. Evidências e limites no
+[relatório da fase 2](../reports/fase-2-memoria-execucao.md).
 
 Meta de escala para servidor: capacidade de processos configurada pela memória
 disponível, filas por CPU, backpressure, contabilização de memória por serviço,
@@ -308,14 +311,26 @@ não implementa `O_CREAT` e não valida leitura positiva da serial em CPL3.
 Hermione/`herm-fs` já tem contrato de bloco, backend AHCI experimental em QEMU,
 volume persistente v3, journal redo de metadados, duas cópias de dados e scrub
 com reparo quando existe uma cópia válida. O host injeta cortes em cada escrita
-e `flush`; QEMU local e NAS/KVM validam formatar, gravar, montar e ler em imagem
-descartável. Faltam validar controladores físicos, timeout/remoção e montagem
-normal.
+e `flush`; em 16/11/2026, QEMU local e NAS/KVM repetiram IDENTIFY, WRITE/READ,
+erro ATA, formatar, remontar e scrub em imagens descartáveis. Isso não simula
+corte de energia QEMU. Faltam o gate explícito de corte de energia durante
+commit, timeout/remoção durante I/O, controladores físicos e montagem normal.
+Logs: [QEMU local](../reports/logs/fase2-storage-qemu-local-20261116.log),
+[NAS/KVM](../reports/logs/fase2-storage-20261116-nas-20261116-191947-filesystem-qemu-kvm.log).
 
 Atualização de capacidade: o formato e `herm-fs` agora aceitam exatamente
 `2^32` setores (2 TiB); teste com imagem esparsa grava/lê o último LBA e rejeita
 um setor além. Isso fecha apenas a faixa endereçável no backend de imagem; não
 prova AHCI físico nem interoperabilidade.
+
+**Revalidação em imagem descartável (2026-11-16):** `storage-test` local TCG e
+NAS/KVM passou IDENTIFY, WRITE/READ, erro ATA, Hermione formatar/remontar/scrub
+em raw temporário de 16 MiB. Ver logs [local](../reports/logs/fase2-final-storage-qemu-local-20261116.log),
+[NAS/KVM](../reports/logs/fase2-final-20261116-nas-20261116-192713-filesystem-qemu-kvm.log)
+e [build](../reports/logs/fase2-final-storage-build-20261116.log). Permanecem abertos
+corte de energia QEMU, timeout/remoção durante I/O, montagem normal e
+controladores físicos; portanto nenhum journal geral nem confiabilidade para
+dados reais é afirmado.
 
 **Requisito de capacidade:** o instalador deverá reservar 16 GiB do disco de
 sistema para o espaço do kernel. Planejamento inicial: área de logs persistentes
