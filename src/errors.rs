@@ -73,6 +73,10 @@ impl<const N: usize> ErrorLog<N> {
         self.len
     }
 
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
     /// Retorna erros da entrada mais recente para trás.
     pub fn recent(&self, index: usize) -> Option<KernelError> {
         if index >= self.len || N == 0 {

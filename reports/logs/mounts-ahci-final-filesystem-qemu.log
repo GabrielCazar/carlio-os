@@ -1,0 +1,55 @@
+[2J[H+----------------------------------------------------+
+| carlIO OS | Criado por João G.R.Santos             |
+| Sistema operacional experimental x86_64            |
++----------------------------------------------------+
+Núcleo Rust · inicialização serial
+
+Framebuffer Limine: RGB ativo; renderização de pixels validada.
+IDT: exceções 0-31 registradas; IRQs externos permanecem desativados.
+Ring 3: GDT, TSS, RSP0 e seletores de usuário configurados; CPL continua 0.
+Aviso: terminal de diagnóstico em ring 0; não é uma fronteira de segurança.
+Mapa de memória Limine: regiões usáveis=3, RAM usável MiB=503; HHDM e bases físico/virtual do kernel disponíveis.
+Allocator físico: frames livres até 32 GiB=128965, sem RAM acima de 4 GiB; teste usa frame baixo; alocação, escrita, leitura e liberação passaram.
+LAPIC xAPIC ativo no BSP; vetor de shootdown remoto 0xF1 instalado.
+SMP Limine: CPUs detectadas=1, APs iniciadas=0, aguardadas=0; APs aguardam despacho de tarefa, scheduler ainda desativado.
+SMP trabalho: CPUs AP=0, tarefas concluídas=0, resultados válidos=0; despacho de prova concluído.
+Heap kernel: regiões dinâmicas, alinhamento, escrita/leitura, expansão e liberação passaram.
+Inventário PCI (somente leitura):
+PCI 00:01.0 1234:1111 vídeo
+PCI 00:02.0 8086:10d3 rede (Intel 82574L/QEMU)
+NIC Intel 82574L: filas DMA TX/RX ativas, MAC=525400123456; envio/recepcao polling disponiveis.
+DHCP IPv4: concessao recebida 10.0.2.15
+PCI 00:1f.2 8086:2922 SATA/AHCI (QEMU: reconhecido; driver AHCI experimental)
+AHCI: dispositivo identificado em leitura, setores=32768. Adaptador BlockDevice pronto; montagem continua manual.
+Controladores relevantes encontrados: 3
+Runtime de processos: preparando tarefas CPL3.
+Runtime: tarefas com CR3 independentes despachadas.
+Timer: primeira troca de processo observada.
+Runtime: fault CPL3 vetorizado=14 CR2=0x0000700000000000; encerrando somente a tarefa.
+Runtime: tarefas encerradas; trocas de timer=1, trocas de CR3=1, faults isolados=1.
+ABI Linux x86_64: getpid/exit via SYSCALL passou.
+Ring 3: probe CPL3, retorno seguro e fault #UD isolado passaram.
+Ring 3 rotinas: ELF carregado em CPL3, scheduler e preempção entre dois CR3 passaram; pilhas recuperadas pelo reaper.
+TLB SMP: shootdowns enviados=18, ACKs remotos por IPI concluídos antes de liberar tabelas.
+Watchdog PIT ativo: prazo de 5 s sem progresso.
+Digite 'ajuda' para ver os comandos.
+
+carlio> fs-teste
+Formatando volume Hermione no disco QEMU descartavel...
+Hermione: formatando superbloco/diretorio...
+Hermione: gravando arquivo...
+Hermione: remontando volume...
+Hermione: lendo e validando checksum...
+Hermione: volume persistente, espelhamento, journal/commit, remontagem e scrub passaram.
+carlio> diskteste
+Teste AHCI em disco QEMU descartável...
+AHCI: IDENTIFY, WRITE, READ e erro do controlador verificados.
+carlio> fs-teste
+Formatando volume Hermione no disco QEMU descartavel...
+Hermione: formatando superbloco/diretorio...
+Hermione: gravando arquivo...
+Hermione: remontando volume...
+Hermione: lendo e validando checksum...
+Hermione: volume persistente, espelhamento, journal/commit, remontagem e scrub passaram.
+carlio> 
+--- mensagens do QEMU ---

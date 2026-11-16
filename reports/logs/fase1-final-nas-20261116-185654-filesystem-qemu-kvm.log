@@ -1,0 +1,42 @@
+[2J[H+----------------------------------------------------+
+| carlIO OS | Criado por João G.R.Santos             |
+| Sistema operacional experimental x86_64            |
++----------------------------------------------------+
+Núcleo Rust · inicialização serial
+
+Framebuffer Limine: RGB ativo; renderização de pixels validada.
+IDT: exceções 0-31 registradas; IRQs externos permanecem desativados.
+Ring 3: GDT, TSS, RSP0 e seletores de usuário configurados; CPL continua 0.
+Aviso: terminal de diagnóstico em ring 0; não é uma fronteira de segurança.
+Mapa de memória Limine: regiões usáveis=3, RAM usável MiB=501; HHDM e bases físico/virtual do kernel disponíveis.
+Allocator físico: frames livres até 32 GiB=128248, sem RAM acima de 4 GiB; teste usa frame baixo; alocação, escrita, leitura e liberação passaram.
+LAPIC xAPIC ativo no BSP; vetor de shootdown remoto 0xF1 instalado.
+SMP Limine: CPUs detectadas=4, APs iniciadas=3, aguardadas=3; APs aguardam despacho de tarefa, scheduler ainda desativado.
+SMP trabalho: CPUs AP=3, tarefas concluídas=3, resultados válidos=3; despacho de prova concluído.
+Heap kernel: regiões dinâmicas, alinhamento, escrita/leitura, expansão e liberação passaram.
+Inventário PCI (somente leitura):
+PCI 00:01.0 1234:1111 vídeo
+PCI 00:02.0 8086:10d3 rede (Intel 82574L/QEMU)
+NIC Intel 82574L: filas DMA TX/RX ativas, MAC=525400123456; envio/recepcao polling disponiveis.
+DHCP IPv4: concessao recebida 10.0.2.15
+PCI 00:1f.2 8086:2922 SATA/AHCI (QEMU: reconhecido; driver AHCI experimental)
+AHCI: dispositivo identificado em leitura, setores=32768. Adaptador BlockDevice pronto para rootfs.
+Controladores relevantes encontrados: 3
+Hermione rootfs: verificando volume de sistema.
+Hermione rootfs: volume ausente ou inválido; disco preservado, sem formatação automática.
+Runtime de processos: preparando tarefas CPL3.
+ABI Linux: probe CPL3 aguardando byte de entrada serial.
+Runtime: tarefas com CR3 independentes despachadas.
+Timer: primeira troca de processo observada.
+Runtime: fault CPL3 vetorizado=14 CR2=0x0000700000000000; encerrando somente a tarefa.
+write ok
+
+=== WATCHDOG: SEM PROGRESSO ===
+RIP: 0x00004000000030c0  CS: 0x0000000000000023  RFLAGS: 0x0000000000000246
+RAX=0xfffffffffffffffb RBX=0x0000000000000000 RCX=0x00004000000030c0 RDX=0x0000000000000001
+RSI=0x0000400000004802 RDI=0x0000000000000000 RBP=0x0000000000000000
+R8=0x0000000000000000 R9=0x0000000000000000 R10=0x0000000000000000 R11=0x0000000000000246
+R12=0x0000000000000000 R13=0x0000000000000000 R14=0x0000000000000000 R15=0x0000000000000000
+Sistema interrompido; diagnóstico serial somente leitura.
+
+--- mensagens do QEMU ---

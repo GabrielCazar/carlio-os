@@ -1,0 +1,54 @@
+[2J[H+----------------------------------------------------+
+| carlIO OS | Criado por João G.R.Santos             |
+| Sistema operacional experimental x86_64            |
++----------------------------------------------------+
+Núcleo Rust · inicialização serial
+
+Framebuffer Limine: RGB ativo; renderização de pixels validada.
+IDT: exceções 0-31 registradas; IRQs externos permanecem desativados.
+Ring 3: GDT, TSS, RSP0 e seletores de usuário configurados; CPL continua 0.
+Aviso: terminal de diagnóstico em ring 0; não é uma fronteira de segurança.
+Mapa de memória Limine: regiões usáveis=3, RAM usável MiB=503; HHDM e bases físico/virtual do kernel disponíveis.
+Allocator físico: frames livres até 32 GiB=128983, sem RAM acima de 4 GiB; teste usa frame baixo; alocação, escrita, leitura e liberação passaram.
+LAPIC xAPIC ativo no BSP; vetor de shootdown remoto 0xF1 instalado.
+SMP Limine: CPUs detectadas=4, APs iniciadas=3, aguardadas=3; APs aguardam despacho de tarefa, scheduler ainda desativado.
+SMP trabalho: CPUs AP=3, tarefas concluídas=3, resultados válidos=3; despacho de prova concluído.
+Heap kernel: regiões dinâmicas, alinhamento, escrita/leitura, expansão e liberação passaram.
+Inventário PCI (somente leitura):
+PCI 00:01.0 1234:1111 vídeo
+PCI 00:02.0 8086:10d3 rede (controlador não suportado)
+PCI 00:1f.2 8086:2922 SATA/AHCI (QEMU: reconhecido; driver AHCI experimental)
+AHCI indisponível: dispositivo nao encontrado.
+Controladores relevantes encontrados: 3
+Runtime de processos: preparando tarefas CPL3.
+Runtime: entry ELF A=0x0000400000003000, B=0x0000400000003000
+Runtime: fault CPL3 vetorizado=6 RIP=0x0000400000000000; encerrando somente a tarefa.
+Runtime: tarefas encerradas; trocas de timer=0, trocas de CR3=0, faults isolados=1, CPUs CPL3 observadas=1.
+VM debug: entered=1 preempted=0 fault=0 kernel-isolated=1 fault-result=00000000000007ff.
+VM: teste de tabelas de página falhou; kernel manteve CR3 do Limine.
+Watchdog PIT ativo: prazo de 5 s sem progresso.
+Digite 'ajuda' para ver os comandos.
+
+carlio> ajuda
+Comandos: ajuda, sobre, usuario, permissoes, erros, logs, limpar, parar.
+carlio> erros
+Erros registrados: 1
+- falha ao inicializar dispositivo
+carlio> logs
+# Eventos do kernel (buffer volátil)
+
+| Métrica | Valor | Gráfico |
+|---|---:|---|
+| Eventos desde o boot | 1 | # |
+
+| Índice recente | Código | Evento |
+|---:|---:|---|
+| 0 | 12 | falha ao inicializar dispositivo |
+
+Aviso: captura em RAM, limitada e perdida ao reiniciar; não é log persistente.
+carlio> sobre
+carlIO OS | Criado por João G.R.Santos
+Sistema operacional experimental x86_64 escrito em Rust.
+carlio> parar
+Processador parado.
+--- mensagens do QEMU ---

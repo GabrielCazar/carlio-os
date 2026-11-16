@@ -1,43 +1,113 @@
 # Relatório — Fase 1: inicialização
 
-**Estado:** concluída no escopo de inicialização x86_64, diagnóstico do kernel e
-dependência mínima de armazenamento para a fase 2. O driver AHCI permanece
-experimental e validado somente no QEMU com imagem descartável; suporte aos
-controladores SATA físicos e aos demais dispositivos fica fora deste marco.
+**Estado:** concluída no escopo x86_64 de inicialização, diagnóstico e prova
+experimental AHCI em QEMU, validada localmente e no NAS/KVM. Isso não certifica
+hardware físico. AHCI nos controladores do servidor/desenvolvimento, timeout
+real e remoção durante I/O permanecem pendentes.
+
+### Fechamento final — 16/11/2026
+
+Os gates executáveis da fase e suas dependências foram repetidos após as
+correções: `cargo fmt --check`, 159 testes host, Clippy com `-D warnings`, ISO
+normal e boots BIOS/UEFI locais, além de 159 testes e BIOS/UEFI no NAS/KVM.
+O build diagnóstico `storage-test` passou em mídia raw descartável de 16 MiB
+localmente e no NAS/KVM; o teste cobre IDENTIFY, escrita/leitura, erro ATA,
+volume Hermione, remontagem e scrub. Logs:
+
+- Host e formato local: [host/fmt](logs/fase1-fechamento-final-host-20261116-190018.txt),
+  [Clippy](logs/fase1-fechamento-final-clippy-20261116.txt).
+- Boot local: [BIOS](logs/fase1-fechamento-final-qemu-bios-20261116-190018.log),
+  [UEFI](logs/fase1-fechamento-final-qemu-uefi-20261116-190018.log).
+- NAS/KVM: [host](logs/fase1-final2-nas-20261116-185928.txt),
+  [BIOS](logs/fase1-final2-nas-20261116-185928-qemu-kvm-bios.log),
+  [UEFI](logs/fase1-final2-nas-20261116-185928-qemu-kvm-uefi.log).
+- AHCI/Hermione: [QEMU local](logs/fase1-final-ahci-qemu-local-20261116.log),
+  [QEMU/KVM NAS](logs/fase1-final2-nas-20261116-185928-filesystem-qemu-kvm.log).
+- Falhas intencionais em build diagnóstico: [panic](logs/fase1-final-crash-watchdog-panic-20261116.log),
+  [#UD](logs/fase1-final-crash-watchdog-fault-20261116.log),
+  [watchdog](logs/fase1-final-crash-watchdog-watchdog-20261116.log) e
+  [double fault](logs/fase1-final-crash-watchdog-doublefault-20261116.log).
+
+Uma primeira execução automatizada do AHCI no NAS foi inválida: usou ISO sem
+`storage-test` e não alimentou o probe CPL3 antes de aguardar o prompt. O log
+está preservado em [tentativa inválida](logs/fase1-final-nas-20261116-185654-filesystem-qemu-kvm.log).
+O harness foi ajustado para alimentar o probe e a repetição com ISO diagnóstica
+passou nos logs acima. Toda escrita ocorreu apenas em mídia descartável QEMU
+sob `/tmp/carlioos-*`; nenhum dispositivo físico foi acessado.
+
+### Revalidação geral — 16/11/2026
+
+Após a integração do driver de rede QEMU e das últimas mudanças no kernel,
+`scripts/test-local-iso.sh` passou com 129 testes host e boots TCG BIOS/UEFI.
+`scripts/test-nas.sh` passou com 129 testes host no NAS e boots KVM BIOS/UEFI.
+Os boots confirmam novamente Limine, IDT, watchdog, SMP, framebuffer, NIC/DHCP
+e runtime CPL3. Eles são regressão do boot normal: o teste dedicado de AHCI em
+mídia descartável continua sendo a evidência de I/O e está nos logs de
+fechamento abaixo; nenhum controlador físico foi exercitado.
+
+Logs atuais: [host local](logs/fase-local-host-20261116-110549.txt),
+[BIOS local](logs/fase-local-qemu-bios-20261116-110549.log),
+[UEFI local](logs/fase-local-qemu-uefi-20261116-110549.log),
+[host/NAS](logs/kernel-subsystems-final-20261116-nas-20261116-110614.txt),
+[BIOS NAS](logs/kernel-subsystems-final-20261116-nas-20261116-110614-qemu-kvm-bios.log) e
+[UEFI NAS](logs/kernel-subsystems-final-20261116-nas-20261116-110614-qemu-kvm-uefi.log).
+O teste AHCI posterior passou em mídia descartável: [QEMU local](logs/hardware-prioridade-ahci-qemu-20261116-final.log)
+e [QEMU/KVM NAS](logs/kernel-subsystems-final-20261116-nas-20261116-110614-filesystem-qemu-kvm.log).
+
+### Fechamento — 15/11/2026
+
+- `scripts/test-local-iso.sh` passou: `cargo fmt --check`, **30 testes host**
+  (28 na biblioteca e 2 no utilitário),
+  build da ISO e boots BIOS/UEFI no QEMU TCG com terminal serial. Logs:
+  [`host`](logs/fase-1-fechamento-host-20261115-132519.txt),
+  [`BIOS`](logs/fase-1-fechamento-qemu-bios-20261115-132519.log) e
+  [`UEFI`](logs/fase-1-fechamento-qemu-uefi-20261115-132519.log).
+- Build `storage-test` e `scripts/test-ahci-qemu.py` passaram em disco raw
+  temporário: IDENTIFY, WRITE/READ com comparação, erro ATA inválido e
+  formatação/montagem/leitura do volume Hermione. Log:
+  [`AHCI QEMU descartável`](logs/fase-1-fechamento-ahci-qemu-20261115.log).
+- No NAS cabeado, `scripts/test-nas.sh` passou: 30 testes host, estado da
+  ferramenta Hermione e boots BIOS/UEFI em QEMU/KVM. Logs:
+  [`resumo NAS`](logs/fase-1-fechamento-nas-20261115-132801.txt),
+  [`BIOS`](logs/fase-1-fechamento-nas-20261115-132801-qemu-kvm-bios.log) e
+  [`UEFI`](logs/fase-1-fechamento-nas-20261115-132801-qemu-kvm-uefi.log).
+- Os limites de polling são finitos, mas não se induziu timeout real nem
+  remoção a quente durante I/O; controladores físicos também não foram
+  testados. Estes limites não são alegados como suporte.
 
 ## Checklist da fase
 
 ### Boot e plataforma
 
-- [x] Inicialização Limine em BIOS legado e UEFI, validada no QEMU local e NAS/KVM.
-- [x] Coletar e validar mapa de memória, HHDM e bases virtual/física do kernel.
-- [x] Exibir splash e terminal serial em pt_BR.
+- [x] Inicialização Limine em BIOS legado e UEFI, validada no QEMU local e NAS/KVM ([local BIOS/UEFI](logs/fase1-fechamento-final-qemu-bios-20261116-190018.log), [NAS BIOS/UEFI](logs/fase1-final2-nas-20261116-185928-qemu-kvm-bios.log)).
+- [x] Coletar e validar mapa de memória, HHDM e bases virtual/física do kernel ([local](logs/fase1-fechamento-final-qemu-bios-20261116-190018.log)).
+- [x] Exibir splash e terminal serial em pt_BR ([local](logs/fase1-fechamento-final-qemu-bios-20261116-190018.log)).
 - [x] Panic imprime causa e localização de arquivo/linha/coluna; panic intencional
-  passou no QEMU com build de teste.
+  passou no QEMU com build de teste ([log](logs/fase1-final-crash-watchdog-panic-20261116.log)).
 - [x] Instalar IDT para exceções 0–31 e capturar #UD no QEMU com código de erro,
-  RIP, CS, RFLAGS e registradores gerais; page fault também reporta CR2.
-- [x] Detectar ausência de progresso com watchdog PIT; teste de loop travado passou no QEMU.
-- [x] Usar IST dedicada de 16 KiB para double fault; teste intencional passou no QEMU.
-- [x] Exportar dumps serial para arquivos de log do host nos testes QEMU.
-- [x] Persistir os dumps de teste em `reports/logs/` pelo harness serial do QEMU.
+  RIP, CS, RFLAGS e registradores gerais; page fault também reporta CR2 ([#UD](logs/fase1-final-crash-watchdog-fault-20261116.log)).
+- [x] Detectar ausência de progresso com watchdog PIT; teste de loop travado passou no QEMU ([log](logs/fase1-final-crash-watchdog-watchdog-20261116.log)).
+- [x] Usar IST dedicada de 16 KiB para double fault; teste intencional passou no QEMU ([log](logs/fase1-final-crash-watchdog-doublefault-20261116.log)).
+- [x] Exportar dumps serial para arquivos de log do host nos testes QEMU ([BIOS](logs/fase1-fechamento-final-qemu-bios-20261116-190018.log)).
+- [x] Persistir os dumps de teste em `reports/logs/` pelo harness serial do QEMU ([crash-tests](logs/fase1-final-crash-watchdog-doublefault-20261116.log)).
 
 ### PCI e dispositivos
 
-- [x] Enumerar PCI sem alterar dispositivos e classificar vídeo, USB, rede e AHCI.
-- [x] Reconhecer os IDs AHCI da máquina (`8086:282a`), NAS (`8086:1c02`) e QEMU (`8086:2922`).
-- [x] Inicializar AHCI QEMU e executar IDENTIFY/READ/WRITE por DMA com espera limitada.
-- [x] Testar escrita/leitura, ausência de disco e erro do controlador com imagem raw descartável no QEMU.
-- [ ] Validar I/O nos controladores físicos Intel local (`8086:282a`) e NAS (`8086:1c02`).
-- [ ] Implementar pilha TCP/IP e sockets como dependência dos protocolos remotos planejados para a fase 6.
-- [ ] Implementar vídeo/framebuffer e os drivers USB, Ethernet, Wi-Fi, Bluetooth e áudio como trabalho posterior.
+- [x] Enumerar PCI sem alterar dispositivos e classificar vídeo, USB, rede e AHCI ([log](logs/fase1-fechamento-final-qemu-bios-20261116-190018.log)).
+- [x] Reconhecer os IDs AHCI da máquina (`8086:282a`), NAS (`8086:1c02`) e QEMU (`8086:2922`) ([inventário](logs/kernel-subsystems-final-20261116-nas-20261116-110614-qemu-kvm-bios.log)).
+- [x] Inicializar AHCI QEMU e executar IDENTIFY/READ/WRITE por DMA com espera limitada ([local](logs/fase1-final-ahci-qemu-local-20261116.log), [NAS/KVM](logs/fase1-final2-nas-20261116-185928-filesystem-qemu-kvm.log)).
+- [x] Testar escrita/leitura, ausência de disco e erro do controlador com imagem raw descartável no QEMU ([positivo](logs/fase1-final-ahci-qemu-local-20261116.log), [sem disco](logs/fase1-fechamento-final-qemu-bios-20261116-190018.log), [NAS/KVM](logs/fase1-final2-nas-20261116-185928-filesystem-qemu-kvm.log)).
+- Adiado para validação de hardware: I/O nos controladores Intel físicos (`8086:282a` e `8086:1c02`). Não faz parte do gate de boot/QEMU concluído.
+- Planejado após driver Ethernet: pilha TCP/IP e sockets para protocolos remotos.
+- Planejados por necessidade: vídeo/framebuffer, USB, Ethernet, Wi-Fi, Bluetooth e áudio; detecção PCI não declara suporte.
 
 ### Validação e limites
 
-- [x] Smoke tests BIOS/UEFI no QEMU local/TCG e NAS/KVM; testes host anexados em logs.
-- [x] Validar panic, #UD, watchdog e double fault intencionais no QEMU.
-- [x] Validar AHCI positivo/negativo e erro de comando no QEMU; timeout é limitado, mas não foi induzido neste teste.
-- [ ] Confirmar operação com interface gráfica ativa no NAS.
-- [x] Fechar o escopo de boot, diagnóstico e dependência mínima de bloco QEMU após testes e logs.
+- [x] Smoke tests BIOS/UEFI no QEMU local/TCG e NAS/KVM; testes host anexados em logs ([local](logs/fase1-fechamento-final-host-20261116-190018.txt), [NAS](logs/fase1-final2-nas-20261116-185928.txt)).
+- [x] Validar panic, #UD, watchdog e double fault intencionais no QEMU ([logs](logs/fase1-final-crash-watchdog-panic-20261116.log)).
+- [x] Validar AHCI positivo/negativo e erro de comando no QEMU; timeout é limitado, mas não foi induzido neste teste ([positivo](logs/fase1-final-ahci-qemu-local-20261116.log), [sem disco](logs/fase1-fechamento-final-qemu-bios-20261116-190018.log)).
+- Posterior à fase de desktop: operação com interface gráfica ativa no NAS.
+- [x] Fechar o escopo de boot, diagnóstico e dependência mínima de bloco QEMU após testes e logs ([relatório final](#fechamento-final--16112026)).
 
 Os comandos de falha são compilados apenas com `crash-test`. A IDT trata
 exceções 0–31; o watchdog PIT usa IRQ0 e registra o frame interrompido após 5 s
@@ -82,7 +152,11 @@ ponto exato da chamada.
 - ELF com segmentos de carga em páginas separadas; ISO híbrida BIOS/UEFI.
 - Teste automatizado de serial no QEMU e teste obrigatório no NAS/KVM.
 
-## Resultados
+## Histórico de validações anteriores
+
+Os números e logs abaixo registram execuções anteriores ao fechamento de
+15/11/2026. O estado atual e os resultados mais recentes estão na seção
+“Fechamento”.
 
 - Testes host: 3 passaram localmente e 3 passaram no NAS.
 - QEMU local TCG BIOS: boot e comandos `ajuda`, `sobre`, `parar` passaram.

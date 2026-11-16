@@ -1,0 +1,41 @@
+[2J[H+----------------------------------------------------+
+| carlIO OS | Criado por João G.R.Santos             |
+| Sistema operacional experimental x86_64            |
++----------------------------------------------------+
+Núcleo Rust · inicialização serial
+
+Framebuffer Limine: RGB ativo; renderização de pixels validada.
+IDT: exceções 0-31 registradas; IRQs externos permanecem desativados.
+Ring 3: GDT, TSS, RSP0 e seletores de usuário configurados; CPL continua 0.
+Aviso: terminal de diagnóstico em ring 0; não é uma fronteira de segurança.
+Mapa de memória Limine: regiões usáveis=3, RAM usável MiB=503; HHDM e bases físico/virtual do kernel disponíveis.
+Allocator físico: frames livres até 32 GiB=128983, sem RAM acima de 4 GiB; teste usa frame baixo; alocação, escrita, leitura e liberação passaram.
+LAPIC xAPIC ativo no BSP; vetor de shootdown remoto 0xF1 instalado.
+SMP Limine: CPUs detectadas=4, APs iniciadas=3, aguardadas=3; APs aguardam despacho de tarefa, scheduler ainda desativado.
+SMP trabalho: CPUs AP=3, tarefas concluídas=3, resultados válidos=3; despacho de prova concluído.
+Heap kernel: regiões dinâmicas, alinhamento, escrita/leitura, expansão e liberação passaram.
+Inventário PCI (somente leitura):
+PCI 00:01.0 1234:1111 vídeo
+PCI 00:02.0 8086:10d3 rede (controlador não suportado)
+PCI 00:1f.2 8086:2922 SATA/AHCI (QEMU: reconhecido; driver AHCI experimental)
+AHCI indisponível: dispositivo nao encontrado.
+Controladores relevantes encontrados: 3
+Runtime de processos: preparando tarefas CPL3.
+Runtime: entry ELF A=0x0000400000003000, B=0x0000400000003000
+Runtime: tarefas com CR3 independentes despachadas.
+Runtime: fault CPL3 vetorizado=14 RIP=0x0000400000003013 CR2=0x0000700000000000S;yscall: encerrando somente a tarefa.
+ 
+==ta=refa sol CAPTURA DicitoE u eEXncCEerrCAamento.O CPU ===
+Vetor:
+ 13 ( #GP proteção Rgeraluntim )e: t
+Carefas ódigo de eerro: 0ncerradas;x0 trocas00 0000000000018de time
+Rr=0IP: 0x,f trocfffffff80002ce1 as de CR C3=S:0 0x000000000,0000008 fa ults RFL iAGS:solado 0xs=10,000000000010086 CPUs
+R CAX=0xPL3 o0000700000000000bservad RBas=2X=0x0.
+000000000000000 RCX=0x0000000000000000 RDX=0x0000000000000000
+RSI=0x0000000000000000 RDI=0x0V000000000000000M debug: R BPen=0x0tered=0000000100000000 
+R8=0xpreempt00000ed=00000000000 0R9=0x0 0000000000fa000ult=00 R110=0x0 000ke0000000rn00000el-isolat ed=R11=0x10 fault-re00000000su0000000lt=
+R12=0x00000000000000000 000R1300=0x0000000010600000000000.0000 
+R14=0x0000000000000000 R15=0x0000000000000000
+Sistema interrompido; diagnóstico serial somente leitura.
+
+--- mensagens do QEMU ---

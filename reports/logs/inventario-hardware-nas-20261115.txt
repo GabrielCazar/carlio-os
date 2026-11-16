@@ -1,0 +1,27 @@
+CarloOS — validação somente leitura da matriz do NAS
+Data: 2026-11-15
+Alvo: alias SSH nas-wifi
+Escopo: inventário Linux; sem reboot, sem escrita em dispositivos e sem leitura de conteúdo dos discos.
+
+Comandos executados remotamente: uname -srmo; lspci -Dn; lsblk -dn -o NAME,TYPE,SIZE,MODEL,TRAN; lsblk -o NAME,TYPE,SIZE,MODEL,FSTYPE,MOUNTPOINTS; cat /proc/cpuinfo; grep MemTotal /proc/meminfo; inspecionar IDs do sysfs USB e dados DMI.
+
+SO atual: Linux 6.18.63-2-lts x86_64
+Plataforma: Intel Core i5-3470 3.20 GHz; memória total 7,63 GiB; placa H61; BIOS 4.6.5 de 11/10/2022.
+
+PCI confirmado:
+00:02.0 vídeo Intel 8086:0152
+00:1a.0 USB EHCI Intel 8086:1c2d
+00:1b.0 áudio Intel HDA 8086:1c20
+00:1d.0 USB EHCI Intel 8086:1c26
+00:1f.2 SATA AHCI Intel 8086:1c02
+00:1f.3 SMBus Intel 8086:1c22
+02:00.0 Ethernet Realtek RTL8111 10ec:8168
+
+USB: Wi-Fi Realtek 0bda:f179 (802.11n) em 1-1.4; receiver Dell Universal Receiver 413c:301b em 1-1.3; teclado USB c0f4:05f5 em 2-1.2. `lsusb` não instalado. Não foi identificado controlador Bluetooth; o receiver Dell não foi presumido como Bluetooth. Linux mostrou interfaces de rede Wi-Fi e Ethernet; isso não prova driver CarlioOS.
+
+Armazenamento listado (somente modelo/capacidade):
+- ST9160314AS — 149,1 GiB, SATA
+- TOSHIBA MQ01ABD100 — 931,5 GiB, SATA
+- TOSHIBA MQ01ACF050 — 465,8 GiB, SATA
+
+Resultado: inventário confirmou os alvos descritos e corrigiu a linha de Wi-Fi (USB Realtek, não adaptador PCI ausente). Nenhum disco foi alterado. Boot físico, acesso a AHCI/RTL8111/EHCI/iGPU pelo CarlioOS continuam não validados. Testes QEMU/KVM prévios validam apenas hardware virtual.

@@ -1,0 +1,25 @@
+[2J[H+----------------------------------------------------+
+| carlIO OS | Criado por João G.R.Santos             |
+| Sistema operacional experimental x86_64            |
++----------------------------------------------------+
+Núcleo Rust · inicialização serial
+
+IDT: exceções 0-31 registradas; IRQs externos permanecem desativados.
+Ring 3: GDT, TSS, RSP0 e seletores de usuário configurados; CPL continua 0.
+Aviso: terminal de diagnóstico em ring 0; não é uma fronteira de segurança.
+SMP Limine: CPUs detectadas=4, APs iniciadas=3, aguardadas=3; APs aguardam despacho de tarefa, scheduler ainda desativado.
+SMP trabalho: CPUs AP=3, tarefas concluídas=3, resultados válidos=3; despacho de prova concluído.
+Mapa de memória Limine: regiões usáveis=2, RAM usável MiB=508; HHDM e bases físico/virtual do kernel disponíveis.
+Allocator físico: frames livres abaixo de 4 GiB=130243; alocação, escrita, leitura e liberação passaram.
+
+=== CAPTURA DE EXCECAO CPU ===
+Vetor: 13 ( #GP proteção geral )
+Código de erro: 0x0000000000000018
+RIP: 0xffffffff8000052b  CS: 0x0000000000000008  RFLAGS: 0x0000000000010086
+RAX=0xffffffff8000052d RBX=0x000000004341524c RCX=0x0000000000000000 RDX=0x0000000000000000
+RSI=0x0000400000002000 RDI=0x0000400000000000 RBP=0x0000400000000000
+R8=0x00000000000001ff R9=0x0000000000000001 R10=0x00000000ffffffff R11=0xffffffffffffffff
+R12=0x000000001ff8700a R13=0xffff800000000000 R14=0xffff80001ff97f18 R15=0xffff800000101001
+Sistema interrompido; diagnóstico serial somente leitura.
+
+--- mensagens do QEMU ---

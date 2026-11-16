@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="760" viewBox="0 0 1280 760" role="img" aria-labelledby="title desc">
+  <title id="title">Arquitetura planejada do CarlioOS</title><desc id="desc">Camadas do firmware até aplicações Arch Linux sobre o kernel próprio.</desc>
+  <defs><style>
+    .bg{fill:#10151d}.box{fill:#192533;stroke:#568b82;stroke-width:2;rx:16}.future{stroke:#d5a84e;stroke-dasharray:9 7}.title{fill:#eef5fb;font:700 30px system-ui}.label{fill:#eef5fb;font:700 21px system-ui}.text{fill:#b9c8d5;font:16px system-ui}.arrow{stroke:#8bd5c1;stroke-width:3;fill:none;marker-end:url(#arr)}.tag{fill:#f4ca6b;font:700 15px system-ui}
+  </style><marker id="arr" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0 0L10 5L0 10z" fill="#8bd5c1"/></marker></defs>
+  <rect class="bg" width="1280" height="760"/><text class="title" x="50" y="54">CarlioOS · camadas do sistema</text>
+  <g transform="translate(80 90)">
+    <rect class="box" width="1120" height="78"/><text class="label" x="28" y="34">Firmware e bootloader Limine</text><text class="text" x="28" y="59">BIOS/UEFI · fornece mapa de memória, HHDM e entrada do kernel</text>
+    <path class="arrow" d="M560 82v32"/>
+    <rect class="box" y="120" width="1120" height="92"/><text class="label" x="28" y="157">Kernel CarlioOS · Rust no_std · x86_64</text><text class="text" x="28" y="185">IDT, watchdog, PCI somente leitura e terminal serial de diagnóstico (ring 0)</text>
+    <path class="arrow" d="M560 216v32"/>
+    <rect class="box future" y="254" width="1120" height="98"/><text class="label" x="28" y="291">HAL, memória virtual e drivers</text><text class="text" x="28" y="320">Alocador integrado · AHCI físico · Ethernet · USB · vídeo · timeout/remoção</text><text class="tag" x="850" y="320">EM IMPLEMENTAÇÃO</text>
+    <path class="arrow" d="M560 356v32"/>
+    <rect class="box future" y="394" width="1120" height="110"/><text class="label" x="28" y="432">Serviços de armazenamento e VFS</text><text class="text" x="28" y="460">Hermione · FAT32/ext4 · journal · cifra · swap · diretórios e permissões</text><text class="tag" x="850" y="486">PARCIAL / PLANEJADO</text>
+    <path class="arrow" d="M560 508v32"/>
+    <rect class="box future" y="546" width="1120" height="94"/><text class="label" x="28" y="582">Userland Arch Linux sobre o kernel CarlioOS</text><text class="text" x="28" y="611">ABI Linux · systemd · pacman · Plasma/SDDM · agentes ChatGPT/Ollama</text><text class="tag" x="850" y="611">OBJETIVO FUTURO</text>
+  </g>
+</svg>

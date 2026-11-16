@@ -1,0 +1,394 @@
+   Compiling carlio-os v0.1.0 (/home/gabriel/Work/carlio-os)
+error: digits of hex, binary or octal literal not in groups of equal size
+  --> src/heap.rs:10:22
+   |
+10 | const MAGIC: usize = 0xCA71_10_05;
+   |                      ^^^^^^^^^^^^ help: consider: `0xCA71_1005`
+   |
+   = help: for further information visit https://clippy.rust-lang.org/main/index.html#unusual_byte_groupings
+   = note: `-D clippy::unusual-byte-groupings` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::unusual_byte_groupings)]`
+
+error: unnecessary `>= y + 1` or `x - 1 >=`
+   --> src/heap.rs:152:24
+    |
+152 |                     if remainder >= size_of::<Block>() + size_of::<usize>() + 1 {
+    |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: change it to: `remainder > size_of::<Block>() + size_of::<usize>()`
+    |
+    = help: for further information visit https://clippy.rust-lang.org/main/index.html#int_plus_one
+    = note: `-D clippy::int-plus-one` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::int_plus_one)]`
+
+error: digits of hex, binary or octal literal not in groups of equal size
+   --> src/userland/windows.rs:207:44
+    |
+207 |         b[o + 24..o + 32].copy_from_slice(&0x1400_0000_0u64.to_le_bytes());
+    |                                            ^^^^^^^^^^^^^^^^ help: consider: `0x0001_4000_0000_u64`
+    |
+    = help: for further information visit https://clippy.rust-lang.org/main/index.html#unusual_byte_groupings
+
+error: digits of hex, binary or octal literal not in groups of equal size
+   --> src/userland/windows.rs:225:38
+    |
+225 |         assert_eq!(image.image_base, 0x1400_0000_0);
+    |                                      ^^^^^^^^^^^^^ help: consider: `0x0001_4000_0000`
+    |
+    = help: for further information visit https://clippy.rust-lang.org/main/index.html#unusual_byte_groupings
+
+error: field `stacks` is never read
+  --> src/process.rs:18:5
+   |
+17 | struct KernelStackPoolState<const N: usize, const BYTES: usize> {
+   |        -------------------- field in this struct
+18 |     stacks: [KernelStackStorage<BYTES>; N],
+   |     ^^^^^^
+   |
+   = note: `-D dead-code` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[expect(dead_code)]` or `#[allow(dead_code)]`
+
+error: using `contains()` instead of `iter().any()` is more efficient
+  --> src/dynamic_linker.rs:75:8
+   |
+75 |     if queue[..*length].iter().any(|item| *item == Some(name)) {
+   |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `queue[..*length].contains(&Some(name))`
+   |
+   = help: for further information visit https://clippy.rust-lang.org/main/index.html#manual_contains
+   = note: `-D clippy::manual-contains` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::manual_contains)]`
+
+error: using `chunks_exact` with a constant chunk size
+   --> src/elf.rs:158:55
+    |
+158 |             for entry in bytes[offset..offset + size].chunks_exact(16) {
+    |                                                       ^^^^^^^^^^^^^^^^ help: consider using `as_chunks` instead: `as_chunks::<16>().0`
+    |
+    = help: for further information visit https://clippy.rust-lang.org/main/index.html#chunks_exact_to_as_chunks
+    = note: `-D clippy::chunks-exact-to-as-chunks` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::chunks_exact_to_as_chunks)]`
+
+error: manual `!RangeInclusive::contains` implementation
+   --> src/elf.rs:276:8
+    |
+276 |     if stack_top > USER_TOP || stack_top < STACK_BYTES || stack_top & 0xf != 0 {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: use: `!(STACK_BYTES..=USER_TOP).contains(&stack_top)`
+    |
+    = help: for further information visit https://clippy.rust-lang.org/main/index.html#manual_range_contains
+    = note: `-D clippy::manual-range-contains` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::manual_range_contains)]`
+
+error: manual implementation of `.is_multiple_of()`
+   --> src/elf.rs:456:30
+    |
+456 |             || (kind == 3 && load_bias % PAGE_SIZE != 0)
+    |                              ^^^^^^^^^^^^^^^^^^^^^^^^^^ help: replace with: `!load_bias.is_multiple_of(PAGE_SIZE)`
+    |
+    = help: for further information visit https://clippy.rust-lang.org/main/index.html#manual_is_multiple_of
+    = note: `-D clippy::manual-is-multiple-of` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::manual_is_multiple_of)]`
+
+error: struct `ErrorLog` has a public `len` method, but no `is_empty` method
+  --> src/errors.rs:72:5
+   |
+72 |     pub const fn len(&self) -> usize {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://clippy.rust-lang.org/main/index.html#len_without_is_empty
+   = note: `-D clippy::len-without-is-empty` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::len_without_is_empty)]`
+
+error: manual `!RangeInclusive::contains` implementation
+  --> src/ext4.rs:85:12
+   |
+85 |           if block_size > MAX_BLOCK_SIZE
+   |  ____________^
+86 | |             || block_size < 1024
+   | |________________________________^ help: use: `!(1024..=MAX_BLOCK_SIZE).contains(&block_size)`
+   |
+   = help: for further information visit https://clippy.rust-lang.org/main/index.html#manual_range_contains
+
+error: using `chunks_exact` with a constant chunk size
+   --> src/fat32.rs:224:35
+    |
+224 |                 for raw in sector.chunks_exact(32) {
+    |                                   ^^^^^^^^^^^^^^^^ help: consider using `as_chunks` instead: `as_chunks::<32>().0`
+    |
+    = help: for further information visit https://clippy.rust-lang.org/main/index.html#chunks_exact_to_as_chunks
+
+error: you should consider adding a `Default` implementation for `KernelHeapSet<REGIONS>`
+   --> src/heap.rs:36:5
+    |
+ 36 | /     pub const fn new() -> Self {
+ 37 | |         Self {
+ 38 | |             regions: [const { None }; REGIONS],
+ 39 | |             region_count: 0,
+ 40 | |         }
+ 41 | |     }
+    | |_____^
+    |
+    = help: for further information visit https://clippy.rust-lang.org/main/index.html#new_without_default
+    = note: `-D clippy::new-without-default` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::new_without_default)]`
+help: try adding this
+    |
+ 97 ~ }
+ 98 + 
+ 99 + impl<const REGIONS: usize> Default for KernelHeapSet<REGIONS> {
+100 +     fn default() -> Self {
+101 +         Self::new()
+102 +     }
+103 + }
+    |
+
+error: unsafe function's docs are missing a `# Safety` section
+  --> src/heap.rs:45:5
+   |
+45 |     pub unsafe fn add_region(&mut self, memory: NonNull<u8>, len: usize) -> Result<(), HeapError> {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://clippy.rust-lang.org/main/index.html#missing_safety_doc
+   = note: `-D clippy::missing-safety-doc` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::missing_safety_doc)]`
+
+error: unsafe function's docs are missing a `# Safety` section
+  --> src/heap.rs:73:5
+   |
+73 |     pub unsafe fn deallocate(&mut self, pointer: NonNull<u8>) -> Result<(), HeapError> {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://clippy.rust-lang.org/main/index.html#missing_safety_doc
+
+error: unsafe function's docs are missing a `# Safety` section
+   --> src/heap.rs:105:5
+    |
+105 |     pub unsafe fn new(memory: NonNull<u8>, len: usize) -> Option<Self> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://clippy.rust-lang.org/main/index.html#missing_safety_doc
+
+error: unsafe function's docs are missing a `# Safety` section
+   --> src/heap.rs:180:5
+    |
+180 |     pub unsafe fn deallocate(&mut self, pointer: NonNull<u8>) -> Result<(), HeapError> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://clippy.rust-lang.org/main/index.html#missing_safety_doc
+
+error: manual implementation of `.is_multiple_of()`
+   --> src/heap.rs:203:20
+    |
+203 |                 || candidate.span % align_of::<Block>() != 0
+    |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: replace with: `!candidate.span.is_multiple_of(align_of::<Block>())`
+    |
+    = help: for further information visit https://clippy.rust-lang.org/main/index.html#manual_is_multiple_of
+
+error: manual implementation of `.is_multiple_of()`
+   --> src/memory.rs:277:12
+    |
+277 |         if kernel_root % PAGE_SIZE != 0 || kernel_root & !ENTRY_ADDRESS_MASK != 0 {
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: replace with: `!kernel_root.is_multiple_of(PAGE_SIZE)`
+    |
+    = help: for further information visit https://clippy.rust-lang.org/main/index.html#manual_is_multiple_of
+
+error: manual implementation of `.is_multiple_of()`
+   --> src/memory.rs:375:12
+    |
+375 |         if root % PAGE_SIZE != 0 || root & !ENTRY_ADDRESS_MASK != 0 {
+    |            ^^^^^^^^^^^^^^^^^^^^^ help: replace with: `!root.is_multiple_of(PAGE_SIZE)`
+    |
+    = help: for further information visit https://clippy.rust-lang.org/main/index.html#manual_is_multiple_of
+
+error: manual implementation of `.is_multiple_of()`
+   --> src/memory.rs:423:12
+    |
+423 |         if physical % PAGE_SIZE != 0 || physical & !ENTRY_ADDRESS_MASK != 0 {
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^ help: replace with: `!physical.is_multiple_of(PAGE_SIZE)`
+    |
+    = help: for further information visit https://clippy.rust-lang.org/main/index.html#manual_is_multiple_of
+
+error: the loop variable `level` is only used to index `indices`
+   --> src/memory.rs:432:22
+    |
+432 |         for level in 0..3 {
+    |                      ^^^^
+    |
+note: for this index operation
+   --> src/memory.rs:433:25
+    |
+433 |             let index = indices[level];
+    |                         ^^^^^^^^^^^^^^
+    = help: for further information visit https://clippy.rust-lang.org/main/index.html#needless_range_loop
+    = note: `-D clippy::needless-range-loop` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::needless_range_loop)]`
+help: consider using an iterator
+    |
+432 -         for level in 0..3 {
+432 +         for <item> in indices.iter().take(3) {
+    |
+
+error: manual implementation of `.is_multiple_of()`
+   --> src/memory.rs:579:12
+    |
+579 |         if virtual_address % PAGE_SIZE != 0
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: replace with: `!virtual_address.is_multiple_of(PAGE_SIZE)`
+    |
+    = help: for further information visit https://clippy.rust-lang.org/main/index.html#manual_is_multiple_of
+
+error: you should consider adding a `Default` implementation for `PhysicalFrameAllocator<WORDS>`
+   --> src/memory.rs:660:5
+    |
+660 | /     pub const fn new() -> Self {
+661 | |         Self {
+662 | |             available: [0; WORDS],
+663 | |             allocated: [0; WORDS],
+...   |
+667 | |     }
+    | |_____^
+    |
+    = help: for further information visit https://clippy.rust-lang.org/main/index.html#new_without_default
+help: try adding this
+    |
+767 ~ }
+768 + 
+769 + impl<const WORDS: usize> Default for PhysicalFrameAllocator<WORDS> {
+770 +     fn default() -> Self {
+771 +         Self::new()
+772 +     }
+773 + }
+    |
+
+error: manual implementation of `.is_multiple_of()`
+   --> src/memory.rs:734:12
+    |
+734 |         if address % PAGE_SIZE != 0 {
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^ help: replace with: `!address.is_multiple_of(PAGE_SIZE)`
+    |
+    = help: for further information visit https://clippy.rust-lang.org/main/index.html#manual_is_multiple_of
+
+error: using `chunks_exact` with a constant chunk size
+   --> src/net.rs:457:28
+    |
+457 |     let mut chunks = bytes.chunks_exact(2);
+    |                            ^^^^^^^^^^^^^^^
+    |
+help: consider using `as_chunks::<2>()` instead
+   --> src/net.rs:457:28
+    |
+457 |     let mut chunks = bytes.chunks_exact(2);
+    |                            ^^^^^^^^^^^^^^^
+    = note: you can access the chunks using `chunks.0.iter()`, and the remainder using `chunks.1`
+    = help: for further information visit https://clippy.rust-lang.org/main/index.html#chunks_exact_to_as_chunks
+
+error: using `chunks_exact` with a constant chunk size
+   --> src/net.rs:478:26
+    |
+478 |     let mut chunks = udp.chunks_exact(2);
+    |                          ^^^^^^^^^^^^^^^
+    |
+help: consider using `as_chunks::<2>()` instead
+   --> src/net.rs:478:26
+    |
+478 |     let mut chunks = udp.chunks_exact(2);
+    |                          ^^^^^^^^^^^^^^^
+    = note: you can access the chunks using `chunks.0.iter()`, and the remainder using `chunks.1`
+    = help: for further information visit https://clippy.rust-lang.org/main/index.html#chunks_exact_to_as_chunks
+
+error: you should consider adding a `Default` implementation for `KernelStackPool<N, BYTES>`
+  --> src/process.rs:37:5
+   |
+37 | /     pub const fn new() -> Self {
+38 | |         Self {
+39 | |             state: IrqSpinLock::new(KernelStackPoolState {
+40 | |                 stacks: [const { KernelStackStorage([0; BYTES]) }; N],
+...  |
+44 | |     }
+   | |_____^
+   |
+   = help: for further information visit https://clippy.rust-lang.org/main/index.html#new_without_default
+help: try adding this
+   |
+77 ~ }
+78 + 
+79 + impl<const N: usize, const BYTES: usize> Default for KernelStackPool<N, BYTES> {
+80 +     fn default() -> Self {
+81 +         Self::new()
+82 +     }
+83 + }
+   |
+
+error: empty string literal in `writeln!`
+  --> src/pseudo_fs.rs:67:17
+   |
+67 |                 writeln!(text, "").unwrap();
+   |                 ^^^^^^^^^^^^^----^
+   |                              |
+   |                              help: remove the empty string
+   |
+   = help: for further information visit https://clippy.rust-lang.org/main/index.html#writeln_empty_string
+   = note: `-D clippy::writeln-empty-string` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::writeln_empty_string)]`
+
+error: unsafe function's docs are missing a `# Safety` section
+  --> src/user_memory.rs:93:1
+   |
+93 | / pub unsafe fn copy_from_user<L: UserPageLookup>(
+94 | |     lookup: &L,
+95 | |     address: u64,
+96 | |     destination: &mut [u8],
+97 | | ) -> Result<(), UserBufferError> {
+   | |________________________________^
+   |
+   = help: for further information visit https://clippy.rust-lang.org/main/index.html#missing_safety_doc
+
+error: unsafe function's docs are missing a `# Safety` section
+   --> src/user_memory.rs:115:1
+    |
+115 | / pub unsafe fn copy_to_user<L: UserPageLookup>(
+116 | |     lookup: &L,
+117 | |     address: u64,
+118 | |     source: &[u8],
+119 | | ) -> Result<(), UserBufferError> {
+    | |________________________________^
+    |
+    = help: for further information visit https://clippy.rust-lang.org/main/index.html#missing_safety_doc
+
+error: this returns a `Result<_, ()>`
+  --> src/userland/apps.rs:21:5
+   |
+21 |     fn start(&mut self, executable: &str, session: Session) -> Result<(), ()>;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a custom `Error` type instead
+   = help: for further information visit https://clippy.rust-lang.org/main/index.html#result_unit_err
+   = note: `-D clippy::result-unit-err` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::result_unit_err)]`
+
+error: manual implementation of `.is_multiple_of()`
+   --> src/vma.rs:167:12
+    |
+167 |         if address % PAGE_SIZE != 0 {
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^ help: replace with: `!address.is_multiple_of(PAGE_SIZE)`
+    |
+    = help: for further information visit https://clippy.rust-lang.org/main/index.html#manual_is_multiple_of
+
+error: manual implementation of `.is_multiple_of()`
+   --> src/vma.rs:459:12
+    |
+459 |         if region.start % PAGE_SIZE != 0 || region.end <= region.start || region.end > USER_TOP {
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: replace with: `!region.start.is_multiple_of(PAGE_SIZE)`
+    |
+    = help: for further information visit https://clippy.rust-lang.org/main/index.html#manual_is_multiple_of
+
+error: could not compile `carlio-os` (lib) due to 32 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `carlio-os` (lib) due to 32 previous errors
+error: manual creation of a dangling pointer
+   --> src/heap.rs:343:36
+    |
+343 |         let foreign = NonNull::new(1usize as *mut u8).unwrap();
+    |                                    ^^^^^^^^^^^^^^^^^ help: use: `std::ptr::dangling_mut::<u8>()`
+    |
+    = help: for further information visit https://clippy.rust-lang.org/main/index.html#manual_dangling_ptr
+    = note: `-D clippy::manual-dangling-ptr` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::manual_dangling_ptr)]`
+
+error: could not compile `carlio-os` (lib test) due to 35 previous errors

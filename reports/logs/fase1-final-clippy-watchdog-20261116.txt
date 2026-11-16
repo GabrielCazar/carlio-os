@@ -1,0 +1,2 @@
+    Checking carlio-os v0.1.0 (/home/gabriel/Work/carlio-os)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.10s

@@ -1,0 +1,399 @@
+   Compiling carlio-os v0.1.0 (/tmp/carlioos-test-20261115-205620/src)
+warning: field `stacks` is never read
+  --> src/process.rs:18:5
+   |
+17 | struct KernelStackPoolState<const N: usize, const BYTES: usize> {
+   |        -------------------- field in this struct
+18 |     stacks: [KernelStackStorage<BYTES>; N],
+   |     ^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `carlio-os` (lib) generated 1 warning
+warning: constant `COM1` is never used
+  --> src/main.rs:33:7
+   |
+33 | const COM1: u16 = 0x3f8;
+   |       ^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: constant `INPUT_LIMIT` is never used
+  --> src/main.rs:34:7
+   |
+34 | const INPUT_LIMIT: usize = 128;
+   |       ^^^^^^^^^^^
+
+warning: constant `SERIAL_POLL_LIMIT` is never used
+  --> src/main.rs:35:7
+   |
+35 | const SERIAL_POLL_LIMIT: usize = 1_000_000;
+   |       ^^^^^^^^^^^^^^^^^
+
+warning: constant `ERROR_LOG_CAPACITY` is never used
+  --> src/main.rs:36:7
+   |
+36 | const ERROR_LOG_CAPACITY: usize = 16;
+   |       ^^^^^^^^^^^^^^^^^^
+
+warning: static `ERROR_LOG` is never used
+  --> src/main.rs:42:12
+   |
+42 | static mut ERROR_LOG: ErrorLog<ERROR_LOG_CAPACITY> = ErrorLog::new();
+   |            ^^^^^^^^^
+
+warning: static `HHDM_OFFSET` is never used
+  --> src/main.rs:43:12
+   |
+43 | static mut HHDM_OFFSET: u64 = 0;
+   |            ^^^^^^^^^^^
+
+warning: static `KERNEL_PHYSICAL_BASE` is never used
+  --> src/main.rs:44:12
+   |
+44 | static mut KERNEL_PHYSICAL_BASE: u64 = 0;
+   |            ^^^^^^^^^^^^^^^^^^^^
+
+warning: static `KERNEL_VIRTUAL_BASE` is never used
+  --> src/main.rs:45:12
+   |
+45 | static mut KERNEL_VIRTUAL_BASE: u64 = 0;
+   |            ^^^^^^^^^^^^^^^^^^^
+
+warning: function `shell` is never used
+   --> src/main.rs:867:4
+    |
+867 | fn shell() -> ! {
+    |    ^^^^^
+
+warning: function `startup_screen` is never used
+   --> src/main.rs:972:4
+    |
+972 | fn startup_screen() {
+    |    ^^^^^^^^^^^^^^
+
+warning: function `serial_init` is never used
+   --> src/main.rs:981:4
+    |
+981 | fn serial_init() {
+    |    ^^^^^^^^^^^
+
+warning: function `serial_write` is never used
+   --> src/main.rs:993:4
+    |
+993 | fn serial_write(byte: u8) -> bool {
+    |    ^^^^^^^^^^^^
+
+warning: function `serial_read` is never used
+    --> src/main.rs:1011:4
+     |
+1011 | fn serial_read() -> Result<u8, KernelError> {
+     |    ^^^^^^^^^^^
+
+warning: function `write` is never used
+    --> src/main.rs:1026:4
+     |
+1026 | fn write(text: &str) {
+     |    ^^^^^
+
+warning: function `record_error` is never used
+    --> src/main.rs:1729:4
+     |
+1729 | fn record_error(error: KernelError) {
+     |    ^^^^^^^^^^^^
+
+warning: function `report_errors` is never used
+    --> src/main.rs:1740:4
+     |
+1740 | fn report_errors() {
+     |    ^^^^^^^^^^^^^
+
+warning: function `write_u32` is never used
+    --> src/main.rs:2140:4
+     |
+2140 | fn write_u32(mut number: u32) {
+     |    ^^^^^^^^^
+
+warning: function `out` is never used
+    --> src/main.rs:2317:11
+     |
+2317 | unsafe fn out(port: u16, value: u8) {
+     |           ^^^
+
+warning: function `input` is never used
+    --> src/main.rs:2323:11
+     |
+2323 | unsafe fn input(port: u16) -> u8 {
+     |           ^^^^^
+
+warning: `carlio-os` (bin "carlio-kernel" test) generated 19 warnings
+
+running 113 tests
+test elf::tests::loads_static_pie_et_dyn_with_checked_load_bias ... ok
+test elf::tests::builds_initial_stack_with_argc_argv_envp_and_terminators ... ok
+test elf::tests::maps_zeroed_segment_and_applies_final_permissions ... warning: `carlio-os` (lib test) generated 1 warning (1 duplicate)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.51s
+     Running unittests src/lib.rs (target/debug/deps/carlio_os-2a9e6a9efae7a6cb)
+ok
+test elf::tests::loads_elf_from_vfs_after_execute_and_read_checks ... ok
+test elf::tests::rejects_initial_stack_overflow_and_embedded_nul ... ok
+test elf::tests::parses_executable_load_segment ... ok
+test elf::tests::rejects_interpreters_and_dynamic_relocation_tables_until_linker_exists ... ok
+test elf::tests::rejects_truncated_file_payload ... ok
+test elf::tests::rejects_writable_executable_segment ... ok
+test errors::tests::keeps_recent_errors_and_counts_overwrites ... ok
+test elf::tests::vfs_elf_loader_rejects_non_executable_files_before_loading ... ok
+test fat32::tests::rejects_bad_geometry_and_out_of_partition_reads ... ok
+test fat32::tests::mounts_partition_and_reads_root_83_file_without_writes ... ok
+test heap::tests::heap_set_rejects_overlapping_and_excess_regions ... ok
+test heap::tests::heap_set_expands_into_new_regions_and_routes_deallocation ... ok
+test heap::tests::honors_size_and_large_alignment_then_reuses_coalesced_space ... ok
+test heap::tests::rejects_foreign_and_double_free ... ok
+test heap::tests::rejects_too_small_region_and_exhausts_cleanly ... ok
+test hermione::tests::detects_data_corruption_and_frees_deleted_extent ... ok
+test hermione::tests::flushes_new_data_before_publishing_directory ... ok
+test hermione::tests::failed_mirror_write_keeps_previous_directory_generation ... ok
+test hermione::tests::failed_replace_keeps_old_file_visible_after_mount ... ok
+test hermione::tests::format_write_read_and_mount_persist ... ok
+test hermione::tests::mount_rejects_corrupt_superblock_and_directory ... ok
+test hermione::tests::journal_redoes_commit_when_directory_write_is_torn ... ok
+test hermione::tests::rejects_bad_names_missing_files_and_small_buffers ... ok
+test hermione::tests::mount_rejects_invalid_duplicate_names_and_oversized_extents ... ok
+test linux_abi::tests::dispatches_linux_getpid_exit_and_exit_group ... ok
+test linux_abi::tests::read_copies_descriptor_bytes_to_user_and_rejects_bad_pointer ... ok
+test hermione::tests::supports_exact_two_tib_sector_count_without_u32_truncation ... ok
+test linux_abi::tests::unknown_linux_syscall_returns_enosys ... ok
+test linux_abi::tests::write_copies_user_bytes_and_returns_linux_byte_count ... ok
+test hermione::tests::scrub_repairs_a_bad_copy_only_from_the_verified_mirror ... ok
+test linux_abi::tests::write_reports_ebadf_efault_and_partial_progress ... ok
+test log_report::tests::failure_marker_overrides_success_and_markdown_escapes_cells ... ok
+test log_report::tests::summarizes_host_and_qemu_markers ... ok
+test log_report::tests::generator_builds_a_markdown_table_and_text_chart ... ok
+test memory::tests::address_space_copies_kernel_half_and_owns_only_user_page_tables ... ok
+test memory::tests::frame_allocator_allocates_and_reuses_aligned_frames ... ok
+test memory::tests::frame_allocator_rejects_invalid_and_double_frees ... ok
+test memory::tests::hhdm_translation_rejects_overflow ... ok
+test memory::tests::host_model_isolates_processes_mapping_the_same_user_address ... ok
+test memory::tests::page_table_map_unmap_validates_and_reclaims_empty_tables ... ok
+test hermione::tests::interrupted_replace_at_each_write_and_flush_keeps_a_valid_generation ... ok
+test memory::tests::physical_allocator_can_request_a_high_frame_without_consuming_low_memory ... ok
+test memory::tests::physical_allocator_deduplicates_regions_and_clips_capacity ... ok
+test memory::tests::owned_address_space_reclaims_user_frames_and_page_tables ... ok
+test memory::tests::page_table_rejects_bad_addresses_flags_and_huge_conflicts ... ok
+test memory::tests::physical_allocator_rejects_reserved_invalid_and_double_frees ... ok
+test memory::tests::physical_allocator_uses_only_usable_aligned_frames ... ok
+test memory::tests::translates_kernel_addresses_with_checked_arithmetic ... ok
+test memory::tests::user_mapping_promotes_existing_path_and_unmap_preserves_unowned_tables ... ok
+test memory::tests::user_mapping_rejects_kernel_half_and_legacy_map_rejects_user_flag ... ok
+test memory::tests::user_mapping_sets_user_access_on_path_and_keeps_kernel_leaf_supervisor ... ok
+test pci::tests::classifies_supported_intel_integrated_graphics_ids ... ok
+test pci::tests::classifies_target_driver_families ... ok
+test pci::tests::identifies_known_ahci_ids_and_rejects_other_modes ... ok
+test pci::tests::identifies_server_and_development_ethernet_without_claiming_driver_support ... ok
+test process::tests::blocked_process_wakes_back_into_ready_queue ... ok
+test process::tests::cpu_local_queues_distribute_work_and_allow_idle_cpu_stealing ... ok
+test memory::tests::physical_allocator_lock_prevents_duplicate_frames_under_contention ... ok
+test process::tests::exit_removes_process_from_future_dispatch ... ok
+test process::tests::failed_generic_cleanup_restores_exited_state_for_retry ... ok
+test process::tests::generic_reaper_runs_cleanup_outside_scheduler_lock_and_reuses_slot ... ok
+test process::tests::kernel_stack_is_exclusive_transferred_and_reclaimed_by_reaper ... ok
+test process::tests::preemption_saves_full_context_before_round_robin_dispatch ... ok
+test process::tests::process_identity_and_groups_are_attached_to_the_scheduled_process ... ok
+test process::tests::refuses_contexts_outside_user_range_or_with_privileged_flags ... ok
+test process::tests::rejects_bad_cpu_and_full_table ... ok
+test memory::tests::physical_allocator_reaches_above_four_gib_and_clips_at_32_gib ... ok
+test process::tests::schedules_round_robin_across_cpus_without_duplicate_running ... ok
+test process::tests::user_fault_isolated_and_resources_can_be_reaped_with_retry ... ok
+test pseudo_fs::tests::exposes_proc_and_sys_snapshots_and_supports_offsets ... ok
+test process::tests::scales_fixed_metadata_queue_to_ten_thousand_processes ... ok
+test storage::tests::rejects_out_of_range_and_missing_snapshots ... ok
+test pseudo_fs::tests::rejects_unknown_paths_and_bounds_cpu_output ... ok
+test storage::tests::scrub_detects_corruption ... ok
+test storage::tests::writes_are_copy_on_write_and_snapshot_restores_old_root ... ok
+test process::tests::dynamically_reuses_process_slots_after_exit_and_reap ... ok
+test sync::tests::irq_lock_releases_inner_lock_before_restoring_interrupt_state ... ok
+test sync::tests::irq_lock_serializes_host_threads ... ok
+test syscall::tests::dispatches_version_and_read_only_process_information ... ok
+test syscall::tests::rejects_unknown_numbers_with_enosys ... ok
+test tests::guest_cannot_change_system_state ... ok
+test tests::herm_fs_cli_points_to_hermione_module ... ok
+test tests::parses_supported_commands_and_whitespace ... ok
+test tests::rejects_unknown_and_empty_commands ... ok
+test user_memory::tests::accepts_valid_read_and_write_ranges ... ok
+test sync::tests::try_lock_reports_contention_and_releases_on_drop ... ok
+test user_memory::tests::checks_every_page_and_permissions ... ok
+test user_memory::tests::rejects_overflow_and_kernel_addresses ... ok
+test sync::tests::serializes_mutations_across_host_threads ... ok
+test userland::accounts::tests::account_database_persists_through_hermione_remount ... ok
+test userland::accounts::tests::account_database_rejects_plaintext_duplicate_and_corruption ... ok
+test userland::accounts::tests::account_records_roundtrip_and_authenticate_without_plaintext_storage ... ok
+test userland::apps::tests::catalog_checks_vfs_execute_permission_before_dispatch ... ok
+test userland::arch::tests::parses_arch_metadata_and_dependency_lists ... ok
+test userland::arch::tests::rejects_missing_duplicate_and_foreign_architecture ... ok
+test userland::debian::tests::parses_ubuntu_amd64_control_fields ... ok
+test userland::debian::tests::rejects_unknown_architecture_and_missing_fields ... ok
+test userland::login::tests::creates_session_only_after_verifier_accepts_credentials ... ok
+test vfs::tests::file_reads_and_writes_enforce_permissions_and_capacity ... ok
+test vfs::tests::creates_modular_system_layout_and_checks_owner_group_other_bits ... ok
+test vfs::tests::only_root_can_change_owner_and_metadata_preserves_special_mode_bits ... ok
+test vfs::tests::rejects_duplicate_names_and_non_owner_mode_changes ... ok
+test vfs::tests::search_permission_is_required_for_dot_and_parent_components ... ok
+test vfs::tests::root_can_bypass_read_write_but_not_missing_execute_bit ... ok
+test vfs::tests::unlink_checks_parent_permissions_sticky_bit_and_reuses_slot ... ok
+test vfs::tests::supplementary_groups_umask_and_setgid_follow_unix_rules ... ok
+test video::tests::framebuffer_rejects_invalid_layouts_and_clips_rectangles ... ok
+test video::tests::framebuffer_validates_pitch_and_writes_rgb_pixels ... ok
+test video::tests::vga_console_writes_ascii_and_scrolls ... ok
+test memory::tests::concurrent_vm_edits_are_serialized_and_request_remote_invalidations ... ok
+
+test result: ok. 113 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s
+
+     Running unittests src/main.rs (target/debug/deps/carlio_kernel-c0eaaf719af48302)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/carlio-logs.rs (target/debug/deps/carlio_logs-02a913d942642caf)
+
+running 1 test
+test tests::help_documents_generator_and_native_viewer ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 4 tests
+test existing_tests::status_describes_block_contract_and_version ... ok
+test existing_tests::help_documents_image_commands_and_safe_creation ... ok     Running unittests src/bin/herm-fs.rs (target/debug/deps/herm_fs-cfaeb039c8cf7175)
+
+test tests::sparse_two_tib_image_accepts_last_lba_and_rejects_past_end ... ok
+test existing_tests::file_backed_volume_survives_close_and_reopen ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Compiling carlio-os v0.1.0 (/tmp/carlioos-test-20261115-205620/src)
+warning: field `stacks` is never read
+  --> src/process.rs:18:5
+   |
+17 | struct KernelStackPoolState<const N: usize, const BYTES: usize> {
+   |        -------------------- field in this struct
+18 |     stacks: [KernelStackStorage<BYTES>; N],
+   |     ^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `carlio-os` (lib) generated 1 warning
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.77s
+     Running `target/debug/herm-fs status`
+Hermione: BlockDevice, volume v3, journal redo, espelho e scrub disponíveis; montagem exige uma imagem ou dispositivo explícito.
+[2J[H+----------------------------------------------------+
+| carlIO OS | Criado por João G.R.Santos             |
+| Sistema operacional experimental x86_64            |
++----------------------------------------------------+
+Núcleo Rust · inicialização serial
+
+Framebuffer Limine: RGB ativo; renderização de pixels validada.
+IDT: exceções 0-31 registradas; IRQs externos permanecem desativados.
+Ring 3: GDT, TSS, RSP0 e seletores de usuário configurados; CPL continua 0.
+Aviso: terminal de diagnóstico em ring 0; não é uma fronteira de segurança.
+Mapa de memória Limine: regiões usáveis=3, RAM usável MiB=503; HHDM e bases físico/virtual do kernel disponíveis.
+Allocator físico: frames livres até 32 GiB=128980, sem RAM acima de 4 GiB; teste usa frame baixo; alocação, escrita, leitura e liberação passaram.
+LAPIC xAPIC ativo no BSP; vetor de shootdown remoto 0xF1 instalado.
+SMP Limine: CPUs detectadas=4, APs iniciadas=3, aguardadas=3; APs aguardam despacho de tarefa, scheduler ainda desativado.
+SMP trabalho: CPUs AP=3, tarefas concluídas=3, resultados válidos=3; despacho de prova concluído.
+Heap kernel: regiões dinâmicas, alinhamento, escrita/leitura, expansão e liberação passaram.
+Inventário PCI (somente leitura):
+PCI 00:01.0 1234:1111 vídeo
+PCI 00:02.0 8086:10d3 rede (controlador não suportado)
+PCI 00:1f.2 8086:2922 SATA/AHCI (QEMU: reconhecido; driver AHCI experimental)
+AHCI indisponível: dispositivo nao encontrado.
+Controladores relevantes encontrados: 3
+Runtime de processos: preparando tarefas CPL3.
+Runtime: tarefas com CR3 independentes despachadas.
+Timer: primeira troca de processo observada.
+Runtime: fault CPL3 vetorizado=14 CR2=0x0000700000000000; encerrando somente a tarefa.
+Runtime: tarefas encerradas; trocas de timer=1, trocas de CR3=1, faults isolados=1.
+ABI Linux x86_64: getpid/exit via SYSCALL passou.
+Ring 3: probe CPL3, retorno seguro e fault #UD isolado passaram.
+Ring 3 rotinas: ELF carregado em CPL3, scheduler e preempção entre dois CR3 passaram; pilhas recuperadas pelo reaper.
+TLB SMP: shootdowns enviados=18, ACKs remotos por IPI concluídos antes de liberar tabelas.
+Watchdog PIT ativo: prazo de 5 s sem progresso.
+Digite 'ajuda' para ver os comandos.
+
+carlio> ajuda
+Comandos: ajuda, sobre, usuario, permissoes, erros, logs, limpar, parar.
+carlio> erros
+Erros registrados: 0
+carlio> logs
+# Eventos do kernel (buffer volátil)
+
+| Métrica | Valor | Gráfico |
+|---|---:|---|
+| Eventos desde o boot | 0 |  |
+
+| Índice recente | Código | Evento |
+|---:|---:|---|
+
+Aviso: captura em RAM, limitada e perdida ao reiniciar; não é log persistente.
+carlio> sobre
+carlIO OS | Criado por João G.R.Santos
+Sistema operacional experimental x86_64 escrito em Rust.
+carlio> parar
+Processador parado.
+Teste QEMU aprovado (kvm); log: /tmp/carlioos-test-20261115-205620/qemu-kvm-bios.log
+[2J[001;001H[=3h[2J[001;001H[2J[001;001H[8;042;160t[2J[001;001H[2J[001;001H[8;056;240t[2J[001;001HBdsDxe: loading Boot0002 "UEFI QEMU DVD-ROM QM00005 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x2,0xFFFF,0x0)
+BdsDxe: starting Boot0002 "UEFI QEMU DVD-ROM QM00005 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x2,0xFFFF,0x0)
+[001;001H[001;001H[2J[H+----------------------------------------------------+
+| carlIO OS | Criado por João G.R.Santos             |
+| Sistema operacional experimental x86_64            |
++----------------------------------------------------+
+Núcleo Rust · inicialização serial
+
+Framebuffer Limine: RGB ativo; renderização de pixels validada.
+IDT: exceções 0-31 registradas; IRQs externos permanecem desativados.
+Ring 3: GDT, TSS, RSP0 e seletores de usuário configurados; CPL continua 0.
+Aviso: terminal de diagnóstico em ring 0; não é uma fronteira de segurança.
+Mapa de memória Limine: regiões usáveis=11, RAM usável MiB=459; HHDM e bases físico/virtual do kernel disponíveis.
+Allocator físico: frames livres até 32 GiB=117525, sem RAM acima de 4 GiB; teste usa frame baixo; alocação, escrita, leitura e liberação passaram.
+LAPIC xAPIC ativo no BSP; vetor de shootdown remoto 0xF1 instalado.
+SMP Limine: CPUs detectadas=4, APs iniciadas=3, aguardadas=3; APs aguardam despacho de tarefa, scheduler ainda desativado.
+SMP trabalho: CPUs AP=3, tarefas concluídas=3, resultados válidos=3; despacho de prova concluído.
+Heap kernel: regiões dinâmicas, alinhamento, escrita/leitura, expansão e liberação passaram.
+Inventário PCI (somente leitura):
+PCI 00:01.0 1234:1111 vídeo
+PCI 00:02.0 8086:10d3 rede (controlador não suportado)
+PCI 00:1f.2 8086:2922 SATA/AHCI (QEMU: reconhecido; driver AHCI experimental)
+AHCI indisponível: dispositivo nao encontrado.
+Controladores relevantes encontrados: 3
+Runtime de processos: preparando tarefas CPL3.
+Runtime: tarefas com CR3 independentes despachadas.
+Timer: primeira troca de processo observada.
+Runtime: fault CPL3 vetorizado=14 CR2=0x0000700000000000; encerrando somente a tarefa.
+Runtime: tarefas encerradas; trocas de timer=1, trocas de CR3=1, faults isolados=1.
+ABI Linux x86_64: getpid/exit via SYSCALL passou.
+Ring 3: probe CPL3, retorno seguro e fault #UD isolado passaram.
+Ring 3 rotinas: ELF carregado em CPL3, scheduler e preempção entre dois CR3 passaram; pilhas recuperadas pelo reaper.
+TLB SMP: shootdowns enviados=18, ACKs remotos por IPI concluídos antes de liberar tabelas.
+Watchdog PIT ativo: prazo de 5 s sem progresso.
+Digite 'ajuda' para ver os comandos.
+
+carlio> ajuda
+Comandos: ajuda, sobre, usuario, permissoes, erros, logs, limpar, parar.
+carlio> erros
+Erros registrados: 0
+carlio> logs
+# Eventos do kernel (buffer volátil)
+
+| Métrica | Valor | Gráfico |
+|---|---:|---|
+| Eventos desde o boot | 0 |  |
+
+| Índice recente | Código | Evento |
+|---:|---:|---|
+
+Aviso: captura em RAM, limitada e perdida ao reiniciar; não é log persistente.
+carlio> sobre
+carlIO OS | Criado por João G.R.Santos
+Sistema operacional experimental x86_64 escrito em Rust.
+carlio> parar
+Processador parado.Teste QEMU aprovado (kvm); log: /tmp/carlioos-test-20261115-205620/qemu-kvm-uefi.log

@@ -1,0 +1,45 @@
+[2J[H+----------------------------------------------------+
+| carlIO OS | Criado por João G.R.Santos             |
+| Sistema operacional experimental x86_64            |
++----------------------------------------------------+
+Núcleo Rust · inicialização serial
+
+IDT: exceções 0-31 registradas; IRQs externos permanecem desativados.
+Ring 3: GDT, TSS, RSP0 e seletores de usuário configurados; CPL continua 0.
+Aviso: terminal de diagnóstico em ring 0; não é uma fronteira de segurança.
+SMP Limine: CPUs detectadas=4, APs iniciadas=3, aguardadas=3; APs em laço ocioso, scheduler multicore ainda desativado.
+Mapa de memória Limine: regiões usáveis=2, RAM usável MiB=508; HHDM e bases físico/virtual do kernel disponíveis.
+Allocator físico: frames livres abaixo de 4 GiB=130246; alocação, escrita, leitura e liberação passaram.
+VM: mapeamento, acesso, invalidação TLB, desmapeamento e liberação de tabelas passaram.
+Heap kernel: região estática, alinhamento, escrita/leitura e liberação passaram; allocator global permanece desativado.
+Inventário PCI (somente leitura):
+PCI 00:01.0 1234:1111 vídeo
+PCI 00:02.0 8086:10d3 rede (controlador não suportado)
+PCI 00:1f.2 8086:2922 SATA/AHCI (QEMU: reconhecido; driver AHCI experimental)
+AHCI indisponível: dispositivo nao encontrado.
+Controladores relevantes encontrados: 3
+Watchdog PIT ativo: prazo de 5 s sem progresso.
+Digite 'ajuda' para ver os comandos.
+
+carlio> ajuda
+Comandos: ajuda, sobre, usuario, permissoes, erros, logs, limpar, parar.
+carlio> erros
+Erros registrados: 0
+carlio> logs
+# Eventos do kernel (buffer volátil)
+
+| Métrica | Valor | Gráfico |
+|---|---:|---|
+| Eventos desde o boot | 0 |  |
+
+| Índice recente | Código | Evento |
+|---:|---:|---|
+
+Aviso: captura em RAM, limitada e perdida ao reiniciar; não é log persistente.
+carlio> sobre
+carlIO OS | Criado por João G.R.Santos
+Sistema operacional experimental x86_64 escrito em Rust.
+carlio> parar
+Processador parado.
+
+--- mensagens do QEMU ---

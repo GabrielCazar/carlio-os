@@ -17,46 +17,49 @@ validar um pool com segurança.
 
 ## Utilitário de linha de comando
 
-O executável `herm-fs` é a interface de administração do Hermione. `--help` e
-`status` informam a disponibilidade do formato; não há ainda interface para
-administrar um volume real pelo CLI. O kernel tem um comando `fs-teste` somente
-na build `storage-test`, para formatar e testar uma mídia descartável QEMU.
+O executável `herm-fs` administra arquivos-imagem: `criar` usa criação
+exclusiva e recusa sobrescrever, `listar`, `gravar`, `ler` e `scrub` montam a
+imagem via um `BlockDevice` de arquivo com `sync_all` no `flush`. Arquivos de
+entrada têm limite operacional de 64 MiB por chamada. O kernel tem `fs-teste`
+somente na build `storage-test`, para validar a mesma API por AHCI em imagem
+descartável QEMU; isso não monta volume no boot normal.
 
-## Formato experimental v2
+## Formato experimental v3
 
-- `BlockDevice` oferece setores de 512 bytes, contagem de setores e operações
-  de leitura/escrita; o driver AHCI QEMU implementa essa interface na build de
-  teste.
-- O volume tem superbloco versionado no LBA 0, duas cópias alternadas do
-  diretório de 12 entradas nos LBAs 1 e 2, e extents contíguos a partir do LBA
-  3. Nomes são ASCII simples, sem caminhos; o tamanho por arquivo é de 32 bits.
-- Cada atualização grava dados em espaço livre, executa `flush`, grava a cópia
-  inativa do diretório com nova geração e executa `flush` novamente. `mount`
-  escolhe a geração válida mais recente ou recua para a cópia anterior se a
-  outra estiver corrompida/incompleta. Superbloco e diretórios têm CRC32; cada
-  arquivo tem CRC32 sobre bytes lógicos.
-- `read_file` verifica o checksum antes de copiar os bytes para o buffer do
-  chamador. `scrub` verifica todos os arquivos sem expor dados. A alocação
-  first-fit percorre os extents registrados, evita a busca por cada setor e
-  preserva o extent antigo até o commit de uma substituição.
-- Montagem rejeita versão incompatível, cabeçalho inválido, setores fora da
-  mídia e extents sobrepostos. A versão v2 não monta volumes experimentais v1;
-  eles devem ser reformatados, sempre em mídia descartável.
-- O teste host cobre formatação, escrita, remontagem, leitura, checksum,
-  exclusão/reuso de espaço e nomes/buffers inválidos. A build `storage-test`
-  ainda permite `fs-teste` formatar a mídia AHCI e remontar o volume durante a
-  mesma sessão QEMU.
-- **Ainda não é seguro para dados reais:** os diretórios duplos recuperam
-  commits de metadados interrompidos em teste, mas não substituem um journal
-  geral nem testes de corte de energia em hardware. Também faltam cifra, KDF,
-  autenticação, árvore de diretórios, permissões, concorrência e montagem no
-  boot normal. Reformatar sobrescreve os LBAs 0–2. Use somente disco descartável.
+- `BlockDevice` oferece setores de 512 bytes, contagem, leitura, escrita e
+  `flush`; o adaptador AHCI QEMU implementa a interface na build de teste.
+- Superbloco no LBA 0; diretórios alternados nos LBAs 1 e 2; journal redo no
+  LBA 3; dados a partir do LBA 4. Cada arquivo tem duas cópias contíguas,
+  checksum CRC32 e tamanho máximo de 32 bits.
+- Meta de capacidade do dispositivo: até 2 TiB, isto é, 2^32 setores de 512
+  bytes. O código v3 ainda rejeita contagens maiores que `u32::MAX`, portanto
+  não aceita a capacidade exata de 2 TiB (2^32 setores). O superbloco já guarda
+  a contagem em 64 bits, mas os limites de volume e extents precisam ser
+  ajustados e testados antes de declarar suporte.
+- Commit grava os dois extents, faz `flush`, grava no journal a imagem completa
+  do diretório com geração/CRC e faz `flush`, publica o diretório alternado e faz
+  `flush`, então limpa o journal e sincroniza novamente. `mount` reaplica um
+  journal válido mais novo que os diretórios.
+- `read_file` confere as duas cópias antes de entregar conteúdo. `scrub` verifica
+  cada cópia e, quando só uma diverge, restaura a cópia ruim usando a validada,
+  sincroniza e relê para confirmar. Se ambas falharem, retorna erro sem inventar
+  conteúdo. `ScrubReport` informa arquivos verificados e cópias reparadas.
+- A alocação first-fit reserva os dois extents e preserva os dados anteriores
+  até o commit. Montagem valida setores e sobreposição dos espelhos.
+- A versão v3 é incompatível com v2 e exige reformatar somente uma imagem
+  descartável. Testes host cobrem montagem persistente, cortes injetados em cada
+  escrita/flush, replay de journal, corrupção simples/dupla, reparo e scrub.
+  `storage-test` testa AHCI com imagem descartável no QEMU.
+- **Ainda não é seguro para dados reais:** `flush` não foi validado em
+  controladores físicos. O reparo cobre somente uma cópia corrompida com outra
+  íntegra; não há paridade distribuída, cifra, permissões, concorrência nem
+  montagem no boot normal. Use somente mídia descartável.
 
 ## Próximas etapas
 
-- **Journal transacional geral:** manter recuperação explícita de operações
-  multi-setor e confirmar as garantias de flush/torn-write em QEMU e dispositivos
-  reais somente depois de existir suporte seguro a eles.
+- **Journal transacional geral:** o redo de metadados v3 recupera publicação
+  interrompida; ampliar operações multi-setor e validar durabilidade em
+  controladores após suporte seguro a eles.
 - **Integridade ponta a ponta:** checksums em dados e metadados detectam
   corrupção acidental; autenticação contra adulteração depende de MAC/AEAD e
   chaves protegidas. São garantias distintas e ambas serão verificadas.
@@ -65,11 +68,9 @@ na build `storage-test`, para formatar e testar uma mídia descartável QEMU.
 - **Scrub periódico:** varrer blocos em segundo plano, registrar progresso e
   erros, retomar após reinicialização e reduzir prioridade durante carga alta.
   A frequência será configurável e terá valor padrão documentado.
-- **Autorreparo condicionado à redundância:** se uma cópia falhar no checksum,
-  comparar uma cópia redundante validada (espelho/paridade), devolver os dados
-  bons e regravar a cópia danificada. Sem outra cópia íntegra, detectar e
-  identificar o erro, preservar o que restou e solicitar restauração; não
-  inventar nem mascarar dados. Esse limite também se aplica ao ZFS.
+- **Autorreparo além do espelho local:** expandir para redundância validada e
+  reconstrução com progresso persistente. Sem cópia íntegra, preservar o que
+  restou e solicitar restauração, sem inventar nem mascarar dados.
 - **Criptografia:** camada de volume desbloqueada no boot, com chaves fora do
   banco SQLite e segregadas de checksums. Checksum detecta corrupção, cifra
   autenticada detecta adulteração; são verificações diferentes.

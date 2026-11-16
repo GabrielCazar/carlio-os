@@ -10,6 +10,7 @@ pub enum Command {
     Clear,
     Halt,
     Errors,
+    Logs,
     Unknown,
 }
 
@@ -22,6 +23,7 @@ pub fn parse_command(line: &str) -> Command {
         "limpar" => Command::Clear,
         "parar" => Command::Halt,
         "erros" => Command::Errors,
+        "logs" => Command::Logs,
         _ => Command::Unknown,
     }
 }
@@ -53,10 +55,29 @@ pub const fn allowed(principal: Principal, capability: Capability) -> bool {
 
 pub mod storage;
 pub use storage as herm_fs;
+pub mod dynamic_linker;
+pub mod elf;
 pub mod errors;
+pub mod ext4;
+pub mod fat32;
+pub mod heap;
 pub mod hermione;
+pub mod linux_abi;
+#[cfg(not(target_os = "none"))]
+pub mod log_report;
 pub mod memory;
+pub mod net;
+pub mod open_files;
 pub mod pci;
+pub mod process;
+pub mod pseudo_fs;
+pub mod sync;
+pub mod syscall;
+pub mod user_memory;
+pub mod userland;
+pub mod vfs;
+pub mod video;
+pub mod vma;
 
 #[cfg(test)]
 mod tests {
@@ -66,6 +87,7 @@ mod tests {
     fn parses_supported_commands_and_whitespace() {
         assert_eq!(parse_command(" ajuda  "), Command::Help);
         assert_eq!(parse_command("permissoes"), Command::Permissions);
+        assert_eq!(parse_command("logs"), Command::Logs);
         assert_eq!(parse_command("parar"), Command::Halt);
     }
 

@@ -1,0 +1,15 @@
+Tipo: atualização exclusivamente documental
+Data: 2026-11-16
+Arquivos: AGENTS.md, CORRECT.md
+
+Verificações executadas:
+- `git diff --check -- AGENTS.md` — passou, sem erros de whitespace.
+- Verificação Python de newline final e trailing whitespace em ambos os arquivos
+  — passou (`final_newline=True`, nenhuma linha com whitespace final).
+
+Testes de código, QEMU, NAS e serial: não aplicáveis; esta alteração não muda
+comportamento, boot, armazenamento, drivers ou interface.
+
+Estado do workspace observado antes da edição: branch `main` com alterações
+preexistentes em vários arquivos. Nenhum commit foi criado para não misturar
+essas alterações.

@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="700" viewBox="0 0 1000 700" role="img" aria-labelledby="title desc">
+  <title id="title">Layout modular de diretórios</title><desc id="desc">Árvore de diretórios proposta para o CarlioOS.</desc>
+  <defs><style>.bg{fill:#10151d}.node{fill:#192533;stroke:#79d3bd;stroke-width:2;rx:12}.future{stroke:#d5a84e;stroke-dasharray:8 6}.head{fill:#eef5fb;font:700 28px system-ui}.name{fill:#eef5fb;font:700 20px ui-monospace,monospace}.desc{fill:#b9c8d5;font:15px system-ui}.line{stroke:#65877f;stroke-width:2;fill:none}.tag{fill:#f4ca6b;font:14px system-ui}</style></defs>
+  <rect class="bg" width="1000" height="700"/><text class="head" x="50" y="52">Layout lógico planejado</text>
+  <rect class="node" x="390" y="90" width="220" height="64"/><text class="name" x="430" y="130">/</text>
+  <path class="line" d="M500 154v44M130 198h740M130 198v32M315 198v32M500 198v32M685 198v32M870 198v32M500 198v200M130 398h740M130 398v32M315 398v32M500 398v32M685 398v32M870 398v32"/>
+  <g><rect class="node" x="45" y="230" width="170" height="90"/><text class="name" x="64" y="266">/programas</text><text class="desc" x="64" y="293">Aplicações</text>
+  <rect class="node" x="230" y="230" width="170" height="90"/><text class="name" x="244" y="266">/configuracoes</text><text class="desc" x="244" y="293">Sistema e serviços</text>
+  <rect class="node" x="415" y="230" width="170" height="90"/><text class="name" x="444" y="266">/usuarios</text><text class="desc" x="444" y="293">Dados pessoais</text>
+  <rect class="node" x="600" y="230" width="170" height="90"/><text class="name" x="641" y="266">/sistema</text><text class="desc" x="641" y="293">Base e bibliotecas</text>
+  <rect class="node" x="785" y="230" width="170" height="90"/><text class="name" x="825" y="266">/dados</text><text class="desc" x="825" y="293">Volumes e compartilhados</text>
+  <rect class="node future" x="45" y="430" width="170" height="90"/><text class="name" x="70" y="466">/temporarios</text><text class="desc" x="70" y="493">Dados efêmeros</text>
+  <rect class="node future" x="230" y="430" width="170" height="90"/><text class="name" x="277" y="466">/dev</text><text class="desc" x="277" y="493">Dispositivos</text>
+  <rect class="node future" x="415" y="430" width="170" height="90"/><text class="name" x="452" y="466">/proc</text><text class="desc" x="452" y="493">Processos e kernel</text>
+  <rect class="node future" x="600" y="430" width="170" height="90"/><text class="name" x="639" y="466">/sys</text><text class="desc" x="639" y="493">Dispositivos e serviços</text>
+  <rect class="node future" x="785" y="430" width="170" height="90"/><text class="name" x="829" y="466">/var</text><text class="desc" x="829" y="493">Logs e estado persistente</text></g>
+  <text class="tag" x="50" y="590">Os primeiros diretórios estão modelados no VFS host; montagem em disco e pseudo-filesystems ainda não existem.</text>
+</svg>
