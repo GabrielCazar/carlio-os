@@ -1,0 +1,10 @@
+$ bash -n userland/arch/build-rootfs.sh
+resultado: PASS (sintaxe shell valida)
+
+$ git diff --check -- docs/USERLAND.md docs/MATRIZ-PACOTES.md
+resultado: PASS (sem erros de whitespace)
+
+$ command -v pacstrap
+resultado: pacstrap ausente; bootstrap de rootfs nao executado
+
+Testes de kernel/QEMU/NAS: nao executados; nenhum fonte do kernel foi alterado.
