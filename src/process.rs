@@ -1016,6 +1016,48 @@ mod tests {
             .unwrap();
         assert_eq!(scheduler.process(id), None);
     }
+
+    #[test]
+    fn reaper_refuses_live_processes_on_two_cpus_then_reclaims_after_exit() {
+        let scheduler = Scheduler::<2, 2>::new();
+        let pool = KernelStackPool::<2, 4096>::new();
+        let context = CpuContext {
+            rip: 0x400000,
+            rsp: 0x800000,
+            rflags: 0x202,
+            ..CpuContext::default()
+        };
+        let first = scheduler
+            .create_with_stack_pool(&pool, 0x1000, context)
+            .unwrap();
+        let second = scheduler
+            .create_with_stack_pool(&pool, 0x2000, context)
+            .unwrap();
+
+        let cpu0 = scheduler.schedule(0).unwrap().unwrap();
+        let cpu1 = scheduler.schedule(1).unwrap().unwrap();
+        assert_ne!(cpu0.id, cpu1.id);
+        assert_eq!(
+            scheduler.reap(cpu0.id, &pool),
+            Err(ProcessError::NotRunnable)
+        );
+        assert_eq!(
+            scheduler.reap(cpu1.id, &pool),
+            Err(ProcessError::NotRunnable)
+        );
+        assert!(scheduler.process(first).is_some());
+        assert!(scheduler.process(second).is_some());
+
+        scheduler.exit(0, 0).unwrap();
+        scheduler.exit(1, 0).unwrap();
+        assert_eq!(scheduler.schedule(0).unwrap(), None);
+        assert_eq!(scheduler.schedule(1).unwrap(), None);
+        scheduler.reap(first, &pool).unwrap();
+        scheduler.reap(second, &pool).unwrap();
+        assert_eq!(scheduler.process(first), None);
+        assert_eq!(scheduler.process(second), None);
+    }
+
     #[test]
     fn rejects_bad_cpu_and_full_table() {
         let q = Scheduler::<1, 1>::new();
