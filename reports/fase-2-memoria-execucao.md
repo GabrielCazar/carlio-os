@@ -1,5 +1,44 @@
 # Relatório — Fase 2: memória e execução
 
+## Regressão do reaper e auditoria do gate CPL3 nos APs (2026-11-16)
+
+Adicionado teste host negativo que coloca dois processos em CPUs distintas e
+confirma que o reaper recusa liberar qualquer um enquanto estiver `Running`;
+depois da saída em ambas as CPUs, o reaper remove os processos e devolve as
+pilhas. A suíte também executou os testes existentes de alocação física
+concorrente (8 workers), alterações de VM serializadas com shootdown explícito
+(4 workers) e preempção/round-robin do scheduler.
+
+`cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` e
+`cargo test --all-targets` passaram (156 testes da biblioteca, 1 de
+`carlio-logs` e 4 de `herm-fs`). QEMU TCG BIOS/UEFI local e QEMU/KVM BIOS/UEFI
+no NAS passaram com 4 vCPUs e 5 GiB; logs QEMU mostram o probe CPL3 existente,
+fault isolado, preempção e reaper no BSP, e 20 ACKs de shootdown.
+
+A auditoria do fluxo confirmou que `AP_PROCESS_SCHEDULING` só é ativado depois
+de `page_table_boot_probe`, que dispara a prova CPL3 da fase. Portanto, esses
+boots não executam tarefas CPL3 nos APs. A prova cria apenas dois processos e
+não mantém uma barreira global que aguarde todos os APs abandonarem a pilha e o
+CR3 de cada processo antes do reaping. Não há ainda evidência de preempção
+CPL3 simultânea em dois APs nem de reaping seguro após execução concorrente;
+este gate permanece aberto. Não inferir essa capacidade a partir do smoke
+QEMU/KVM ou dos testes host.
+
+Evidências: [host](logs/fase2-smp-reaper-host-20261116.txt),
+[Clippy](logs/fase2-smp-reaper-clippy-20261116.txt),
+[QEMU BIOS local](logs/fase2-smp-reaper-qemu-bios-20261116-193735.log),
+[QEMU UEFI local](logs/fase2-smp-reaper-qemu-uefi-20261116-193735.log),
+[resumo NAS](logs/fase2-smp-reaper-nas-20261116-193830.txt),
+[BIOS NAS/KVM](logs/fase2-smp-reaper-nas-20261116-193830-qemu-kvm-bios.log) e
+[UEFI NAS/KVM](logs/fase2-smp-reaper-nas-20261116-193830-qemu-kvm-uefi.log).
+
+Próximo gate: separar a prova CPL3 do probe executado antes da ativação SMP,
+despachar pelo menos três tarefas de prova para manter duas APs ocupadas ao
+mesmo tempo que o BSP executa/coordena, instrumentar CPU/CR3 e trocas por
+processo, e implementar confirmação de quiescência de cada CPU antes do reaper
+liberar stack, VM ou page tables. Depois repetir TCG e NAS/KVM BIOS/UEFI e
+anexar casos positivo, negativo e de fault neste relatório.
+
 ## Índice de CPU no despacho por timer (2026-11-16)
 
 O callback de preempção já recebe o índice da CPU que recebeu a interrupção.
