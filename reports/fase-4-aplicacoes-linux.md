@@ -380,3 +380,21 @@ Logs da suíte: [host local](logs/herm-rootfs-final-20261116-host-20261116-13225
 [host NAS](logs/herm-rootfs-final-20261116-nas-20261116-132345.txt), [BIOS
 NAS](logs/herm-rootfs-final-20261116-nas-20261116-132345-qemu-kvm-bios.log) e
 [UEFI NAS](logs/herm-rootfs-final-20261116-nas-20261116-132345-qemu-kvm-uefi.log).
+
+## Resumo consolidado do progresso — 2026-11-16
+
+O pedido de concluir a userland exige três integrações ainda abertas; os
+incrementos existentes são fundações, não suporte funcional completo:
+
+| Frente | Estado comprovado/documentado | Gate restante |
+|---|---|---|
+| Loader dinâmico ELF | Parser limitado de `PT_INTERP`/`DT_NEEDED`, execução ELF estática/PIE limitada e resolução de símbolos em biblioteca host | Integrar o interpretador e dependências `.so` ao `exec`, carregar tabelas GNU de versões e aplicar relocations necessárias; validar executáveis reais em CPL3 |
+| ABI da libc/glibc | Dispatcher `SYSCALL` parcial, probes CPL3 selecionados e `libcarlio.a` freestanding | Implementar e validar semânticas/syscalls requeridas pela glibc, inclusive heap/VMA, mmap de arquivo, TLS/threads e sinais conforme os binários-alvo |
+| Descoberta e mounts | AHCI experimental, snapshot Hermione inicializado e remontado em QEMU; backends de leitura host e tabela VFS | Descobrir tabela de partições, identificar filesystem, montar no boot e rotear operações VFS/syscalls aos backends; provar positivo, negativo e falha |
+
+Rootfs Arch instalável, glibc, zsh e binários Arch continuam sem execução
+validada no kernel. Não foram executados novos testes nesta atualização
+documental. A página [`progress/index.html`](../progress/index.html) e o
+[roadmap](../docs/ROADMAP.md) refletem esses limites; os gates de kernel
+permanecem abertos e exigem evidências host, QEMU BIOS/UEFI e NAS/KVM aplicáveis
+em `reports/logs/` antes de qualquer estado de suporte.
