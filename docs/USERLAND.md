@@ -186,3 +186,14 @@ gráfica, compositor, serviços e ABI do kernel. O kernel atual não oferece ess
 contratos. ChatGPT e Ollama serão provedores opcionais atrás de uma interface
 de agentes; rede, TLS, gestão segura de credenciais e processo de userland são
 pré-requisitos. Nenhuma credencial será compilada no kernel.
+
+### Bootstrap inicial da userland Arch
+
+O perfil e o construtor host ficam em [`userland/arch/`](../userland/arch/).
+`build-rootfs.sh` monta um subconjunto oficial x86_64 a partir de uma data
+explícita do Arch Linux Archive e grava a saída sob
+`/tmp/carlioos-arch-userland-*`. O perfil exclui systemd, kernel Linux, AUR e
+desktop; o bootstrap usa `pacstrap -N` e não tem fallback privilegiado. Cada
+saída registra a revisão e o estado do checkout do kernel. A preparação no host
+não é instalação no CarlioOS: boot, ABI dinâmica e execução da rootfs continuam
+pendentes.

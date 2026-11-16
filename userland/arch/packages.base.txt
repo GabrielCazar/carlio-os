@@ -1,0 +1,10 @@
+# Subconjunto inicial da userland Arch para validar FHS e os pacotes base.
+# Deliberadamente não inclui kernel Linux, systemd, desktop ou pacotes AUR.
+filesystem
+glibc
+bash
+coreutils
+zsh
+pacman
+archlinux-keyring
+tzdata
