@@ -1,7 +1,16 @@
 # Artefatos regeneráveis de compilação
 /build/
 /target/
+/debug/
 
-# Arquivos temporários de editores e sistema
+# Backups e artefatos de ferramentas Rust
+**/*.rs.bk
+**/mutants.out*/
+rustc-ice-*.txt
+
+# Binários e depuração de builds MSVC
+*.pdb
+
+# Temporários de editores e sistema
 *~
 .DS_Store
