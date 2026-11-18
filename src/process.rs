@@ -154,6 +154,12 @@ pub struct CpuContext {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Process {
     pub id: u64,
+    /// Identificador do processo líder compartilhado pelas threads do mesmo grupo.
+    pub thread_group_id: u64,
+    /// Alvo aguardado pela thread, até ela consumir o resultado do join.
+    pub join_target: Option<u64>,
+    join_claimed: bool,
+    joinable: bool,
     pub page_table: u64,
     pub entry: u64,
     pub user_stack: u64,
@@ -217,9 +223,25 @@ pub struct ProcessTableStats {
     pub blocked: usize,
     pub exited: usize,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JoinStatus {
+    Blocked,
+    Exited(i64),
+    Faulted,
+}
+
 impl Process {
+    pub const fn is_thread(&self) -> bool {
+        self.id != self.thread_group_id
+    }
+
     const EMPTY: Self = Self {
         id: 0,
+        thread_group_id: 0,
+        join_target: None,
+        join_claimed: false,
+        joinable: false,
         page_table: 0,
         entry: 0,
         user_stack: 0,
@@ -258,6 +280,9 @@ pub enum ProcessError {
     UnknownProcess,
     NotRunnable,
     Duplicate,
+    Deadlock,
+    /// O processo ainda está em execução numa CPU e precisa sair por preempção.
+    Busy,
 }
 
 struct State<const P: usize, const C: usize> {
@@ -272,6 +297,16 @@ struct State<const P: usize, const C: usize> {
     prefer_steal: [bool; C],
     vacant_cursor: usize,
     next_id: u64,
+}
+
+struct ProcessInit {
+    page_table: u64,
+    context: CpuContext,
+    kernel_stack_top: u64,
+    interrupt_frame: u64,
+    security: ProcessSecurityContext,
+    kernel_stack_owner: Option<usize>,
+    thread_parent: Option<u64>,
 }
 
 /// Estado serializado pelo mesmo lock para preservar a propriedade exclusiva
@@ -321,14 +356,76 @@ impl<const P: usize, const C: usize> Scheduler<P, C> {
         page_table: u64,
         context: CpuContext,
     ) -> Result<u64, ProcessError> {
-        self.insert_process(
+        self.insert_process(ProcessInit {
             page_table,
             context,
-            0,
-            0,
-            ProcessSecurityContext::ROOT,
-            None,
-        )
+            kernel_stack_top: 0,
+            interrupt_frame: 0,
+            security: ProcessSecurityContext::ROOT,
+            kernel_stack_owner: None,
+            thread_parent: None,
+        })
+    }
+
+    /// Clone o contexto de uma thread no mesmo espaço virtual e grupo POSIX.
+    /// `context.rsp` deve apontar para uma pilha user recém-mapeada no grupo.
+    pub fn clone_thread<const N: usize, const BYTES: usize>(
+        &self,
+        pool: &KernelStackPool<N, BYTES>,
+        parent_id: u64,
+        context: CpuContext,
+    ) -> Result<u64, ProcessError> {
+        self.create_thread_with_stack_pool(pool, parent_id, context)
+    }
+
+    /// Aguarda uma thread do mesmo grupo. Se ela ainda estiver ativa, bloqueia
+    /// a thread corrente; o término/fault acorda o waiter e preserva o zombie
+    /// até que o resultado seja consumido.
+    pub fn join_current(&self, cpu: usize, target_id: u64) -> Result<JoinStatus, ProcessError> {
+        let mut state = self.state.lock();
+        if cpu >= C {
+            return Err(ProcessError::InvalidCpu);
+        }
+        let waiter_slot = state.current_slot[cpu];
+        if waiter_slot >= P {
+            return Err(ProcessError::NotRunnable);
+        }
+        let target_slot = find(&state.processes, target_id).ok_or(ProcessError::UnknownProcess)?;
+        if waiter_slot == target_slot
+            || state.processes[waiter_slot].thread_group_id
+                != state.processes[target_slot].thread_group_id
+            || !state.processes[target_slot].joinable
+        {
+            return Err(ProcessError::NotRunnable);
+        }
+        if join_would_deadlock(&state.processes, state.processes[waiter_slot].id, target_id) {
+            return Err(ProcessError::Deadlock);
+        }
+        match state.processes[target_slot].state {
+            ProcessState::Exited { code } => {
+                state.processes[target_slot].join_claimed = false;
+                state.processes[target_slot].joinable = false;
+                state.processes[waiter_slot].join_target = None;
+                Ok(JoinStatus::Exited(code))
+            }
+            ProcessState::Faulted { .. } => {
+                state.processes[target_slot].join_claimed = false;
+                state.processes[target_slot].joinable = false;
+                state.processes[waiter_slot].join_target = None;
+                Ok(JoinStatus::Faulted)
+            }
+            ProcessState::Ready | ProcessState::Running { .. } | ProcessState::Blocked => {
+                if state.processes[target_slot].join_claimed {
+                    return Err(ProcessError::Duplicate);
+                }
+                state.processes[target_slot].join_claimed = true;
+                state.processes[waiter_slot].join_target = Some(target_id);
+                state.processes[waiter_slot].state = ProcessState::Blocked;
+                state.current_slot[cpu] = P;
+                Ok(JoinStatus::Blocked)
+            }
+            _ => Err(ProcessError::NotRunnable),
+        }
     }
 
     pub fn create_with_security_context(
@@ -337,7 +434,15 @@ impl<const P: usize, const C: usize> Scheduler<P, C> {
         context: CpuContext,
         security: ProcessSecurityContext,
     ) -> Result<u64, ProcessError> {
-        self.insert_process(page_table, context, 0, 0, security, None)
+        self.insert_process(ProcessInit {
+            page_table,
+            context,
+            kernel_stack_top: 0,
+            interrupt_frame: 0,
+            security,
+            kernel_stack_owner: None,
+            thread_parent: None,
+        })
     }
 
     /// Registra recursos de execução. Stack e frame podem ser zero apenas no
@@ -393,14 +498,15 @@ impl<const P: usize, const C: usize> Scheduler<P, C> {
         {
             return Err(ProcessError::NotRunnable);
         }
-        self.insert_process(
+        self.insert_process(ProcessInit {
             page_table,
             context,
             kernel_stack_top,
             interrupt_frame,
             security,
             kernel_stack_owner,
-        )
+            thread_parent: None,
+        })
     }
 
     /// Consome o token da pilha e registra sua posse no processo.
@@ -472,16 +578,50 @@ impl<const P: usize, const C: usize> Scheduler<P, C> {
         }
     }
 
-    fn insert_process(
+    /// Cria uma thread persistente no grupo de `parent_id`, compartilhando
+    /// page table e identidade de segurança, com pilha privilegiada exclusiva.
+    /// O chamador deve mapear `context.rsp` como pilha user independente no
+    /// mesmo espaço antes de agendar a thread. O frame inicial x86 deve ser
+    /// preparado pelo backend de arquitetura depois da criação.
+    pub fn create_thread_with_stack_pool<const N: usize, const BYTES: usize>(
         &self,
-        page_table: u64,
+        pool: &KernelStackPool<N, BYTES>,
+        parent_id: u64,
         context: CpuContext,
-        kernel_stack_top: u64,
-        interrupt_frame: u64,
-        security: ProcessSecurityContext,
-        kernel_stack_owner: Option<usize>,
     ) -> Result<u64, ProcessError> {
-        if page_table == 0 || !valid_context(context) {
+        let stack = pool.allocate().ok_or(ProcessError::Full)?;
+        let Some(frame) = stack.top.checked_sub(USER_INTERRUPT_FRAME_BYTES) else {
+            let _ = pool.release(stack);
+            return Err(ProcessError::NotRunnable);
+        };
+        match self.insert_process(ProcessInit {
+            page_table: 0,
+            context,
+            kernel_stack_top: stack.top,
+            interrupt_frame: frame,
+            security: ProcessSecurityContext::ROOT,
+            kernel_stack_owner: Some(stack.slot),
+            thread_parent: Some(parent_id),
+        }) {
+            Ok(id) => Ok(id),
+            Err(error) => {
+                let _ = pool.release(stack);
+                Err(error)
+            }
+        }
+    }
+
+    fn insert_process(&self, init: ProcessInit) -> Result<u64, ProcessError> {
+        let ProcessInit {
+            page_table,
+            context,
+            kernel_stack_top,
+            interrupt_frame,
+            security,
+            kernel_stack_owner,
+            thread_parent,
+        } = init;
+        if !valid_context(context) {
             return Err(ProcessError::NotRunnable);
         }
         if kernel_stack_top != 0
@@ -497,10 +637,49 @@ impl<const P: usize, const C: usize> Scheduler<P, C> {
         if C == 0 || ready_total(&s) >= P {
             return Err(ProcessError::Full);
         }
+        let (page_table, security, thread_group_id, joinable) = if let Some(parent_id) =
+            thread_parent
+        {
+            let parent_slot = find(&s.processes, parent_id).ok_or(ProcessError::UnknownProcess)?;
+            let parent = s.processes[parent_slot];
+            if !matches!(
+                parent.state,
+                ProcessState::Ready | ProcessState::Running { .. } | ProcessState::Blocked
+            ) {
+                return Err(ProcessError::NotRunnable);
+            }
+            let leader_slot =
+                find(&s.processes, parent.thread_group_id).ok_or(ProcessError::UnknownProcess)?;
+            if !matches!(
+                s.processes[leader_slot].state,
+                ProcessState::Ready | ProcessState::Running { .. } | ProcessState::Blocked
+            ) {
+                return Err(ProcessError::NotRunnable);
+            }
+            (
+                parent.page_table,
+                parent.security,
+                parent.thread_group_id,
+                true,
+            )
+        } else {
+            (page_table, security, 0, false)
+        };
+        if page_table == 0 {
+            return Err(ProcessError::NotRunnable);
+        }
         let id = s.next_id;
         s.next_id = s.next_id.checked_add(1).ok_or(ProcessError::Full)?;
         s.processes[slot] = Process {
             id,
+            thread_group_id: if thread_group_id == 0 {
+                id
+            } else {
+                thread_group_id
+            },
+            join_target: None,
+            join_claimed: false,
+            joinable,
             page_table,
             entry: context.rip,
             user_stack: context.rsp,
@@ -579,9 +758,55 @@ impl<const P: usize, const C: usize> Scheduler<P, C> {
         self.schedule(cpu)
     }
 
+    /// Reagenda o processo interrompido na fila local, sem roubo entre CPUs.
+    /// Útil para a prova SMP: mantém cada frame/stack na CPU que o produziu.
+    pub fn preempt_frame_local(
+        &self,
+        cpu: usize,
+        frame_address: u64,
+    ) -> Result<Option<Process>, ProcessError> {
+        if !is_kernel_address(frame_address) || frame_address & 0xf != 0 {
+            return Err(ProcessError::NotRunnable);
+        }
+        {
+            let mut state = self.state.lock();
+            if cpu >= C {
+                return Err(ProcessError::InvalidCpu);
+            }
+            let slot = state.current_slot[cpu];
+            if slot == P || slot >= P {
+                return Err(ProcessError::NotRunnable);
+            }
+            if !matches!(state.processes[slot].state, ProcessState::Running { cpu: owner } if owner == cpu)
+            {
+                return Err(ProcessError::NotRunnable);
+            }
+            state.processes[slot].interrupt_frame = frame_address;
+            state.processes[slot].state = ProcessState::Ready;
+            push_slot(&mut state, slot, cpu)?;
+            state.current_slot[cpu] = P;
+            state.prefer_steal[cpu] = false;
+        }
+        self.schedule_local(cpu)
+    }
+
     /// Despacha um processo e devolve o processo anteriormente ativo à fila.
     /// Nenhum estado de CPU é salvo por esta função.
     pub fn schedule(&self, cpu: usize) -> Result<Option<Process>, ProcessError> {
+        self.schedule_inner(cpu, true)
+    }
+
+    /// Despacha somente a fila local, preservando ownership do frame e pilha
+    /// kernel durante preempção de processos em CPUs secundárias.
+    pub fn schedule_local(&self, cpu: usize) -> Result<Option<Process>, ProcessError> {
+        self.schedule_inner(cpu, false)
+    }
+
+    fn schedule_inner(
+        &self,
+        cpu: usize,
+        allow_steal: bool,
+    ) -> Result<Option<Process>, ProcessError> {
         let mut s = self.state.lock();
         if cpu >= C {
             return Err(ProcessError::InvalidCpu);
@@ -598,7 +823,11 @@ impl<const P: usize, const C: usize> Scheduler<P, C> {
             }
             s.current_slot[cpu] = P;
         }
-        while let Some(queue) = next_ready_queue(&s, cpu, s.prefer_steal[cpu]) {
+        while let Some(queue) = if allow_steal {
+            next_ready_queue(&s, cpu, s.prefer_steal[cpu])
+        } else {
+            (s.ready_len[cpu] != 0).then_some(cpu)
+        } {
             let queued = s.ready_head[queue];
             if queued >= P || !s.ready_queued[queued] {
                 return Err(ProcessError::NotRunnable);
@@ -643,6 +872,34 @@ impl<const P: usize, const C: usize> Scheduler<P, C> {
         self.stop_current(cpu, ProcessState::Exited { code })
     }
 
+    /// Solicita o encerramento de uma tarefa que não está executando.
+    /// Tarefas prontas são removidas da fila antes de mudar de estado; tarefas
+    /// bloqueadas passam diretamente a Exited. Uma tarefa Running exige
+    /// cooperação da CPU proprietária e retorna Busy, evitando liberar recursos
+    /// enquanto o contexto ainda pode estar usando sua pilha ou page table.
+    /// O chamador deve executar `reap` depois de destruir os recursos de VM.
+    pub fn destroy(&self, id: u64, code: i64) -> Result<(), ProcessError> {
+        let mut state = self.state.lock();
+        let slot = find(&state.processes, id).ok_or(ProcessError::UnknownProcess)?;
+        match state.processes[slot].state {
+            ProcessState::Ready => {
+                unlink_ready_slot(&mut state, slot)?;
+                state.processes[slot].state = ProcessState::Exited { code };
+                cancel_join_claim(&mut state, slot);
+                wake_joiners(&mut state, id)?;
+                Ok(())
+            }
+            ProcessState::Blocked => {
+                state.processes[slot].state = ProcessState::Exited { code };
+                cancel_join_claim(&mut state, slot);
+                wake_joiners(&mut state, id)?;
+                Ok(())
+            }
+            ProcessState::Running { .. } => Err(ProcessError::Busy),
+            _ => Err(ProcessError::NotRunnable),
+        }
+    }
+
     /// Confina uma exceção de usuário ao processo corrente. O chamador ainda
     /// precisa despachar outra tarefa e, fora da pilha da vítima, chamar reap.
     pub fn fault(
@@ -664,6 +921,56 @@ impl<const P: usize, const C: usize> Scheduler<P, C> {
     pub fn process(&self, id: u64) -> Option<Process> {
         let s = self.state.lock();
         find(&s.processes, id).map(|i| s.processes[i])
+    }
+
+    /// Fixa uma tarefa pronta em uma fila de CPU sem alterar seu frame ou
+    /// ownership. Tarefas em execução só podem migrar pelo caminho de preempção.
+    pub fn pin_ready_to_cpu(&self, id: u64, cpu: usize) -> Result<(), ProcessError> {
+        let mut state = self.state.lock();
+        if cpu >= C {
+            return Err(ProcessError::InvalidCpu);
+        }
+        let slot = find(&state.processes, id).ok_or(ProcessError::UnknownProcess)?;
+        if state.processes[slot].state != ProcessState::Ready || !state.ready_queued[slot] {
+            return Err(ProcessError::NotRunnable);
+        }
+        let source = (0..C)
+            .find(|&queue| {
+                let mut cursor = state.ready_head[queue];
+                while cursor < P {
+                    if cursor == slot {
+                        return true;
+                    }
+                    cursor = state.ready_next[cursor];
+                }
+                false
+            })
+            .ok_or(ProcessError::NotRunnable)?;
+        if source == cpu {
+            return Ok(());
+        }
+        let mut previous = P;
+        let mut cursor = state.ready_head[source];
+        while cursor < P && cursor != slot {
+            previous = cursor;
+            cursor = state.ready_next[cursor];
+        }
+        if cursor != slot {
+            return Err(ProcessError::NotRunnable);
+        }
+        let next = state.ready_next[slot];
+        if previous == P {
+            state.ready_head[source] = next;
+        } else {
+            state.ready_next[previous] = next;
+        }
+        if state.ready_tail[source] == slot {
+            state.ready_tail[source] = previous;
+        }
+        state.ready_len[source] -= 1;
+        state.ready_next[slot] = P;
+        state.ready_queued[slot] = false;
+        push_slot(&mut state, slot, cpu)
     }
 
     pub fn current(&self, cpu: usize) -> Option<Process> {
@@ -759,6 +1066,18 @@ impl<const P: usize, const C: usize> Scheduler<P, C> {
             if state.ready_queued[slot] || state.current_slot.contains(&slot) {
                 return Err(ReapError::Process(ProcessError::NotRunnable));
             }
+            if state.processes[slot].join_claimed || state.processes[slot].joinable {
+                return Err(ReapError::Process(ProcessError::Busy));
+            }
+            if state.processes[slot].id == state.processes[slot].thread_group_id
+                && state.processes.iter().any(|member| {
+                    member.id != state.processes[slot].id
+                        && member.thread_group_id == state.processes[slot].thread_group_id
+                        && member.state != ProcessState::Vacant
+                })
+            {
+                return Err(ReapError::Process(ProcessError::Busy));
+            }
             state.processes[slot].state = reaping_state;
             (state.processes[slot], previous_state)
         };
@@ -788,6 +1107,18 @@ impl<const P: usize, const C: usize> Scheduler<P, C> {
         if state.ready_queued[slot] || state.current_slot.contains(&slot) {
             return Err(ReapError::Process(ProcessError::NotRunnable));
         }
+        if state.processes[slot].join_claimed || state.processes[slot].joinable {
+            return Err(ReapError::Process(ProcessError::Busy));
+        }
+        if state.processes[slot].id == state.processes[slot].thread_group_id
+            && state.processes.iter().any(|member| {
+                member.id != state.processes[slot].id
+                    && member.thread_group_id == state.processes[slot].thread_group_id
+                    && member.state != ProcessState::Vacant
+            })
+        {
+            return Err(ReapError::Process(ProcessError::Busy));
+        }
         if let Some(owner) = state.processes[slot].kernel_stack_owner {
             let top = state.processes[slot].kernel_stack_top;
             pool.release_slot(owner, top).map_err(ReapError::Process)?;
@@ -809,9 +1140,17 @@ impl<const P: usize, const C: usize> Scheduler<P, C> {
         if slot >= P {
             return Err(ProcessError::NotRunnable);
         }
+        cancel_join_claim(&mut s, slot);
         s.processes[slot].state = state;
         s.current_slot[cpu] = P;
         s.prefer_steal[cpu] = true;
+        match state {
+            ProcessState::Exited { .. } | ProcessState::Faulted { .. } => {
+                let id = s.processes[slot].id;
+                wake_joiners(&mut s, id)?;
+            }
+            _ => {}
+        }
         Ok(())
     }
 }
@@ -896,6 +1235,92 @@ fn push_slot<const P: usize, const C: usize>(
     Ok(())
 }
 
+fn unlink_ready_slot<const P: usize, const C: usize>(
+    state: &mut State<P, C>,
+    target: usize,
+) -> Result<(), ProcessError> {
+    if target >= P || !state.ready_queued[target] {
+        return Err(ProcessError::NotRunnable);
+    }
+    for cpu in 0..C {
+        let mut previous = P;
+        let mut current = state.ready_head[cpu];
+        while current < P {
+            if current == target {
+                let next = state.ready_next[current];
+                if previous == P {
+                    state.ready_head[cpu] = next;
+                } else {
+                    state.ready_next[previous] = next;
+                }
+                if state.ready_tail[cpu] == current {
+                    state.ready_tail[cpu] = previous;
+                }
+                state.ready_next[current] = P;
+                state.ready_queued[current] = false;
+                state.ready_len[cpu] = state.ready_len[cpu]
+                    .checked_sub(1)
+                    .ok_or(ProcessError::NotRunnable)?;
+                return Ok(());
+            }
+            previous = current;
+            current = state.ready_next[current];
+        }
+    }
+    Err(ProcessError::NotRunnable)
+}
+
+fn cancel_join_claim<const P: usize, const C: usize>(state: &mut State<P, C>, slot: usize) {
+    let target_id = state.processes[slot].join_target.take();
+    if let Some(target_id) = target_id {
+        if let Some(target_slot) = find(&state.processes, target_id) {
+            state.processes[target_slot].join_claimed = false;
+        }
+    }
+}
+
+fn join_would_deadlock<const P: usize>(
+    processes: &[Process; P],
+    waiter_id: u64,
+    target_id: u64,
+) -> bool {
+    let mut cursor = target_id;
+    for _ in 0..P {
+        if cursor == waiter_id {
+            return true;
+        }
+        let Some(slot) = find(processes, cursor) else {
+            return false;
+        };
+        let Some(next) = processes[slot].join_target else {
+            return false;
+        };
+        cursor = next;
+    }
+    // A cycle not containing the new waiter already exists; reject joining it.
+    true
+}
+
+fn wake_joiners<const P: usize, const C: usize>(
+    state: &mut State<P, C>,
+    target_id: u64,
+) -> Result<(), ProcessError> {
+    for slot in 0..P {
+        if state.processes[slot].join_target != Some(target_id)
+            || state.processes[slot].state != ProcessState::Blocked
+        {
+            continue;
+        }
+        if ready_total(state) >= P {
+            return Err(ProcessError::Full);
+        }
+        state.processes[slot].state = ProcessState::Ready;
+        let cpu = least_loaded_queue(state).ok_or(ProcessError::InvalidCpu)?;
+        push_slot(state, slot, cpu)?;
+    }
+    Ok(())
+}
+
 fn ready_total<const P: usize, const C: usize>(s: &State<P, C>) -> usize {
     s.ready_len.iter().copied().sum()
 }
@@ -950,6 +1375,49 @@ mod tests {
     }
 
     #[test]
+    fn local_frame_preemption_keeps_process_on_its_cpu() {
+        let scheduler = Scheduler::<3, 3>::new();
+        let context = CpuContext {
+            rip: 0x400000,
+            rsp: 0x800000,
+            rflags: 0x202,
+            ..CpuContext::default()
+        };
+        let ids = [
+            scheduler.create(0x1000, context.rip, context.rsp).unwrap(),
+            scheduler.create(0x2000, context.rip, context.rsp).unwrap(),
+            scheduler.create(0x3000, context.rip, context.rsp).unwrap(),
+        ];
+        for (cpu, id) in ids.into_iter().enumerate() {
+            assert_eq!(scheduler.schedule(cpu).unwrap().unwrap().id, id);
+        }
+        let frame_addresses = [
+            0xffff_8000_0000_1000,
+            0xffff_8000_0000_1010,
+            0xffff_8000_0000_1020,
+        ];
+        for (cpu, (id, frame)) in ids.into_iter().zip(frame_addresses).enumerate() {
+            let next = scheduler.preempt_frame_local(cpu, frame).unwrap().unwrap();
+            assert_eq!(next.id, id);
+            assert!(matches!(next.state, ProcessState::Running { cpu: owner } if owner == cpu));
+        }
+    }
+
+    #[test]
+    fn ready_process_can_be_pinned_to_an_explicit_cpu_queue() {
+        let scheduler = Scheduler::<4, 4>::new();
+        let first = scheduler.create(0x1000, 0x400000, 0x800000).unwrap();
+        let second = scheduler.create(0x2000, 0x500000, 0x900000).unwrap();
+        let third = scheduler.create(0x3000, 0x600000, 0xa00000).unwrap();
+
+        assert_eq!(scheduler.pin_ready_to_cpu(second, 3), Ok(()));
+        assert_eq!(scheduler.schedule_local(1).unwrap(), None);
+        assert_eq!(scheduler.schedule_local(3).unwrap().unwrap().id, second);
+        assert_eq!(scheduler.schedule_local(0).unwrap().unwrap().id, first);
+        assert_eq!(scheduler.schedule_local(2).unwrap().unwrap().id, third);
+    }
+
+    #[test]
     fn cpu_local_queues_distribute_work_and_allow_idle_cpu_stealing() {
         let q = Scheduler::<4, 3>::new();
         let id = q.create(0x1000, 0x400000, 0x800000).unwrap();
@@ -970,6 +1438,184 @@ mod tests {
             ProcessState::Exited { code: 7 }
         );
         assert_eq!(q.schedule(0).unwrap(), None);
+    }
+
+    #[test]
+    fn destroy_removes_ready_and_blocked_tasks_but_refuses_running_task() {
+        let scheduler = Scheduler::<3, 1>::new();
+        let process_blocked = scheduler.create(0x1000, 0x400000, 0x800000).unwrap();
+        let process_running = scheduler.create(0x2000, 0x500000, 0x900000).unwrap();
+        let process_ready = scheduler.create(0x3000, 0x600000, 0xa00000).unwrap();
+
+        assert_eq!(scheduler.schedule(0).unwrap().unwrap().id, process_blocked);
+        scheduler.block(0).unwrap();
+        assert_eq!(scheduler.schedule(0).unwrap().unwrap().id, process_running);
+
+        assert_eq!(
+            scheduler.destroy(process_running, -9),
+            Err(ProcessError::Busy)
+        );
+        assert_eq!(scheduler.destroy(process_ready, -9), Ok(()));
+        assert_eq!(scheduler.destroy(process_blocked, -15), Ok(()));
+        assert_eq!(
+            scheduler.process(process_ready).unwrap().state,
+            ProcessState::Exited { code: -9 }
+        );
+        assert_eq!(
+            scheduler.process(process_blocked).unwrap().state,
+            ProcessState::Exited { code: -15 }
+        );
+        assert_eq!(
+            scheduler.process(process_running).unwrap().state,
+            ProcessState::Running { cpu: 0 }
+        );
+        scheduler.exit(0, 0).unwrap();
+        assert_eq!(scheduler.schedule(0).unwrap(), None);
+    }
+
+    #[test]
+    fn destroy_rejects_unknown_and_already_exited_tasks() {
+        let scheduler = Scheduler::<1, 1>::new();
+        assert_eq!(scheduler.destroy(99, 0), Err(ProcessError::UnknownProcess));
+        let id = scheduler.create(0x1000, 0x400000, 0x800000).unwrap();
+        scheduler.schedule(0).unwrap();
+        scheduler.exit(0, 0).unwrap();
+        assert_eq!(scheduler.destroy(id, 1), Err(ProcessError::NotRunnable));
+    }
+
+    #[test]
+    fn clone_thread_shares_group_and_join_blocks_then_collects_exit_status() {
+        let scheduler = Scheduler::<4, 3>::new();
+        let pool = KernelStackPool::<4, 4096>::new();
+        let security = ProcessSecurityContext::new(
+            Credentials {
+                uid: 1000,
+                gid: 1000,
+            },
+            &[10, 20],
+            0o027,
+        )
+        .unwrap();
+        let parent = scheduler
+            .create_with_stack_pool_and_security(
+                &pool,
+                0x1000,
+                CpuContext {
+                    rip: 0x400000,
+                    rsp: 0x800000,
+                    rflags: 0x202,
+                    ..CpuContext::default()
+                },
+                security,
+            )
+            .unwrap();
+        let thread = scheduler
+            .clone_thread(
+                &pool,
+                parent,
+                CpuContext {
+                    rip: 0x401000,
+                    rsp: 0x810000,
+                    rflags: 0x202,
+                    ..CpuContext::default()
+                },
+            )
+            .unwrap();
+
+        let parent_snapshot = scheduler.process(parent).unwrap();
+        let thread_snapshot = scheduler.process(thread).unwrap();
+        assert_eq!(thread_snapshot.page_table, parent_snapshot.page_table);
+        assert_eq!(thread_snapshot.thread_group_id, parent);
+        assert!(thread_snapshot.is_thread());
+        assert_eq!(thread_snapshot.security, security);
+        assert_ne!(
+            thread_snapshot.kernel_stack_top,
+            parent_snapshot.kernel_stack_top
+        );
+
+        assert_eq!(scheduler.schedule(0).unwrap().unwrap().id, parent);
+        assert_eq!(scheduler.schedule(1).unwrap().unwrap().id, thread);
+        assert_eq!(scheduler.join_current(0, thread), Ok(JoinStatus::Blocked));
+        assert_eq!(scheduler.exit(1, 42), Ok(()));
+        assert_eq!(scheduler.schedule(0).unwrap().unwrap().id, parent);
+        assert_eq!(scheduler.reap(thread, &pool), Err(ProcessError::Busy));
+        assert_eq!(
+            scheduler.join_current(0, thread),
+            Ok(JoinStatus::Exited(42))
+        );
+
+        scheduler.exit(0, 0).unwrap();
+        assert_eq!(scheduler.reap(parent, &pool), Err(ProcessError::Busy));
+        assert!(matches!(scheduler.reap(thread, &pool), Ok(())));
+        scheduler.reap(parent, &pool).unwrap();
+        assert!(pool.allocate().is_some());
+    }
+
+    #[test]
+    fn clone_thread_rejects_foreign_parent_and_returns_reserved_stack() {
+        let scheduler = Scheduler::<2, 1>::new();
+        let pool = KernelStackPool::<1, 4096>::new();
+        let error = scheduler.clone_thread(
+            &pool,
+            99,
+            CpuContext {
+                rip: 0x400000,
+                rsp: 0x800000,
+                rflags: 0x202,
+                ..CpuContext::default()
+            },
+        );
+        assert_eq!(error, Err(ProcessError::UnknownProcess));
+        assert!(pool.allocate().is_some());
+    }
+
+    #[test]
+    fn join_rejects_wait_cycles_in_a_thread_group() {
+        let scheduler = Scheduler::<4, 3>::new();
+        let parent = scheduler
+            .create_with_context(
+                0x1000,
+                CpuContext {
+                    rip: 0x400000,
+                    rsp: 0x800000,
+                    rflags: 0x202,
+                    ..CpuContext::default()
+                },
+            )
+            .unwrap();
+        let pool = KernelStackPool::<2, 4096>::new();
+        let first = scheduler
+            .clone_thread(
+                &pool,
+                parent,
+                CpuContext {
+                    rip: 0x401000,
+                    rsp: 0x810000,
+                    rflags: 0x202,
+                    ..CpuContext::default()
+                },
+            )
+            .unwrap();
+        let second = scheduler
+            .clone_thread(
+                &pool,
+                parent,
+                CpuContext {
+                    rip: 0x402000,
+                    rsp: 0x820000,
+                    rflags: 0x202,
+                    ..CpuContext::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(scheduler.schedule(0).unwrap().unwrap().id, parent);
+        assert_eq!(scheduler.schedule(1).unwrap().unwrap().id, first);
+        assert_eq!(scheduler.schedule(2).unwrap().unwrap().id, second);
+        assert_eq!(scheduler.join_current(1, second), Ok(JoinStatus::Blocked));
+        assert_eq!(
+            scheduler.join_current(2, first),
+            Err(ProcessError::Deadlock)
+        );
     }
 
     #[test]

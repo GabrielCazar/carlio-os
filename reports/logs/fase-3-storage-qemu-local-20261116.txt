@@ -1,0 +1,10 @@
+Fase 3 — storage-test QEMU local TCG — 2026-11-16
+
+Comando de build:
+  CARLIO_STORAGE_TEST=1 scripts/build-iso.sh
+Comando de execução:
+  TMPDIR=/tmp/carlioos-fase3-20261116 python3 scripts/test-ahci-qemu.py --iso build/carlio-os.iso --accel tcg --timeout 60 --log reports/logs/fase-3-storage-qemu-local-20261116.log
+Resultado: exit 0. Imagem raw descartável de 16 MiB criada no TMPDIR e removida pelo harness.
+Log serial: fase-3-storage-qemu-local-20261116.log
+Evidência: AHCI IDENTIFY, WRITE/READ, comando ATA inválido, COMRESET, Hermione formatar/gravar/remontar/ler/checksum/scrub.
+Escopo: QEMU TCG e controlador virtual 8086:2922; não cobre hardware físico, timeout/remoção ou corte de energia.

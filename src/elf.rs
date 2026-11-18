@@ -26,6 +26,16 @@ pub const USER_TOP: u64 = 0x0000_8000_0000_0000;
 pub const PAGE_SIZE: u64 = 4096;
 const MAX_LOAD_PAGES: usize = 1024;
 const ELF_NAME_MAX: usize = 128;
+const PT_PHDR: u32 = 6;
+pub const AT_NULL: u64 = 0;
+pub const AT_PHDR: u64 = 3;
+pub const AT_PHENT: u64 = 4;
+pub const AT_PHNUM: u64 = 5;
+pub const AT_PAGESZ: u64 = 6;
+pub const AT_BASE: u64 = 7;
+pub const AT_ENTRY: u64 = 9;
+const DYNAMIC_INTERPRETER_BIAS: u64 = 0x0000_7000_0000_0000;
+const DYNAMIC_PROGRAM_BIAS: u64 = 0x0000_0040_0000_0000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ElfError {
@@ -260,6 +270,55 @@ pub struct UserStack {
     pub envp: u64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AuxEntry {
+    pub kind: u64,
+    pub value: u64,
+}
+
+/// Endereços necessários para transferir o controle ao interpretador dinâmico.
+/// `entry` é o início do ld-linux; `program_entry` é o AT_ENTRY que ele iniciará.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExecImage {
+    pub entry: u64,
+    pub program_entry: u64,
+    pub interpreter_base: u64,
+    pub program_headers: u64,
+    pub program_header_entry_size: u64,
+    pub program_header_count: u64,
+}
+
+impl ExecImage {
+    pub fn auxv(self) -> [AuxEntry; 6] {
+        [
+            AuxEntry {
+                kind: AT_PHDR,
+                value: self.program_headers,
+            },
+            AuxEntry {
+                kind: AT_PHENT,
+                value: self.program_header_entry_size,
+            },
+            AuxEntry {
+                kind: AT_PHNUM,
+                value: self.program_header_count,
+            },
+            AuxEntry {
+                kind: AT_PAGESZ,
+                value: PAGE_SIZE,
+            },
+            AuxEntry {
+                kind: AT_BASE,
+                value: self.interpreter_base,
+            },
+            AuxEntry {
+                kind: AT_ENTRY,
+                value: self.program_entry,
+            },
+        ]
+    }
+}
+
 /// Places NUL-terminated argv/env strings and the initial pointer vectors in
 /// an already mapped user stack page. Strings cannot contain interior NULs;
 /// the layout follows the SysV process-entry convention.
@@ -268,6 +327,17 @@ pub fn build_initial_user_stack<T: ElfLoadTarget>(
     stack_top: u64,
     argv: &[&str],
     env: &[&str],
+) -> Result<UserStack, ElfError> {
+    build_initial_user_stack_with_auxv(target, stack_top, argv, env, &[])
+}
+
+/// Monta a pilha inicial SysV (`argc/argv/envp/auxv`) para executável ELF.
+pub fn build_initial_user_stack_with_auxv<T: ElfLoadTarget>(
+    target: &mut T,
+    stack_top: u64,
+    argv: &[&str],
+    env: &[&str],
+    auxv: &[AuxEntry],
 ) -> Result<UserStack, ElfError> {
     const STACK_BYTES: u64 = 4096;
     const VECTOR_LIMIT: usize = 16;
@@ -291,9 +361,13 @@ pub fn build_initial_user_stack<T: ElfLoadTarget>(
         env_ptrs[index] = sp;
     }
 
+    if auxv.len() > 32 || auxv.iter().any(|entry| entry.kind == AT_NULL) {
+        return Err(ElfError::InvalidArguments);
+    }
     let word_count = 1usize
         .checked_add(argv.len())
         .and_then(|v| v.checked_add(1))
+        .and_then(|v| v.checked_add((auxv.len() + 1).checked_mul(2)?))
         .and_then(|v| v.checked_add(env.len()))
         .and_then(|v| v.checked_add(1))
         .ok_or(ElfError::InvalidArguments)?;
@@ -326,6 +400,12 @@ pub fn build_initial_user_stack<T: ElfLoadTarget>(
     for pointer in env_ptrs.iter().take(env.len()) {
         write_user_word(target, &mut cursor, *pointer)?;
     }
+    write_user_word(target, &mut cursor, 0)?;
+    for entry in auxv {
+        write_user_word(target, &mut cursor, entry.kind)?;
+        write_user_word(target, &mut cursor, entry.value)?;
+    }
+    write_user_word(target, &mut cursor, AT_NULL)?;
     write_user_word(target, &mut cursor, 0)?;
     Ok(UserStack {
         stack_pointer: vector_start,
@@ -402,6 +482,78 @@ pub fn load_executable_from_vfs<const S: usize, const N: usize, T: ElfLoadTarget
     Ok((image, length))
 }
 
+/// Carrega executável e `PT_INTERP` no mesmo espaço de endereços. O kernel
+/// apenas mapeia as imagens; o ld-linux é responsável por dependências e
+/// relocations dinâmicas. O caminho do interpretador vem do ELF e é validado
+/// como caminho absoluto pelo parser e pelo VFS.
+pub fn load_interpreted_executable_from_vfs<const S: usize, const N: usize, T: ElfLoadTarget>(
+    vfs: &crate::vfs::Vfs<N>,
+    path: &str,
+    access: crate::vfs::AccessContext<'_>,
+    program_scratch: &mut [u8],
+    interpreter_scratch: &mut [u8],
+    target: &mut T,
+) -> Result<ExecImage, VfsElfError> {
+    vfs.authorize_execution_as(path, access)
+        .map_err(VfsElfError::Vfs)?;
+    let program_len = vfs
+        .read_file_as(path, access, program_scratch)
+        .map_err(VfsElfError::Vfs)?;
+    let program = &program_scratch[..program_len];
+    let metadata = ElfDynamicMetadata::<S>::parse(program).map_err(VfsElfError::Elf)?;
+    let interpreter_path = metadata.interpreter();
+    let main_bias = if u16le(program, 16).map_err(VfsElfError::Elf)? == 3 {
+        DYNAMIC_PROGRAM_BIAS
+    } else {
+        0
+    };
+    let program_image = if interpreter_path.is_some() {
+        ElfImage::<S>::parse_for_dynamic_loader(program, main_bias).map_err(VfsElfError::Elf)?
+    } else {
+        ElfImage::<S>::parse_with_load_bias(program, main_bias).map_err(VfsElfError::Elf)?
+    };
+    if let Some(interpreter_path) = interpreter_path {
+        vfs.authorize_execution_as(interpreter_path, access)
+            .map_err(VfsElfError::Vfs)?;
+        let interpreter_len = vfs
+            .read_file_as(interpreter_path, access, interpreter_scratch)
+            .map_err(VfsElfError::Vfs)?;
+        let interpreter = &interpreter_scratch[..interpreter_len];
+        let interpreter_image =
+            ElfImage::<S>::parse_for_dynamic_loader(interpreter, DYNAMIC_INTERPRETER_BIAS)
+                .map_err(VfsElfError::Elf)?;
+        if !interpreter_image.is_position_independent() {
+            return Err(VfsElfError::Elf(ElfError::UnsupportedFormat));
+        }
+        program_image
+            .load_into_unrelocated(program, target)
+            .map_err(VfsElfError::Elf)?;
+        interpreter_image
+            .load_into_unrelocated(interpreter, target)
+            .map_err(VfsElfError::Elf)?;
+        Ok(ExecImage {
+            entry: interpreter_image.entry,
+            program_entry: program_image.entry,
+            interpreter_base: DYNAMIC_INTERPRETER_BIAS,
+            program_headers: program_image.program_headers,
+            program_header_entry_size: PROGRAM_HEADER_SIZE as u64,
+            program_header_count: program_image.program_header_count,
+        })
+    } else {
+        program_image
+            .load_into(program, target)
+            .map_err(VfsElfError::Elf)?;
+        Ok(ExecImage {
+            entry: program_image.entry,
+            program_entry: program_image.entry,
+            interpreter_base: 0,
+            program_headers: program_image.program_headers,
+            program_header_entry_size: PROGRAM_HEADER_SIZE as u64,
+            program_header_count: program_image.program_header_count,
+        })
+    }
+}
+
 /// Operações necessárias para carregar segmentos em um espaço de usuário.
 /// `map_zeroed_page` deve criar página user NX por padrão; `protect_page`
 /// aplica permissões ELF depois da cópia, evitando janelas RWX.
@@ -431,6 +583,9 @@ pub struct ElfImage<const N: usize> {
     load_bias: u64,
     rela_file_offset: usize,
     rela_count: usize,
+    program_headers: u64,
+    program_header_count: u64,
+    position_independent: bool,
 }
 
 impl<const N: usize> ElfImage<N> {
@@ -442,6 +597,14 @@ impl<const N: usize> ElfImage<N> {
     /// aplica relocations locais `R_X86_64_RELATIVE`; dependências dinâmicas,
     /// símbolos e PLT continuam sem suporte.
     pub fn parse_with_load_bias(bytes: &[u8], load_bias: u64) -> Result<Self, ElfError> {
+        Self::parse_internal(bytes, load_bias, false)
+    }
+
+    fn parse_for_dynamic_loader(bytes: &[u8], load_bias: u64) -> Result<Self, ElfError> {
+        Self::parse_internal(bytes, load_bias, true)
+    }
+
+    fn parse_internal(bytes: &[u8], load_bias: u64, defer_dynamic: bool) -> Result<Self, ElfError> {
         if bytes.len() < ELF_HEADER_SIZE {
             return Err(ElfError::Truncated);
         }
@@ -481,13 +644,28 @@ impl<const N: usize> ElfImage<N> {
         let mut count = 0;
         let mut entry_executable = false;
         let mut dynamic: Option<(usize, usize, u64, usize)> = None;
+        let mut explicit_phdr = None;
         for index in 0..phnum {
             let p = phoff + index * PROGRAM_HEADER_SIZE;
             let segment_type = u32le(bytes, p)?;
             if segment_type == PT_INTERP {
-                return Err(ElfError::UnsupportedFormat);
+                if !defer_dynamic {
+                    return Err(ElfError::UnsupportedFormat);
+                }
+                continue;
+            }
+            if segment_type == PT_PHDR {
+                explicit_phdr = Some(
+                    u64le(bytes, p + 16)?
+                        .checked_add(load_bias)
+                        .ok_or(ElfError::InvalidHeader)?,
+                );
+                continue;
             }
             if segment_type == PT_DYNAMIC {
+                if defer_dynamic {
+                    continue;
+                }
                 if dynamic.is_some() {
                     return Err(ElfError::InvalidHeader);
                 }
@@ -586,6 +764,35 @@ impl<const N: usize> ElfImage<N> {
             }
             None => (0, 0),
         };
+        let program_header_count = u64::try_from(phnum).map_err(|_| ElfError::InvalidHeader)?;
+        let program_headers = match explicit_phdr {
+            Some(address) => address,
+            None => {
+                let phoff_u64 = u64::try_from(phoff).map_err(|_| ElfError::InvalidHeader)?;
+                let mut address = None;
+                for segment in segments.iter().take(count).copied() {
+                    let file_end = segment
+                        .file_offset
+                        .checked_add(segment.file_size)
+                        .ok_or(ElfError::InvalidHeader)?;
+                    let phbytes_u64 =
+                        u64::try_from(phbytes).map_err(|_| ElfError::InvalidHeader)?;
+                    let phend = phoff_u64
+                        .checked_add(phbytes_u64)
+                        .ok_or(ElfError::InvalidHeader)?;
+                    if phoff_u64 >= segment.file_offset && phend <= file_end {
+                        address = Some(
+                            segment
+                                .virtual_address
+                                .checked_add(phoff_u64 - segment.file_offset)
+                                .ok_or(ElfError::InvalidHeader)?,
+                        );
+                        break;
+                    }
+                }
+                address.unwrap_or(0)
+            }
+        };
         Ok(Self {
             entry,
             segments,
@@ -593,7 +800,24 @@ impl<const N: usize> ElfImage<N> {
             load_bias,
             rela_file_offset,
             rela_count,
+            program_headers,
+            program_header_count,
+            position_independent: kind == 3,
         })
+    }
+
+    fn is_position_independent(&self) -> bool {
+        self.position_independent
+    }
+
+    fn load_into_unrelocated<T: ElfLoadTarget>(
+        &self,
+        bytes: &[u8],
+        target: &mut T,
+    ) -> Result<(), ElfError> {
+        // `parse_for_dynamic_loader` guarantees the dynamic table is deferred;
+        // an empty relocation list keeps all relocation ownership in ld-linux.
+        self.load_into(bytes, target)
     }
 
     pub fn segments(&self) -> &[LoadSegment] {
@@ -985,6 +1209,91 @@ mod tests {
     }
 
     #[test]
+    fn vfs_exec_loads_pt_interp_and_builds_linux_auxv() {
+        use crate::vfs::{AccessContext, Credentials, Vfs};
+
+        let root = Credentials { uid: 0, gid: 0 };
+        let access = AccessContext::new(root, &[], 0);
+        let mut vfs = Vfs::<8>::new();
+        vfs.create_dir("/", "bin", root, 0o755).unwrap();
+        vfs.create_dir("/", "lib", root, 0o755).unwrap();
+        vfs.create_file("/bin", "demo", root, 0o755).unwrap();
+        vfs.create_file("/lib", "ld.so", root, 0o755).unwrap();
+
+        let mut program = vec![0u8; 256];
+        program[..120].copy_from_slice(&fixture());
+        program[16..18].copy_from_slice(&2u16.to_le_bytes());
+        program[56..58].copy_from_slice(&2u16.to_le_bytes());
+        program[72..80].copy_from_slice(&0u64.to_le_bytes());
+        program[80..88].copy_from_slice(&0x400000u64.to_le_bytes());
+        program[96..104].copy_from_slice(&256u64.to_le_bytes());
+        program[104..112].copy_from_slice(&4096u64.to_le_bytes());
+        let interp_ph = 64 + PROGRAM_HEADER_SIZE;
+        program[interp_ph..interp_ph + 4].copy_from_slice(&PT_INTERP.to_le_bytes());
+        program[interp_ph + 8..interp_ph + 16].copy_from_slice(&240u64.to_le_bytes());
+        program[interp_ph + 32..interp_ph + 40].copy_from_slice(&11u64.to_le_bytes());
+        program[240..251].copy_from_slice(b"/lib/ld.so\0");
+
+        let mut interpreter = vec![0u8; 176];
+        interpreter[..120].copy_from_slice(&fixture());
+        interpreter[16..18].copy_from_slice(&3u16.to_le_bytes());
+        interpreter[24..32].copy_from_slice(&0x100u64.to_le_bytes());
+        interpreter[56..58].copy_from_slice(&1u16.to_le_bytes());
+        interpreter[72..80].copy_from_slice(&0u64.to_le_bytes());
+        interpreter[80..88].copy_from_slice(&0u64.to_le_bytes());
+        interpreter[96..104].copy_from_slice(&176u64.to_le_bytes());
+        interpreter[104..112].copy_from_slice(&4096u64.to_le_bytes());
+
+        vfs.write_file_as("/bin/demo", access, &program).unwrap();
+        vfs.write_file_as("/lib/ld.so", access, &interpreter)
+            .unwrap();
+        let mut program_scratch = [0; 512];
+        let mut interpreter_scratch = [0; 512];
+        let mut target = Target {
+            pages: [0; 4],
+            count: 0,
+            flags: 0,
+        };
+        let image = load_interpreted_executable_from_vfs::<4, 8, _>(
+            &vfs,
+            "/bin/demo",
+            access,
+            &mut program_scratch,
+            &mut interpreter_scratch,
+            &mut target,
+        )
+        .unwrap();
+        assert_eq!(image.entry, DYNAMIC_INTERPRETER_BIAS + 0x100);
+        assert_eq!(image.program_entry, 0x400000);
+        assert_eq!(image.interpreter_base, DYNAMIC_INTERPRETER_BIAS);
+        assert_eq!(image.program_headers, 0x400000 + 64);
+        assert_eq!(image.program_header_count, 2);
+        assert_eq!(target.count, 2);
+        let auxv = image.auxv();
+        assert_eq!(
+            auxv[0],
+            AuxEntry {
+                kind: AT_PHDR,
+                value: 0x400000 + 64
+            }
+        );
+        assert_eq!(
+            auxv[4],
+            AuxEntry {
+                kind: AT_BASE,
+                value: DYNAMIC_INTERPRETER_BIAS
+            }
+        );
+        assert_eq!(
+            auxv[5],
+            AuxEntry {
+                kind: AT_ENTRY,
+                value: 0x400000
+            }
+        );
+    }
+
+    #[test]
     fn dynamic_metadata_reads_needed_names_from_mapped_string_table() {
         let mut bytes = vec![0u8; 512];
         bytes[..120].copy_from_slice(&fixture());
@@ -1223,6 +1532,39 @@ mod tests {
         assert_eq!(target.word(stack.envp + 16), 0);
         assert_eq!(target.c_string(env0), b"PATH=/bin");
         assert_eq!(target.c_string(env1), b"MODE=test");
+    }
+
+    #[test]
+    fn builds_initial_stack_with_terminated_auxv_pairs() {
+        let mut target = StackTarget {
+            base: 0x4000_0000,
+            bytes: [0; 4096],
+        };
+        let auxv = [
+            AuxEntry {
+                kind: AT_PHDR,
+                value: 0x400040,
+            },
+            AuxEntry {
+                kind: AT_ENTRY,
+                value: 0x401000,
+            },
+        ];
+        let stack = build_initial_user_stack_with_auxv(
+            &mut target,
+            0x4000_1000,
+            &["/bin/demo"],
+            &["MODE=test"],
+            &auxv,
+        )
+        .unwrap();
+        let auxv_start = stack.envp + 16;
+        assert_eq!(target.word(auxv_start), AT_PHDR);
+        assert_eq!(target.word(auxv_start + 8), 0x400040);
+        assert_eq!(target.word(auxv_start + 16), AT_ENTRY);
+        assert_eq!(target.word(auxv_start + 24), 0x401000);
+        assert_eq!(target.word(auxv_start + 32), AT_NULL);
+        assert_eq!(target.word(auxv_start + 40), 0);
     }
 
     #[test]

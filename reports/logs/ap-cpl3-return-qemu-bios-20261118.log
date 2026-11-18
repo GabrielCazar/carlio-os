@@ -1,0 +1,53 @@
+[2J[H+----------------------------------------------------+
+| carlIO OS | Criado por João G.R.Santos             |
+| Sistema operacional experimental x86_64            |
++----------------------------------------------------+
+Núcleo Rust · inicialização serial
+
+Framebuffer Limine: RGB ativo; renderização de pixels validada.
+IDT: exceções 0-31 registradas; IRQs externos permanecem desativados.
+Ring 3: GDT, TSS, RSP0 e seletores de usuário configurados; CPL continua 0.
+Aviso: terminal de diagnóstico em ring 0; não é uma fronteira de segurança.
+Mapa de memória Limine: regiões usáveis=2, RAM usável MiB=500; HHDM e bases físico/virtual do kernel disponíveis.
+Allocator físico: frames livres até 32 GiB=128090, sem RAM acima de 4 GiB; teste usa frame baixo; alocação, escrita, leitura e liberação passaram.
+LAPIC xAPIC ativo no BSP; vetor de shootdown remoto 0xF1 instalado.
+SMP Limine: CPUs detectadas=4, APs iniciadas=3, aguardadas=3; APs aguardam despacho de tarefa, scheduler ainda desativado.
+SMP trabalho: CPUs AP=3, tarefas concluídas=3, resultados válidos=3; despacho de prova concluído.
+Heap kernel: regiões dinâmicas, alinhamento, escrita/leitura, expansão e liberação passaram.
+Inventário PCI (somente leitura):
+PCI 00:01.0 1234:1111 vídeo
+PCI 00:02.0 8086:10d3 rede (Intel 82574L/QEMU)
+NIC Intel 82574L: filas DMA TX/RX ativas, MAC=525400123456; envio/recepcao polling disponiveis.
+DHCP IPv4: concessao recebida 10.0.2.15
+PCI 00:1f.2 8086:2922 SATA/AHCI (QEMU: reconhecido; driver AHCI experimental)
+AHCI indisponível: dispositivo nao encontrado.
+Controladores relevantes encontrados: 3
+Hermione rootfs: verificando volume de sistema.
+Hermione rootfs: AHCI sem dispositivo; mantendo VFS somente em RAM.
+Runtime de processos: preparando tarefas CPL3.
+ABI Linux: probe CPL3 aguardando byte de entrada serial.
+Runtime: tarefas com CR3 independentes despachadas.
+write ok
+
+=== CAPTURA DE EXCECAO CPU ===
+Vetor: 14 ( #PF page fault )
+Código de erro: 0x0000000000000010
+RIP: 0x0000000000000000  CS: 0x0000000000000008  RFLAGS: 0x0000000000010082
+RAX=0xffffffffffffffda RBX=0x0000000000000000 RCX=0x0000000000000000 RDX=0xffffffff8074af58
+RSI=0xffffffff8074af01 RDI=0xffffffff8074a708 RBP=0x0000000000000000
+R8=0x0000000000000000 R9=0x0000000000000000 R10=0xffffffff800046ae R11=0x0000000000000000
+R12=0x00000000003e03a0 R13=0x0000000000000000 R14=0x0000000000000000 R15=0x0000000000000000
+Sistema interrompido; diagnóstico serial somente leitura.
+Runtime: fault CPL3 vetorizado=14 CR2=0xffffffffffffffda; encerrando somente a tarefa.
+Runtime: tarefas encerradas; trocas de timer=9, trocas de CR3=1, faults isolados=1.
+SMP CPL3: 3 tarefas despachadas; dois APs executaram CPL3 com preempção e retornaram a idle.
+ABI Linux x86_64: chamada CPL3 não passou.
+ABI Linux: probe CPL3 de credenciais incompleto; máscara=000000000000ff21.
+ABI Linux: write CPL3 validou buffer de usuário e serial.
+ABI Linux: probe CPL3 de read não passou.
+ABI Linux: leitura de arquivo CPL3 pelo VFS não passou.
+Segurança CPL3: negação POSIX de openat não passou.
+ABI Linux: read(0) CPL3 recebeu entrada serial.
+ABI Linux: probe CPL3 de mmap/munmap incompleto; máscara=0000000000000000.
+
+--- mensagens do QEMU ---

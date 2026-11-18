@@ -1,0 +1,46 @@
+[2J[H+----------------------------------------------------+
+| carlIO OS | Criado por João G.R.Santos             |
+| Sistema operacional experimental x86_64            |
++----------------------------------------------------+
+Núcleo Rust · inicialização serial
+
+Framebuffer Limine: RGB ativo; renderização de pixels validada.
+IDT: exceções 0-31 registradas; IRQs externos permanecem desativados.
+Ring 3: GDT, TSS, RSP0 e seletores de usuário configurados; CPL continua 0.
+Aviso: terminal de diagnóstico em ring 0; não é uma fronteira de segurança.
+Mapa de memória Limine: regiões usáveis=2, RAM usável MiB=500; HHDM e bases físico/virtual do kernel disponíveis.
+Allocator físico: frames livres até 32 GiB=128090, sem RAM acima de 4 GiB; teste usa frame baixo; alocação, escrita, leitura e liberação passaram.
+LAPIC xAPIC ativo no BSP; vetor de shootdown remoto 0xF1 instalado.
+SMP Limine: CPUs detectadas=4, APs iniciadas=3, aguardadas=3; APs aguardam despacho de tarefa, scheduler ainda desativado.
+SMP trabalho: CPUs AP=3, tarefas concluídas=3, resultados válidos=3; despacho de prova concluído.
+Heap kernel: regiões dinâmicas, alinhamento, escrita/leitura, expansão e liberação passaram.
+Inventário PCI (somente leitura):
+PCI 00:01.0 1234:1111 vídeo
+PCI 00:02.0 8086:10d3 rede (Intel 82574L/QEMU)
+NIC Intel 82574L: filas DMA TX/RX ativas, MAC=525400123456; envio/recepcao polling disponiveis.
+DHCP IPv4: concessao recebida 10.0.2.15
+PCI 00:1f.2 8086:2922 SATA/AHCI (QEMU: reconhecido; driver AHCI experimental)
+AHCI indisponível: dispositivo nao encontrado.
+Controladores relevantes encontrados: 3
+Hermione rootfs: verificando volume de sistema.
+Hermione rootfs: AHCI sem dispositivo; mantendo VFS somente em RAM.
+Runtime de processos: preparando tarefas CPL3.
+ABI Linux: probe CPL3 aguardando byte de entrada serial.
+Runtime: tarefas com CR3 independentes despachadas.
+write ok
+Runtime: fault CPL3 vetorizado=14 CR2=0x0000700000000000; encerrando somente a tarefa.
+Runtime: tarefas encerradas; trocas de timer=10, trocas de CR3=1, faults isolados=1.
+SMP CPL3: 3 tarefas despachadas; dois APs executaram CPL3 com preempção e retornaram a idle.
+ABI Linux x86_64: getpid/exit via SYSCALL passou.
+ABI Linux: getuid/geteuid/getgid/getegid/getgroups via SYSCALL passaram.
+ABI Linux: write CPL3 validou buffer de usuário e serial.
+ABI Linux: read CPL3 recusou destino inválido antes da leitura serial.
+ABI Linux: openat/read/close CPL3 leu arquivo pelo VFS.
+Segurança CPL3: openat negou arquivo 0600 de outro UID com EACCES.
+ABI Linux: read(0) CPL3 recebeu entrada serial.
+ABI Linux: mmap/munmap CPL3 alocou, gravou e liberou páginas do processo.
+Reaper SMP: BSP fora dos CR3 de prova; ACKs de quiescência dos APs=3; stacks, VM e page tables podem ser recolhidas.
+LAPIC: ACKs obtidos=1, esperados=3.
+LAPIC: falha fatal no shootdown remoto: ACK remoto expirou.
+
+--- mensagens do QEMU ---

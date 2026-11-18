@@ -1,5 +1,172 @@
 # Relatório — Fase 2: memória e execução
 
+### Preparação ELF com `PT_INTERP` e `auxv` — 2026-11-18
+
+Sintoma e causa: `ElfImage::parse` rejeitava todo `PT_INTERP`, então o fluxo de
+criação só podia iniciar ELF sem interpretador. O caminho de criação agora
+detecta `PT_INTERP`, autoriza e
+carrega o interpretador ET_DYN no mesmo espaço de endereços, preserva o entry
+do programa e transfere o entry inicial ao interpretador. Para imagens
+dinâmicas, relocations ficam deliberadamente para o `ld-linux`; a stack recebe
+`AT_PHDR`, `AT_PHENT`, `AT_PHNUM`, `AT_PAGESZ`, `AT_BASE` e `AT_ENTRY`. Imagens
+sem `PT_INTERP` seguem o caminho ELF anterior.
+
+Arquivos alterados: `src/elf.rs`, `src/main.rs`, `docs/ARQUITETURA-KERNEL.md`,
+`docs/USERLAND.md`, `docs/ROADMAP.md` e este relatório. Foram adicionados
+testes host com programa e interpretador sintéticos no VFS, incluindo
+endereços/entry e pares `auxv` terminados. `cargo fmt --all --check`,
+`cargo test --all-targets` (169 testes da biblioteca e alvos) e
+`cargo clippy --all-targets -- -D warnings` passaram ([fmt](logs/exec-pt-interp-fmt-20261118.txt),
+[host](logs/exec-pt-interp-host-20261118.txt),
+[Clippy](logs/exec-pt-interp-clippy-20261118.txt)); o build da ISO passou
+([build](logs/exec-pt-interp-build-20261118.txt)). Comandos QEMU: `python3 scripts/qemu-smoke.py --iso build/carlio-os.iso --accel tcg --memory 512M --timeout 40 --log reports/logs/exec-pt-interp-qemu-bios-20261118.log` e a mesma linha com `--timeout 45 --firmware /usr/share/edk2/x64/OVMF_CODE.4m.fd --log reports/logs/exec-pt-interp-qemu-uefi-20261118.log`. BIOS e UEFI rodaram com 4 CPUs e 512 MiB, mas ambos repetiram `WATCHDOG: SEM PROGRESSO`
+em `RIP=0x400000003000`, após `write ok` e antes do probe `read(0)`/ABI-VM
+([BIOS](logs/exec-pt-interp-qemu-bios-20261118.log),
+[UEFI](logs/exec-pt-interp-qemu-uefi-20261118.log)). O smoke não executa o novo
+fixture ELF dinâmico, portanto QEMU não validou `PT_INTERP`.
+
+Limites: não existe syscall Linux `execve` nem substituição transacional da
+imagem do processo; o caminho integrado no kernel ainda é chamado pela criação
+de tarefas de prova. O VFS inline limita arquivos a 16 KiB, não contém o
+`ld-linux` real do Arch e não oferece resolução geral de symlinks, arquivos
+grandes ou bibliotecas. Assim, este incremento não comprova execução de
+glibc/Arch. NAS/KVM foi adiado após a falha local, conforme
+[pendência](logs/exec-pt-interp-nas-pendente-20261118.txt); a causa do watchdog
+ABI/VM segue aberta. Nenhuma validação em hardware físico foi feita.
+
+### Tentativa de correção — ABI/VM e afinidade SMP — 2026-11-18
+
+O probe de ABI/VM ainda não fecha localmente em QEMU. A análise do escalonador
+mostrou que `preempt_frame_local` acabava chamando o caminho genérico de
+escalonamento, que pode roubar tarefas de outra fila; foram acrescentados
+`schedule_local` e `pin_ready_to_cpu`, usados para manter frames locais e fixar
+a fixture na CPU BSP e em duas CPUs secundárias. O
+aviso que sincroniza o byte serial do smoke foi movido para o caminho real de
+`read(0)`, e o workload encerra por `exit` após testar a negação de `openat`,
+preservando o fault isolado do probe VM dedicado. Valores de falha de `openat`
+e `munmap` também ficam registrados quando o resumo ABI/VM é alcançado.
+
+Host: fmt, testes e Clippy passaram ([fmt](logs/abi-vm-fix-r10-fmt-20261118.txt),
+[testes](logs/abi-vm-fix-r10-host-20261118.txt),
+[Clippy](logs/abi-vm-fix-r10-clippy-20261118.txt)); o build da ISO passou
+([build](logs/abi-vm-fix-r10-build-20261118.txt)). QEMU BIOS e UEFI TCG foram
+repetidos com 4 CPUs e 512 MiB, mas ambos pararam na etapa 1/7: depois de
+`write ok` e do aviso de `read(0)`, o watchdog expirou antes do resumo de ABI,
+VM e reaper ([BIOS](logs/abi-vm-fix-r10-qemu-bios-20261118.log),
+[UEFI](logs/abi-vm-fix-r10-qemu-uefi-20261118.log)). Portanto a falha original
+de ABI/VM continua sem causa final confirmada e a alteração de afinidade ainda
+não está validada em QEMU. NAS/KVM não foi executado; pendência registrada em
+[log NAS](logs/abi-vm-fix-nas-pendente-20261118.txt). Fase aberta.
+
+## APIs clone/join e base do loader ET_REL — 2026-11-18
+
+`Scheduler::clone_thread` cria uma thread joinable no grupo do pai, com pilha
+kernel reservada, mesma page table e contexto de segurança; `join_current`
+bloqueia um chamador, é acordado em exit/fault e consome o status antes do
+reaper liberar o slot. A API recusa pai de outro grupo, self-join e segundo
+joiner; o líder não pode ser reaped enquanto houver membros. Isso é API interna
+do scheduler: ainda não é syscall Linux `clone`, não aloca/mapa uma pilha user
+por conta própria e não implementa futex ou join POSIX.
+
+`kernel_module::load` adiciona parser ELF64 ET_REL limitado a x86_64, relocations
+R_X86_64_64/GLOB_DAT/JUMP_SLOT/PC32/PLT32/32/32S, inicialização de NOBITS,
+alocação via contrato RW/NX e proteção final com W^X. Erros anteriores a init
+recolhem as alocações; unload chama exit e libera os intervalos. Este é ainda
+um loader hostável por backend: não há backend x86_64 ligado ao allocator e às
+page tables do kernel, tabela de símbolos exportados, contagem de dependências,
+quiescência SMP ou chamada de código de módulo no kernel. Portanto LKMs reais
+continuam não suportados.
+
+Host: 166 testes da biblioteca, mais 1+4 testes dos binários, fmt e Clippy
+passaram ([log](logs/process-clone-lkm-host-20261118.txt)). Build release do
+kernel e ISO passou ([build](logs/process-clone-lkm-build-20261118.txt)). Em
+QEMU TCG BIOS, o marcador informa retorno CPL3 nos dois APs e reaper ACK 3/3,
+mas o gate completo falhou na etapa 1/7: syscalls básicos e VFS passaram,
+porém a negação POSIX e o probe mmap/munmap falharam
+([BIOS](logs/process-clone-lkm-qemu-bios-20261118.log)). UEFI atingiu o mesmo
+marcador, mas probes ABI/VM falharam e o smoke parou na etapa 2/7
+([UEFI](logs/process-clone-lkm-qemu-uefi-20261118.log)). NAS/KVM fica
+pendente até corrigir e passar os gates locais; não foi executado nesta rodada.
+Não concluir suporte geral a threads nem LKMs.
+
+## Retorno CPL3 nos APs e gates NAS/KVM — 2026-11-18
+
+Análise do `#GP(0x18)` identificou a falha no caminho de parada dos APs: o
+trampoline alterava `CS` para ring 0, mas mantinha o `SS` user (`0x1b`) e o
+`RSP` do processo no frame de `iretq`. O retorno agora instala `SS=0x10`, um
+`RSP` kernel seguro para o trampoline e `RFLAGS=0x202`, reabilitando timer e
+IPI TLB no scheduler idle. Isso removeu o `#GP` nos testes BIOS/UEFI.
+
+Host: `cargo fmt --all --check`, 166 testes e Clippy passaram
+([host](logs/ap-cpl3-final-host-20261118.txt),
+[Clippy](logs/ap-cpl3-final-clippy-20261118.txt)). Local TCG BIOS e UEFI
+registraram preempção em dois APs e ACK de quiescência 3/3, sem `#GP`; os
+logs completos continuam com o gate de ABI/VM TCG falhando depois do probe
+([BIOS](logs/ap-cpl3-final-qemu-bios-20261118.log),
+[UEFI](logs/ap-cpl3-final-qemu-uefi-20261118.log)). NAS/KVM passou o smoke
+completo em BIOS e UEFI: 166 testes host, probe CPL3, faults isolados, reaper,
+25 shootdowns com ACK remoto, shell e comandos de diagnóstico. Evidências:
+[resumo NAS](logs/ap-cpl3-final-nas-20261118-142245.txt),
+[BIOS/KVM](logs/ap-cpl3-final-nas-20261118-142245-qemu-kvm-bios.log) e
+[UEFI/KVM](logs/ap-cpl3-final-nas-20261118-142245-qemu-kvm-uefi.log). O script
+limpou o diretório temporário em `/tmp/carlioos-*`.
+
+O retorno CPL3 dos APs e os gates NAS/KVM desta revisão passaram. A fase 2
+continua aberta para threads persistentes, `clone/join`, ownership geral e
+estabilidade de ABI/VM no QEMU TCG local.
+
+## Encerramento explícito de tarefas — 2026-11-18
+
+Adicionado `Scheduler::destroy(id, code)`: remove tarefas `Ready` da fila e
+marca `Blocked` como encerradas; rejeita IDs desconhecidos e tarefas já
+encerradas. Para uma tarefa `Running`, retorna `Busy`; a CPU proprietária deve
+pará-la primeiro. O reaper existente continua recolhendo pilha e recursos de VM
+fora da fila. Isso não cria threads POSIX persistentes nem resolve o término
+remoto por IPI/quiescência.
+
+Host: `cargo fmt --all --check`, 166 testes e Clippy passaram
+([formatação](logs/process-destroy-fmt-20261118.txt),
+[testes](logs/process-destroy-host-20261118.txt),
+[Clippy](logs/process-destroy-clippy-20261118.txt)). QEMU BIOS falhou no gate
+de retorno CPL3 AP com `#GP(0x18)` e double fault
+([log](logs/process-management-qemu-bios-20261118-135813.log)); o script para
+após BIOS, portanto UEFI desta execução não foi tentado. NAS/KVM permanece
+pendente. O loader LKM não foi implementado: o kernel continua monolítico e os
+gates de `ET_REL`, relocations, W^X e ciclo init/exit continuam abertos.
+
+## Permissões efetivas de usuário/kernel — 2026-11-18
+
+`AddressSpace::new` agora limpa `U/S` nas entradas PML4 herdadas do half
+kernel, sem modificar a tabela raiz original. A consulta de mapeamento agrega
+`U/S`, `R/W` e `NX` de todos os níveis; os testes host cobrem permissões
+efetivas negadas por ancestrais e o half kernel supervisor. Isso fecha uma
+lacuna de representação/teste das permissões; não comprova isolamento completo
+nem corrige a execução SMP CPL3.
+
+`cargo fmt --check`, `cargo test --all-targets` e
+`cargo clippy --all-targets -- -D warnings` passaram. Os logs host estão em
+[formatação](logs/fase-2-isolamento-fmt-final-20261118.txt),
+[testes](logs/fase-2-isolamento-host-final-20261118.txt) e
+[Clippy](logs/fase-2-isolamento-clippy-final-20261118.txt). O boot BIOS parou
+no gate CPL3 dos APs com `#GP(0x18)` e double fault
+([log BIOS](logs/fase-2-isolamento-qemu-bios-20261118-134208.log)); UEFI
+reproduziu retorno inválido de AP e o relatório serial registrou falha no gate
+([log UEFI](logs/fase-2-isolamento-qemu-uefi-20261118.log)). Assim, a prova
+positiva de isolamento/preempção concorrente segue reprovada. O gate NAS/KVM
+permanece pendente, pois o teste QEMU local falhou antes de ser seguro avançar
+para a validação remota.
+
+O scheduler atual cria e agenda processos da fixture, preempta pelo timer e
+encerra/recolhe tarefas no BSP; a tabela e as pilhas são fixas. Threads de
+usuário persistentes, ciclo `clone/join`, ownership geral de recursos, carga
+CPL3 concorrente nos APs e scheduler de produção continuam pendentes conforme
+§4 de `CORRECT.md`. Não há loader de módulos de kernel: o ELF/linker existente
+trata cargas de usuário e a imagem do kernel continua monolítica. Um LKM exige
+ABI/exportação de símbolos, `ET_REL`/relocações, alocação com permissões W^X,
+registro de dependências e referências ativas, além de rollback seguro de
+`init`/`exit`; nenhum desses ciclos está validado. Não declarar processos e
+threads gerais, isolamento completo ou suporte a LKMs.
+
 ### Revalidação do probe CPL3 simultâneo — 2026-11-16 — gate reprovado
 
 O experimento com três tarefas ainda não comprova preempção CPL3 simultânea em
@@ -12,6 +179,55 @@ O gate permanece aberto. Não afirmar conclusão da Fase 2 nem liberar stack, VM
 ou page tables com base neste experimento. A correção precisa demonstrar o
 retorno seguro de interrupção nos APs e repetir BIOS/UEFI, NAS/KVM, três tarefas
 e ACK de todas as CPUs antes de remover esta pendência.
+
+### Tentativa de correção do retorno AP — 2026-11-16 — gate reprovado
+
+O callback de timer foi alterado para deixar a parada dos APs ao dispatcher e
+preservar o frame de IRQ corrente. Os testes host (157 biblioteca + 1
+`carlio-logs` + 4 `herm-fs`), `cargo fmt --check` e Clippy passaram, mas BIOS e
+UEFI QEMU continuam falhando após despachar as tarefas: o retorno em `iretq`
+gera `#GP` com código `0x18`; BIOS também captura `#PF` e a saída serial dos APs
+se intercala. Portanto não há marcador de simultaneidade confirmado nem ACKs
+de quiescência. Logs: [host](logs/phase2-ap-cpl3-iret-fix-host-20261116.txt),
+[BIOS](logs/phase2-ap-cpl3-iret-fix-bios-20261116.log),
+[UEFI](logs/phase2-ap-cpl3-iret-fix-uefi-20261116.log) e [trace de interrupções
+QEMU](logs/phase2-iret-qemu-int-20261116.log).
+
+**Estado:** correção inconclusiva; não fazer commit do código SMP nem liberar
+recursos de processo. O gate requer inspeção do frame que alimenta `iretq` e
+uma nova execução limpa em BIOS/UEFI, seguida de NAS/KVM.
+
+### Inspeção de frame e descritores do `iretq` — 2026-11-16 — gate reprovado
+
+Inspecionados o layout de `UserInterruptFrame`, a ordem dos 15 `pop`, o salto
+de 16 bytes sobre vetor/erro e o `iretq`. O frame inicial contém `RIP` da
+fixture, `CS=0x23`, `RSP` user e `SS=0x1b`; o GDT local de cada AP contém os
+descritores esperados (`GDT[3]=0x00cff2000000ffff`, `GDT[4]=0x00affa000000ffff`).
+Uma captura atômica por CPU foi adicionada ao caminho de diagnóstico. Em BIOS,
+as CPUs 1 e 2 selecionaram frames CPL3 com esses seletores, mas o retorno ainda
+gera `#GP(0x18)` no `iretq`; os descritores e os campos registrados não
+explicam a falha, cuja causa permanece aberta. UEFI também falha e a serial
+intercalada impede associar todos os campos a cada CPU. Os traces mostram
+entradas CPL3 e interrupções, mas não constituem marcador de execução
+simultânea sustentada em dois APs nem ACK de quiescência de todas as CPUs.
+
+Comandos: `cargo fmt --check`, `cargo test --all-targets`,
+`cargo clippy --all-targets -- -D warnings`, `scripts/build-iso.sh` e
+`python3 scripts/qemu-smoke.py` em BIOS/UEFI TCG com `--memory 512M` e
+`--qemu-debug-log`. Formatação, testes host e Clippy passaram; ambos os boots
+pararam na etapa 1/7 por `#GP(0x18)`. Evidências: [host](logs/phase2-iret-gdt-capture-host-20261116-2130.txt),
+[BIOS](logs/phase2-iret-gdt-capture-bios-20261116-2130.log),
+[trace BIOS](logs/phase2-iret-gdt-capture-bios-int-20261116-2130.log),
+[UEFI](logs/phase2-iret-gdt-capture-uefi-20261116-2130.log),
+[trace UEFI](logs/phase2-iret-gdt-capture-uefi-int-20261116-2130.log) e
+[resultado](logs/phase2-iret-gdt-capture-result-20261116-2130.txt) e
+[gate NAS pendente](logs/phase2-iret-nas-pendente-20261116.txt).
+
+**Estado:** fase aberta; sem commit do kernel. Não foram obtidos os
+marcadores positivos de CPL3 simultâneo em dois APs nem ACKs de quiescência de
+todas as CPUs. A captura por CPU permanece para a próxima investigação do
+frame/retorno; repetir QEMU só depois de corrigir a falha, então exigir os
+marcadores e ACKs antes de qualquer commit.
 
 ## Regressão do reaper e auditoria do gate CPL3 nos APs (2026-11-16)
 

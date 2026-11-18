@@ -24,6 +24,8 @@ def main() -> int:
     parser.add_argument("--herm-image", type=Path, help="imagem HermFS descartável anexada ao AHCI")
     parser.add_argument("--expect-rootfs", choices=("initialized", "mounted"),
                         help="exige mensagem positiva de inicialização ou remontagem do rootfs")
+    parser.add_argument("--qemu-debug-log", type=Path,
+                        help="captura eventos internos do QEMU para diagnóstico")
     args = parser.parse_args()
     if not 1 <= args.cpus <= 64:
         parser.error("--cpus deve estar entre 1 e 64")
@@ -66,6 +68,9 @@ def main() -> int:
         if not image_path.is_file():
             parser.error(f"imagem Hermione ausente: {image_path}")
         command.extend(("-drive", f"if=ide,format=raw,file={image_path}"))
+    if args.qemu_debug_log:
+        args.qemu_debug_log.parent.mkdir(parents=True, exist_ok=True)
+        command.extend(("-d", "int", "-D", str(args.qemu_debug_log.resolve())))
 
     process = subprocess.Popen(
         command,
@@ -153,7 +158,10 @@ def main() -> int:
         "Framebuffer Limine: RGB ativo; renderização de pixels validada.".encode(),
         "Criado por João G.R.Santos".encode(),
         b"ABI Linux: read(0) CPL3 recebeu entrada serial.",
+        "Segurança CPL3: openat negou arquivo 0600 de outro UID com EACCES.".encode(),
         "ABI Linux: mmap/munmap CPL3 alocou, gravou e liberou páginas do processo.".encode(),
+        "SMP CPL3: 3 tarefas despachadas; dois APs executaram CPL3 com preempção e retornaram a idle.".encode(),
+        "Reaper SMP: BSP fora dos CR3 de prova; ACKs de quiescência dos APs=".encode(),
         "; alocação, escrita, leitura e liberação passaram.".encode(),
         "Ring 3 rotinas: ELF carregado em CPL3, scheduler e preempção entre dois CR3 passaram; pilhas recuperadas pelo reaper.".encode(),
         ", faults isolados=1.".encode(),

@@ -1,0 +1,3 @@
+   Compiling carlio-os v0.1.0 (/home/gabriel/Work/carlio-os)
+    Checking libcarlio v0.1.0 (/home/gabriel/Work/carlio-os/libcarlio)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.29s

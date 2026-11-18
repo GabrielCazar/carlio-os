@@ -1,0 +1,6 @@
+Gate NAS/KVM: pendente em 2026-11-16.
+Não executado nesta rodada. As imagens QEMU TCG locais BIOS e UEFI ainda falham
+com #GP(0x18) no retorno iretq (evidências phase2-iret-gdt-capture-*-
+20261116-2130.log); não há build validado para avançar o gate remoto ou alegar
+CPL3 SMP seguro. Retomar NAS/KVM após corrigir e aprovar os gates locais. Nenhum
+I/O remoto foi feito.

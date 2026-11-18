@@ -62,6 +62,7 @@ pub mod ext4;
 pub mod fat32;
 pub mod heap;
 pub mod hermione;
+pub mod kernel_module;
 pub mod linux_abi;
 #[cfg(not(target_os = "none"))]
 pub mod log_report;

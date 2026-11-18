@@ -20,8 +20,9 @@ A camada de bloco deve endereçar discos de até 2 TiB, usando LBAs e contagens
 de setores de 64 bits ponta a ponta. O transporte AHCI monta campos LBA48, mas
 isso sozinho não comprova suporte do kernel: capacidade do dispositivo, limites
 de DMA, particionamento e filesystem também precisam cobrir o último setor sem
-overflow. Hermione atualmente limita o volume a `u32::MAX` setores e ainda não
-alcança exatamente 2 TiB.
+overflow. Hermione v3 aceita exatamente `2^32` setores (2 TiB) no backend de
+imagem; a faixa foi testada no último LBA com imagem esparsa. Isso ainda não
+comprova controlador AHCI físico nem montagem do filesystem no boot.
 
 ## Camadas e contratos
 
@@ -53,6 +54,11 @@ alcança exatamente 2 TiB.
 - Interfaces de driver não são uma fronteira de segurança enquanto tudo roda
   em ring 0. Isolamento de drivers/processos requer memória protegida, syscalls
   validadas e execução menos privilegiada, planejados para a fase 2.
+- Módulos carregáveis do kernel ainda não existem. Um LKM x86-64 executado em
+  ring 0 compartilha o privilégio do kernel e, portanto, pertence ao mesmo
+  domínio de confiança; isolamento user/kernel não isola módulos entre si.
+  Carregamento e remoção dependem de ABI versionada, relocations ELF64,
+  permissões W^X, referências ativas e rollback de inicialização/encerramento.
 
 ## Estado
 
@@ -100,6 +106,15 @@ user é isolado na prova e leva ao encerramento/reaping daquela tarefa. O heap
 first-fit valida a cadeia da arena e o payload exato; o serviço global usa
 `IrqSpinLock` e expande arenas por frames, com stress concorrente prolongado
 ainda pendente.
+
+O preparador ELF agora tem caminho hostável para `PT_INTERP`: carrega programa
+e interpretador ET_DYN sem aplicar relocations de userland, inicia pelo entry
+do interpretador e prepara os campos básicos de `auxv` (`AT_PHDR`, `AT_PHENT`,
+`AT_PHNUM`, `AT_PAGESZ`, `AT_BASE`, `AT_ENTRY`). O `ld-linux` resolveria
+dependências e relocations. Esse preparador ainda não está ligado a uma syscall
+Linux `execve` nem à substituição transacional de processo; a capacidade atual
+de arquivo inline VFS (16 KiB) também não comporta o interpretador Arch real.
+Testes host sintéticos não validam execução de glibc ou userland Arch.
 
 O comando `logs` formata o buffer volátil em Markdown na serial. Persistência
 dos logs integra a reserva planejada de 16 GiB no disco de sistema (meta inicial

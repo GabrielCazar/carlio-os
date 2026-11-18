@@ -1,0 +1,23 @@
+Diff in /home/gabriel/Work/carlio-os/src/memory.rs:1260:
+         let root = 0x1000;
+         let mut access = FakePageTables::new();
+         // A user-marked leaf is still supervisor-only when an ancestor lacks U/S.
+[31m-        access.entries.insert((root, 0), 0x2000 | ENTRY_PRESENT | ENTRY_WRITABLE);
+(B[m         access
+             .entries
+[31m-            .insert((0x2000, 1), 0x3000 | ENTRY_PRESENT | ENTRY_USER | ENTRY_WRITABLE);
+(B[m[31m-        access
+(B[m[31m-            .entries
+(B[m[31m-            .insert((0x3000, 0), 0x4000 | ENTRY_PRESENT | ENTRY_USER | ENTRY_WRITABLE);
+(B[m[32m+            .insert((root, 0), 0x2000 | ENTRY_PRESENT | ENTRY_WRITABLE);
+(B[m[32m+        access.entries.insert(
+(B[m[32m+            (0x2000, 1),
+(B[m[32m+            0x3000 | ENTRY_PRESENT | ENTRY_USER | ENTRY_WRITABLE,
+(B[m[32m+        );
+(B[m[32m+        access.entries.insert(
+(B[m[32m+            (0x3000, 0),
+(B[m[32m+            0x4000 | ENTRY_PRESENT | ENTRY_USER | ENTRY_WRITABLE,
+(B[m[32m+        );
+(B[m         access.entries.insert(
+             (0x4000, 0),
+             0x8000 | ENTRY_PRESENT | ENTRY_USER | ENTRY_WRITABLE,
