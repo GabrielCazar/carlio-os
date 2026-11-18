@@ -1,5 +1,30 @@
 # Relatório — Fase 3: segurança, contas e isolamento
 
+### Correção — negação POSIX em syscall CPL3 — 2026-11-16
+
+O probe de execução agora publica uma fixture com UID/GID 1000, mantendo o
+arquivo `/programas/probe` executável e legível por `other`, e tenta abrir
+`/programas/restrito`, pertencente a root com modo `0600`. O dispatcher aplica
+o contexto imutável do processo ao `openat`; o teste exige retorno `EACCES` e
+emite marcador serial. O smoke QEMU falha se esse marcador faltar. Isso prova
+concessão e negação para `openat` no fixture CPL3, sem afirmar enforcement
+geral para todos os processos nem política de inode persistente.
+
+Validação: `scripts/test-local-iso.sh` passou `cargo fmt --check`, 156 testes
+host e boots BIOS/UEFI QEMU TCG. `scripts/test-nas.sh` também passou 156 testes,
+BIOS/UEFI QEMU/KVM e os probes de storage, com todos os artefatos remotos sob
+`/tmp/carlioos-test-*`. Evidências: [host local](logs/fase-3-seguranca-20261116-host-20261116-194837.txt),
+[BIOS local](logs/fase-3-seguranca-20261116-qemu-bios-20261116-194837.log),
+[UEFI local](logs/fase-3-seguranca-20261116-qemu-uefi-20261116-194837.log),
+[execução NAS](logs/fase-3-seguranca-storage-20261116-nas-20261116-194926.txt),
+[BIOS NAS](logs/fase-3-seguranca-storage-20261116-nas-20261116-194926-qemu-kvm-bios.log)
+e [UEFI NAS](logs/fase-3-seguranca-storage-20261116-nas-20261116-194926-qemu-kvm-uefi.log).
+
+**Estado:** enforcement CPL3 demonstrado para leitura de arquivo inline, com
+negação `0600`/`EACCES`; ainda é fixture de diagnóstico. Persistência/login,
+auditoria durável de negações, backends mounted, processos gerais e proteção
+criptográfica de contas permanecem pendentes.
+
 ## Contas persistentes em modelo host e identidade de processo (2026-11-15)
 
 `userland::accounts::AccountDatabase` serializa/deserializa contas com checksum,
@@ -16,7 +41,7 @@ não está ligada à entrada de syscall para processos gerais.
 
 ## Incremento de operações VFS host (2026-11-15)
 
-`Vfs<N>` agora guarda até 256 bytes inline por arquivo e oferece
+`Vfs<N>` agora guarda até 16 KiB inline por arquivo e oferece
 `read_file_as`/`write_file_as`. Ambas resolvem o caminho exigindo busca nos
 diretórios ancestrais e verificam `r`/`w` pela identidade, grupo suplementar e
 modo POSIX do arquivo. Escrita grande, leitura em diretório, buffer curto e

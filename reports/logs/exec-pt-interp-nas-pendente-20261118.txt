@@ -1,0 +1,11 @@
+Gate NAS/KVM pendente para a revisão PT_INTERP.
+
+Motivo: os gates QEMU TCG locais BIOS e UEFI desta revisão falharam antes de
+alcançar o workload de ABI/VM; conforme CORRECT.md §§4 e 9, validação remota não
+foi iniciada após a falha local.
+
+Evidências locais:
+- reports/logs/exec-pt-interp-qemu-bios-20261118.log
+- reports/logs/exec-pt-interp-qemu-uefi-20261118.log
+
+Nenhum I/O remoto ou acesso a hardware físico foi realizado.

@@ -5,6 +5,10 @@ edition = "2021"
 license = "GPL-3.0-only"
 publish = false
 
+[workspace]
+members = ["libcarlio"]
+resolver = "2"
+
 [features]
 crash-test = []
 storage-test = []

@@ -1,0 +1,76 @@
+[2J[H+----------------------------------------------------+
+| carlIO OS | Criado por João G.R.Santos             |
+| Sistema operacional experimental x86_64            |
++----------------------------------------------------+
+Núcleo Rust · inicialização serial
+
+Framebuffer Limine: RGB ativo; renderização de pixels validada.
+IDT: exceções 0-31 registradas; IRQs externos permanecem desativados.
+Ring 3: GDT, TSS, RSP0 e seletores de usuário configurados; CPL continua 0.
+Aviso: terminal de diagnóstico em ring 0; não é uma fronteira de segurança.
+Mapa de memória Limine: regiões usáveis=2, RAM usável MiB=500; HHDM e bases físico/virtual do kernel disponíveis.
+Allocator físico: frames livres até 32 GiB=128090, sem RAM acima de 4 GiB; teste usa frame baixo; alocação, escrita, leitura e liberação passaram.
+LAPIC xAPIC ativo no BSP; vetor de shootdown remoto 0xF1 instalado.
+SMP Limine: CPUs detectadas=4, APs iniciadas=3, aguardadas=3; APs aguardam despacho de tarefa, scheduler ainda desativado.
+SMP trabalho: CPUs AP=3, tarefas concluídas=3, resultados válidos=3; despacho de prova concluído.
+Heap kernel: regiões dinâmicas, alinhamento, escrita/leitura, expansão e liberação passaram.
+Inventário PCI (somente leitura):
+PCI 00:01.0 1234:1111 vídeo
+PCI 00:02.0 8086:10d3 rede (Intel 82574L/QEMU)
+NIC Intel 82574L: filas DMA TX/RX ativas, MAC=525400123456; envio/recepcao polling disponiveis.
+DHCP IPv4: concessao recebida 10.0.2.15
+PCI 00:1f.2 8086:2922 SATA/AHCI (QEMU: reconhecido; driver AHCI experimental)
+AHCI indisponível: dispositivo nao encontrado.
+Controladores relevantes encontrados: 3
+Hermione rootfs: verificando volume de sistema.
+Hermione rootfs: AHCI sem dispositivo; mantendo VFS somente em RAM.
+Runtime de processos: preparando tarefas CPL3.
+ABI Linux: probe CPL3 aguardando byte de entrada serial.
+Runtime: tarefas com CR3 independentes despachadas.
+DDDiagnóstiagnico iretq CPUóst=ico iretq CPU=21  CS-alvo=0xiagnóstico iretq0C CPSU=3 CS-0alvo-=00x0000000000000a00000002003lv00o=0x000000002300 0000 023 RIP-alRIvo=0P-RIP-alvo=0xalvo=0x000004000000x00003040000000003000 0S000 S-aSS-40alvo=00l0xvo=0x000003005 00000000000SS00000000-alvo=00000x0000000000010b01000001b
+
+
+b=== 
+CA
+=PTU=
+= ===CA PRA DTCAPUE RTUA RDA EE DEXCXCEEC AEOX CECECAO CPU ===
+
+C==V=e tCAAOP CPUTor: 1URA DE EXCE ===
+Vetor: 1C3A3O CPU ===
+Vetor: 0  ( ( e#xceção reservada/arquiteturGPal proteção geral  )
+C)�
+�dig (o  de# erro: 0xGP proteção geral )
+C7ódigo de erro: 0x04af500000000000
+Código de erro: 0x0000000000000018
+RRIP: 000xI00P: 0xf00008ffffffff800000000001f08ffffff800046c8
+RIP: 0xffffffff800046c8    CS: 0x CS: 0x00100020000000000 000000000000008  RFLAGS  CS: 0x0000000000000008  RFL: 0xAGS: 0x704adb00000000000
+RAX=0x000RFLAGS: 0x0000000000010086
+RAX=0x00000000000000000000000010086 
+RA000XRBX=0x=0x00000000000000000 RB000000000000000X=0x0000000000000000 RBX=0x000000ffffffff80 0 00000000000 RCX=0xRCX=0x00003f80000000000000000000000 RD000 RDX=0xX=0x0RCX=0x0000000000000000 RDX=0x00000000000000000000000074af200000000000000000
+RS0I=0x
+RSI=0
+RSI=0x0x00000000000000000000000000000000 RD 00IR0=D40I=3xcccccccccc RDI0x0=0000000000000x0000330000000000000 RBP=0x000000000000000 RBP=0x0 RBP=0x0c000000000000000ccccd0000000000
+R8=00000000000000000
+R8=0xx0000000000000
+R8=0x0000000000000000000000000000000 0000  R9=0xR9=0xR9=0x000000000000000000000000000000000000000000 0 RR10=0x000000 R10=0x000000000000010=0x00000000000000000000000 0000 R11=0xR11=0x000000000000000000 00000R1001=00x00000001000000000000000000000
+R12
+R12=0x=0x0000000000000000000 
+R0000000000000 R13=0xR13=0x000000000000000000000000000012=0x000 R14=0x0000000000000000 000010000000000 R13=0x00001a0000000000 R14=0x00001b0000000000 00 R14=0x0000000RR0000015=00000 R15=0xx00000000015=000000x00000000000000000000000e0000000000
+
+
+
+=== CAPSTUistema interrompidSRioA DE EXCECAO CPU ===
+Vetor: 14 ( #PF page fault )
+Código de erro: 0x0000000000000000
+RIP: 0xffffffff800147e3  CS: 0x0000000000000008  RFLAGS: 0x0000000000010082
+RA; X=0x00000000stem00a 00i000nterrompido;diagnóst i1di agRcBX=0xno se�00rial somente l�s0eit00tiurco serial somente leitura.a.
+00000000046 RCX=0x0000000000000000 RDX=0x00000000000003f8
+RSI=0x0000000000000000 RDI=0x000000000000000a RBP=0x00000
+00000000000
+R8=0x0000000000000030 R9=0x0000000000000000 R10=0x0000000000000000 R11=0x0000000000000000
+R12=0x0000000000000001 R13=0x0000000000000001 R14=0xffffffffffffffff R15=0x74af500000000003
+CR2 (endereço do page fault): 0x00000000000000be
+Sistema interrompido; diagnóstico serial somente leitura.
+Runtime: fault CPL3 vetorizado=14 CR2=0xffffffffffffffda; encerrando somente a tarefa.
+
+--- mensagens do QEMU ---

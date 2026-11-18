@@ -1,0 +1,56 @@
+[2J[001;001H[=3h[2J[001;001H[2J[001;001H[8;042;160t[2J[001;001H[2J[001;001H[8;056;240t[2J[001;001HBdsDxe: loading Boot0002 "UEFI QEMU DVD-ROM QM00005 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x2,0xFFFF,0x0)
+BdsDxe: starting Boot0002 "UEFI QEMU DVD-ROM QM00005 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x2,0xFFFF,0x0)
+[001;001H[001;001H[2J[H+----------------------------------------------------+
+| carlIO OS | Criado por João G.R.Santos             |
+| Sistema operacional experimental x86_64            |
++----------------------------------------------------+
+Núcleo Rust · inicialização serial
+
+Framebuffer Limine: RGB ativo; renderização de pixels validada.
+IDT: exceções 0-31 registradas; IRQs externos permanecem desativados.
+Ring 3: GDT, TSS, RSP0 e seletores de usuário configurados; CPL continua 0.
+Aviso: terminal de diagnóstico em ring 0; não é uma fronteira de segurança.
+Mapa de memória Limine: regiões usáveis=11, RAM usável MiB=452; HHDM e bases físico/virtual do kernel disponíveis.
+Allocator físico: frames livres até 32 GiB=115611, sem RAM acima de 4 GiB; teste usa frame baixo; alocação, escrita, leitura e liberação passaram.
+LAPIC xAPIC ativo no BSP; vetor de shootdown remoto 0xF1 instalado.
+SMP Limine: CPUs detectadas=4, APs iniciadas=3, aguardadas=3; APs aguardam despacho de tarefa, scheduler ainda desativado.
+SMP trabalho: CPUs AP=3, tarefas concluídas=3, resultados válidos=3; despacho de prova concluído.
+Heap kernel: regiões dinâmicas, alinhamento, escrita/leitura, expansão e liberação passaram.
+Inventário PCI (somente leitura):
+PCI 00:01.0 1234:1111 vídeo
+PCI 00:02.0 8086:10d3 rede (Intel 82574L/QEMU)
+NIC Intel 82574L: filas DMA TX/RX ativas, MAC=525400123456; envio/recepcao polling disponiveis.
+DHCP IPv4: concessao recebida 10.0.2.15
+PCI 00:1f.2 8086:2922 SATA/AHCI (QEMU: reconhecido; driver AHCI experimental)
+AHCI indisponível: dispositivo nao encontrado.
+Controladores relevantes encontrados: 3
+Hermione rootfs: verificando volume de sistema.
+Hermione rootfs: AHCI sem dispositivo; mantendo VFS somente em RAM.
+Runtime de processos: preparando tarefas CPL3.
+ABI Linux: probe CPL3 aguardando byte de entrada serial.
+Runtime: tarefas com CR3 independentes despachadas.
+DDiagnóstico iretq: alvo CPU=iagnóstico iretq: alvo CPU=Runtime: fault32 CPL3 vetorizado=  RIP=0x00R000400000003000;  encerrando s; encerrandCS=0xo somente a tarefa.
+0om000000000000023 RSP=0x0000400000004fb0 
+=== CAPTURA DE EXCECAO CSS=0x000000000000001b GDT3=0x00cff2000000ffffPU ===
+Vetor: 14 ( # PF page faultGDT4=0x0 0affa000000ffff)
+Códig
+
+=== CAPTURA DE EXCECAO CPU ===
+Vetor: o de erro: 0x13 ( #GP proteção geral )
+Código de erro: 0x0000000000000000
+RIP: 0xffffffff8000fc8a  CS: 0x0000000000000008  RFLAGS: 0x0000000000010046
+RAX=0x0000000000000000 RBX=0xffffffff8074af50 RCX=0x0000000000000002 RDX=0x00000000000000018
+RIP: 0x0f0ff000ff000f0000f301f800046c8  CS: 0x0000000000000008  RFLAGS: 0x0000000000010086
+
+RRSIAX=0=0xx0000000000000000 RfBX=0x0000000000000000 RCX=0x0000000ff0f000ffff800007004a RDX=e000x0000000000000000 
+RSI=0x00000000R0DI=000x00000 RDI=0x00000000000ccccc0c01000000000000  RBPRB=0P=0x0000000000000000
+R8=0x0000000000000000 R9=0x0000000000000000 R10=0x0x0000000000000000
+R8=0x0000000000000033 R9=0x0000000000000000 R10=0x0000000000000000 R11=0x0000000000000000
+R12=0x0000000000000010 R13=0x00000000cccccc01000000000000000 R11=0x0000000000000000
+R12=0x0000000000000000 R13=0x0000000000000000 R14=0x R14=0x00000000000000000000000000000003  R15=0xR105=0x00000000000000020
+CR00000000000000
+2 (endereço do pagSe fault)istema interrompido; diagnóstico serial somente leitura.
+: 0x00000005e672a710
+Sistema interrompido; diagnóstico serial somente leitura.
+
+--- mensagens do QEMU ---

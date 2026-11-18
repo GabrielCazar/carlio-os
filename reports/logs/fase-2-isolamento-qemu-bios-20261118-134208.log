@@ -1,0 +1,75 @@
+[2J[H+----------------------------------------------------+
+| carlIO OS | Criado por João G.R.Santos             |
+| Sistema operacional experimental x86_64            |
++----------------------------------------------------+
+Núcleo Rust · inicialização serial
+
+Framebuffer Limine: RGB ativo; renderização de pixels validada.
+IDT: exceções 0-31 registradas; IRQs externos permanecem desativados.
+Ring 3: GDT, TSS, RSP0 e seletores de usuário configurados; CPL continua 0.
+Aviso: terminal de diagnóstico em ring 0; não é uma fronteira de segurança.
+Mapa de memória Limine: regiões usáveis=2, RAM usável MiB=500; HHDM e bases físico/virtual do kernel disponíveis.
+Allocator físico: frames livres até 32 GiB=128090, sem RAM acima de 4 GiB; teste usa frame baixo; alocação, escrita, leitura e liberação passaram.
+LAPIC xAPIC ativo no BSP; vetor de shootdown remoto 0xF1 instalado.
+SMP Limine: CPUs detectadas=4, APs iniciadas=3, aguardadas=3; APs aguardam despacho de tarefa, scheduler ainda desativado.
+SMP trabalho: CPUs AP=3, tarefas concluídas=3, resultados válidos=3; despacho de prova concluído.
+Heap kernel: regiões dinâmicas, alinhamento, escrita/leitura, expansão e liberação passaram.
+Inventário PCI (somente leitura):
+PCI 00:01.0 1234:1111 vídeo
+PCI 00:02.0 8086:10d3 rede (Intel 82574L/QEMU)
+NIC Intel 82574L: filas DMA TX/RX ativas, MAC=525400123456; envio/recepcao polling disponiveis.
+DHCP IPv4: concessao recebida 10.0.2.15
+PCI 00:1f.2 8086:2922 SATA/AHCI (QEMU: reconhecido; driver AHCI experimental)
+AHCI indisponível: dispositivo nao encontrado.
+Controladores relevantes encontrados: 3
+Hermione rootfs: verificando volume de sistema.
+Hermione rootfs: AHCI sem dispositivo; mantendo VFS somente em RAM.
+Runtime de processos: preparando tarefas CPL3.
+ABI Linux: probe CPL3 aguardando byte de entrada serial.
+Runtime: tarefas com CR3 independentes despachadas.
+DDiagnóstiiaco iregnósttDiq: acliovo CPU= iretq: alvo CPU=32  agnóstRRIPico I=0xPiretq: al=vo 0CP0xU0=1 RI00P=0x00400000000400004000000300000000003000 003005 CS=0CS= CS=00xxx000000000000000023000000000000 000000002300 R0RS0SP=P=0x0x0023 RSP=0x000000004000000400040000004f9000000004f0 00b4f0 bSS0 SS=0xS=S=0x0x000000000000000000000000000000001b000001b00000  1b GGDDTG3TD=0x3T=03=0x00x00cff200000000ccffff2000ff200ff000ffff  0GDT4=0xGDT4=0000x00ffff GDT4=0x0aff00affa0a0af00f00a00000000000ff0fffff0fffff
+
+
+
+=== 
+=CAP== CTURA DAPE TEXCECAO CPU U==R=
+VetorA DE :EXCECA O CPU13 ===
+Vetor: 13 (  ( ##GP prote�GP pr�oteção geralão geral  )
+Có)d
+===igo 
+Código de C eAPrTURA DE EXCEro: 0xCAO CPU ===
+Vet0o0r: 13 ( 00000#GP 0proteç00ão 0geral 00)
+C�0�digo 18de erro: 0x000000000
+R0000018
+IRIP: 0xfP: 0xffffffffffffff800046ccf800046cc   CS: 0x CS: 0x00000000000000000000080000000008   RFLA RFLAGSde: erro 0x: 0x0000000000000018
+0GS: 0x0000000000010086000000000010086
+RAX=0x0000000000000000RIP: 0x0000000000000000   CS: 0x000000000RBX=0x0000000  RFLAGS: 0x000000000000
+RAX=0x000000000000000000000000000 00RBX=0x000000000000000000
+RAX=0x000fffffff00  f8074af5RCRCX=X=00xx0 RBX=0x00000000000000000 0RCX=0x0000000000000000000000000000000  0RDX=0x0RDX=0x000000000000000 RDX=0x00000000000000000000000000000000000000
+RSI=0x000000000
+R0
+RSI=0x000000000000000000SI=0x ffffffff8RDI=0x0000000000000 0000000000000000 004RBP=0xRDI=0x0000000000000000 RBP=0x000000000000000000000000000000006ae
+R8= RDI=0x00000000000000000x0 RBP=0x00000000
+R8=0x0000000000000000000000000 R9=0x000000000
+000000000000000R8=0x0000000001b0d53 R10=0x000000 R9=0x00000000000000000000c 0 R9R010=0x000000000000000000000 00000 R11=0xR11=0x=0x0000000000000000000000 0000000000000R010=000000000000
+R12=0x
+R12=0x0000x00000000000000000000000000000000  RR113=0x003=00000x000000000 R11=0x0000000000000000
+R12=0x0000000000000000 R13=0x000000000000000000000000000 0000R000 R14=0x14=0x000000000000000000000000000000000000000000 R15=0x000 R15=0x000000 000R0000000000000000000000
+
+SSisi14=0x0stemtema0a i0 nterroi0000nmpi00d000o;0ter romp0didoiag;0nóst0 icR dia15=0gnóstxo seria0ico0l 00 seri0somen000te leitur0al soment00a.
+0000e 0leitura.
+
+
+=== CAPTURA DE EXCECAO CPU ===
+Vetor: 14 ( #PF page fault )
+Código de erro: 0x0000000000000011
+RIP: 0xffffffff8074af50  CS: 0x0000000000000008  RFLAGS: 0x0000000000010086
+RAX=0x0000000000000001 RBX=0xffffffff8074af20 RCX=0x0000000000000000 RDX=0x00000000000003f8
+RSI=0x0000000000000000 RDI=0x000000000000000a RBP=0x0000000000000000
+R8=0x0000000000000031 R9=0x0000000000000000 R10=0x0000000000000000 R11=0x0000000000000000
+R12=0x0000000000000001 R13=0x0000000000000001 R14=0x0000000000000002 R15=0x0000000000000018
+CR2 (endereço do page fault): 0xffffffff8074af50
+Sistema interrompido; diagnóstico serial somente leitura.
+Runtime: fault CPL3 vetorizado=14 CR2=0xffffffffffffffda; encerrando somente a tarefa.
+
+--- mensagens do QEMU ---

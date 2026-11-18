@@ -1,0 +1,52 @@
+    Checking pegasus-protocol v0.1.0 (/home/gabriel/Work/pegasus_ds/crates/protocol)
+    Checking pegasus-domain v0.1.0 (/home/gabriel/Work/pegasus_ds/crates/domain)
+    Checking pegasusd v0.1.0 (/home/gabriel/Work/pegasus_ds/services/pegasusd)
+    Checking pegasusds-install v0.1.0 (/home/gabriel/Work/pegasus_ds/clients/pegasusds-install)
+    Checking pegasus-ldap v0.1.0 (/home/gabriel/Work/pegasus_ds/crates/pegasus-ldap)
+    Checking pegasus-core v0.1.0 (/home/gabriel/Work/pegasus_ds/crates/pegasus-core)
+    Checking pegasus-integration v0.1.0 (/home/gabriel/Work/pegasus_ds/crates/pegasus-integration)
+    Checking pegasus-sys v0.1.0 (/home/gabriel/Work/pegasus_ds/crates/pegasus-sys)
+error: item in documentation is missing backticks
+ --> crates/pegasus-sys/src/lib.rs:5:74
+  |
+5 | //! syscalls: isso requer uma especificação versionada e validada da ABI CarlIO.
+  |                                                                          ^^^^^^
+  |
+  = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#doc_markdown
+  = note: `-D clippy::doc-markdown` implied by `-D warnings`
+  = help: to override `-D warnings` add `#[allow(clippy::doc_markdown)]`
+help: try
+  |
+5 - //! syscalls: isso requer uma especificação versionada e validada da ABI CarlIO.
+5 + //! syscalls: isso requer uma especificação versionada e validada da ABI `CarlIO`.
+  |
+
+error: item in documentation is missing backticks
+  --> crates/pegasus-sys/src/lib.rs:26:16
+   |
+26 |     /// Kernel CarlIO OS.
+   |                ^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#doc_markdown
+help: try
+   |
+26 -     /// Kernel CarlIO OS.
+26 +     /// Kernel `CarlIO` OS.
+   |
+
+error: item in documentation is missing backticks
+   --> crates/pegasus-sys/src/lib.rs:104:13
+    |
+104 | /// Backend CarlIO; requer negociação com a ABI do kernel no runtime.
+    |             ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#doc_markdown
+help: try
+    |
+104 - /// Backend CarlIO; requer negociação com a ABI do kernel no runtime.
+104 + /// Backend `CarlIO`; requer negociação com a ABI do kernel no runtime.
+    |
+
+error: could not compile `pegasus-sys` (lib) due to 3 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `pegasus-sys` (lib test) due to 3 previous errors

@@ -42,6 +42,16 @@ VFS inline. Falta execução geral de ELF, VMA/mmap/brk, leitura serial positiva
 CPL3 automatizada, scheduler SMP CPL3 validado, sinais, threads e ABI necessária
 a libc.
 
+O preparador ELF também aceita `PT_INTERP`: mapeia programa e interpretador
+ET_DYN no mesmo address space, entrega o controle ao entry do interpretador e
+monta `AT_PHDR`, `AT_PHENT`, `AT_PHNUM`, `AT_PAGESZ`, `AT_BASE` e `AT_ENTRY`.
+O interpretador, e não o kernel, fica responsável por dependências e
+relocations dinâmicas. Esse caminho ainda não é chamado por um syscall
+`execve`: não existe substituição transacional do processo em execução. O VFS
+do kernel limita arquivos inline a 16 KiB e ainda não oferece acesso geral a
+arquivos grandes/montados e symlinks; portanto não carrega o `ld-linux.so` real
+da userland Arch neste estado. O teste host usa executáveis sintéticos pequenos.
+
 ## Mounts e interoperabilidade
 
 O VFS agora expõe `create_fhs_layout()` para criar os caminhos-base de uma
@@ -104,6 +114,12 @@ real para `mmap/munmap/brk`, libc, execução geral de ELF, linker/relocations,
 pseudo-filesystems e carregamento de rootfs. Arch e Ubuntu
 compartilham o dispatcher Linux, mas seguem metas de compatibilidade, não bases
 executáveis entregues.
+
+O smoke de segurança roda uma fixture com UID/GID 1000: `openat` concede acesso
+ao arquivo permitido e nega com `EACCES` um arquivo root-owned modo `0600`.
+BIOS/UEFI local e NAS/KVM passaram em 16/11/2026. Isso comprova somente essa
+rota no dispatcher do fixture; login, processos gerais e mounts não estão
+integrados.
 
 ### Layout lógico do VFS compatível com pacotes
 

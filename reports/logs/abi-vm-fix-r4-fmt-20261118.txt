@@ -1,0 +1,11 @@
+Diff in /home/gabriel/Work/carlio-os/src/main.rs:1868:
+         },
+         &mut io,
+     );
+[31m-    if number == carlio_os::linux_abi::SYS_OPENAT
+(B[m[31m-        && process.security.credentials.uid != 0
+(B[m[31m-    {
+(B[m[32m+    if number == carlio_os::linux_abi::SYS_OPENAT && process.security.credentials.uid != 0 {
+(B[m         if let carlio_os::linux_abi::SyscallOutcome::Return(value) = outcome {
+             LINUX_VFS_DENIAL_RESULT.store(value, Ordering::Release);
+             if value == (-(carlio_os::linux_abi::EACCES as i64)) as u64 {

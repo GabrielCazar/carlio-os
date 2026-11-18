@@ -1,5 +1,27 @@
 # Relatório — Fase 3: bloco e filesystems
 
+### Correção — regressão de storage e enforcement CPL3 — 2026-11-16
+
+Repetimos `storage-test` com AHCI QEMU `8086:2922` em imagem raw descartável
+de 16 MiB, tanto em TCG local como em KVM no NAS. Ambos confirmaram IDENTIFY,
+WRITE/READ, comando ATA inválido, COMRESET/reuso do controlador e ciclo
+Hermione de formatação, gravação, remontagem, leitura, checksum e scrub. A
+suíte NAS executou 156 testes host e boots BIOS/UEFI; o probe CPL3 de segurança
+também registrou negação `EACCES` para arquivo `0600` de outro UID.
+
+Evidências locais: [build storage-test](logs/fase-3-storage-build-20261116.txt),
+[AHCI/serial](logs/fase-3-storage-qemu-local-20261116.log) e
+[resultado do harness](logs/fase-3-storage-qemu-local-20261116.txt). Evidências
+NAS/KVM: [suíte host e boot](logs/fase-3-seguranca-storage-20261116-nas-20261116-194926.txt),
+[BIOS](logs/fase-3-seguranca-storage-20261116-nas-20261116-194926-qemu-kvm-bios.log),
+[UEFI](logs/fase-3-seguranca-storage-20261116-nas-20261116-194926-qemu-kvm-uefi.log)
+e [AHCI/Hermione](logs/fase-3-seguranca-storage-20261116-nas-20261116-194926-filesystem-qemu-kvm.log).
+
+**Estado:** validado novamente somente em mídia virtual descartável. Timeout e
+remoção durante I/O, corte de energia QEMU durante commit, montagem no boot,
+controladores físicos, FAT32/ext4 graváveis e criptografia continuam abertos;
+não declarar journal geral nem segurança para dados reais.
+
 ## Incremento de capacidade 2 TiB (2026-11-15)
 
 ## Recovery AHCI e regressão local/NAS (2026-11-16)

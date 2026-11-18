@@ -63,11 +63,16 @@ static PROCESS_KERNEL_STACKS: KernelStackPool<64, 16_384> = KernelStackPool::new
 static NETWORK_SOCKETS: IrqSpinLock<carlio_os::net::SocketTable<128>> =
     IrqSpinLock::new(carlio_os::net::SocketTable::new());
 #[cfg(target_os = "none")]
-static PROCESS_VFS: IrqSpinLock<Vfs<32>> = IrqSpinLock::new(Vfs::new());
+const PROCESS_VFS_CAPACITY: usize = 40;
 #[cfg(target_os = "none")]
-static ROOTFS_VFS_STAGING: IrqSpinLock<Vfs<32>> = IrqSpinLock::new(Vfs::new());
+static PROCESS_VFS: IrqSpinLock<Vfs<PROCESS_VFS_CAPACITY>> = IrqSpinLock::new(Vfs::new());
+#[cfg(target_os = "none")]
+static ROOTFS_VFS_STAGING: IrqSpinLock<Vfs<PROCESS_VFS_CAPACITY>> = IrqSpinLock::new(Vfs::new());
 #[cfg(target_os = "none")]
 static ELF_LOAD_SCRATCH: IrqSpinLock<[u8; carlio_os::vfs::VFS_INLINE_FILE_MAX]> =
+    IrqSpinLock::new([0; carlio_os::vfs::VFS_INLINE_FILE_MAX]);
+#[cfg(target_os = "none")]
+static ELF_INTERPRETER_SCRATCH: IrqSpinLock<[u8; carlio_os::vfs::VFS_INLINE_FILE_MAX]> =
     IrqSpinLock::new([0; carlio_os::vfs::VFS_INLINE_FILE_MAX]);
 #[cfg(target_os = "none")]
 static OPEN_FILES: IrqSpinLock<carlio_os::open_files::OpenFileTable<128>> =
@@ -81,16 +86,34 @@ static PERSISTENT_ROOTFS: IrqSpinLock<
 #[cfg(target_os = "none")]
 static ROOTFS_TRANSACTION_LOCK: IrqSpinLock<()> = IrqSpinLock::new(());
 #[cfg(target_os = "none")]
-const ROOTFS_SNAPSHOT_CAPACITY: usize = 20 + 32 * (18 + 31 + carlio_os::vfs::VFS_INLINE_FILE_MAX);
+const ROOTFS_SNAPSHOT_CAPACITY: usize =
+    20 + PROCESS_VFS_CAPACITY * (18 + 31 + carlio_os::vfs::VFS_INLINE_FILE_MAX);
 #[cfg(target_os = "none")]
 static ROOTFS_SNAPSHOT: IrqSpinLock<[u8; ROOTFS_SNAPSHOT_CAPACITY]> =
     IrqSpinLock::new([0; ROOTFS_SNAPSHOT_CAPACITY]);
 #[cfg(target_os = "none")]
-static PROCESS_PROBE_IDS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
+static PROCESS_PROBE_IDS: [AtomicU64; 3] =
+    [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
 #[cfg(target_os = "none")]
 static PROCESS_PROBE_SWITCHES: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_os = "none")]
 static PROCESS_PROBE_CR3_SWITCHES: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_os = "none")]
+static PROCESS_KERNEL_CR3: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_os = "none")]
+static PROCESS_REAP_REQUEST_EPOCH: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_os = "none")]
+static PROCESS_REAP_NEXT_EPOCH: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_os = "none")]
+static PROCESS_REAP_ACKS: [AtomicU64; MAX_BOOT_CPUS] = [const { AtomicU64::new(0) }; MAX_BOOT_CPUS];
+#[cfg(target_os = "none")]
+static AP_CPL3_CPU_MASK: AtomicUsize = AtomicUsize::new(0);
+#[cfg(target_os = "none")]
+static AP_CPL3_IDLE_MASK: AtomicUsize = AtomicUsize::new(0);
+#[cfg(target_os = "none")]
+static AP_CPL3_OVERLAP_PASSED: AtomicBool = AtomicBool::new(false);
+#[cfg(target_os = "none")]
+static AP_CPL3_STOP: AtomicBool = AtomicBool::new(false);
 #[cfg(target_os = "none")]
 static PROCESS_PROBE_FAULTS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(target_os = "none")]
@@ -100,9 +123,15 @@ static PROCESS_PROBE_DONE: AtomicBool = AtomicBool::new(false);
 #[cfg(target_os = "none")]
 static LINUX_GETPID_PROBE_PASSED: AtomicBool = AtomicBool::new(false);
 #[cfg(target_os = "none")]
+static LINUX_VFS_DENIAL_PROBE_PASSED: AtomicBool = AtomicBool::new(false);
+#[cfg(target_os = "none")]
+static LINUX_VFS_DENIAL_RESULT: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_os = "none")]
 static LINUX_CREDENTIAL_PROBE_MASK: AtomicUsize = AtomicUsize::new(0);
 #[cfg(target_os = "none")]
 static LINUX_MEMORY_PROBE_MASK: AtomicUsize = AtomicUsize::new(0);
+#[cfg(target_os = "none")]
+static LINUX_MUNMAP_RESULT: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_os = "none")]
 static AP_PROCESS_SCHEDULING: AtomicBool = AtomicBool::new(false);
 #[cfg(target_os = "none")]
@@ -122,6 +151,8 @@ type RuntimeProcessVm = carlio_os::vma::ProcessVm<
 static PROCESS_PROBE_SPACE_A: IrqSpinLock<Option<RuntimeProcessVm>> = IrqSpinLock::new(None);
 #[cfg(target_os = "none")]
 static PROCESS_PROBE_SPACE_B: IrqSpinLock<Option<RuntimeProcessVm>> = IrqSpinLock::new(None);
+#[cfg(target_os = "none")]
+static PROCESS_PROBE_SPACE_C: IrqSpinLock<Option<RuntimeProcessVm>> = IrqSpinLock::new(None);
 #[cfg(target_os = "none")]
 static mut KERNEL_HEAP_BOOT_REGION: KernelHeapBootRegion = KernelHeapBootRegion {
     _bytes: [0; 64 * 1024],
@@ -481,6 +512,9 @@ extern "C" fn carlio_ap_main(info: *mut LimineSmpInfo) -> ! {
     let mut scheduler_timer_started = false;
     loop {
         if !info.is_null() && index < MAX_BOOT_CPUS {
+            if ap_acknowledge_process_quiescence(index) {
+                continue;
+            }
             let mailbox = &BOOT_CPU_LOCALS[index].task;
             if mailbox
                 .state
@@ -501,11 +535,16 @@ extern "C" fn carlio_ap_main(info: *mut LimineSmpInfo) -> ! {
                 continue;
             }
             if AP_PROCESS_SCHEDULING.load(Ordering::Acquire) {
+                if PROCESS_PROBE_STARTED.load(Ordering::Acquire)
+                    && !scheduler_has_current_process(index)
+                {
+                    AP_CPL3_IDLE_MASK.fetch_or(1usize << index, Ordering::AcqRel);
+                }
                 if !scheduler_timer_started {
                     unsafe { lapic::start_scheduler_timer() };
                     scheduler_timer_started = true;
                 }
-                if let Some(process) = PROCESS_SCHEDULER.schedule(index).ok().flatten() {
+                if let Some(process) = PROCESS_SCHEDULER.schedule_local(index).ok().flatten() {
                     if process.interrupt_frame != 0
                         && process.kernel_stack_top != 0
                         && unsafe {
@@ -554,8 +593,23 @@ extern "C" fn carlio_ap_idle_resume() -> ! {
 #[cfg(target_os = "none")]
 #[no_mangle]
 extern "C" fn carlio_ap_scheduler_idle(cpu: usize) -> ! {
+    let stack_top = unsafe {
+        core::ptr::addr_of_mut!(CARLIO_AP_BOOT_STACKS.0[cpu])
+            .cast::<u8>()
+            .add(AP_STACK_SIZE) as u64
+    };
+    let kernel_root = PROCESS_KERNEL_CR3.load(Ordering::Acquire);
+    if kernel_root != 0
+        && unsafe { idt::activate_cpu_process_address_space(cpu, kernel_root, stack_top) }
+        && PROCESS_PROBE_STARTED.load(Ordering::Acquire)
+    {
+        AP_CPL3_IDLE_MASK.fetch_or(1usize << cpu, Ordering::AcqRel);
+    }
     loop {
-        if let Some(process) = PROCESS_SCHEDULER.schedule(cpu).ok().flatten() {
+        if ap_acknowledge_process_quiescence(cpu) {
+            continue;
+        }
+        if let Some(process) = PROCESS_SCHEDULER.schedule_local(cpu).ok().flatten() {
             if process.interrupt_frame != 0
                 && process.kernel_stack_top != 0
                 && unsafe {
@@ -573,6 +627,33 @@ extern "C" fn carlio_ap_scheduler_idle(cpu: usize) -> ! {
         }
         core::hint::spin_loop();
     }
+}
+
+#[cfg(target_os = "none")]
+fn ap_acknowledge_process_quiescence(cpu: usize) -> bool {
+    let epoch = PROCESS_REAP_REQUEST_EPOCH.load(Ordering::Acquire);
+    if epoch == 0 || cpu >= MAX_BOOT_CPUS {
+        return false;
+    }
+    let stack_top = unsafe {
+        core::ptr::addr_of_mut!(CARLIO_AP_BOOT_STACKS.0[cpu])
+            .cast::<u8>()
+            .add(AP_STACK_SIZE) as u64
+    };
+    let kernel_root = PROCESS_KERNEL_CR3.load(Ordering::Acquire);
+    if kernel_root == 0
+        || !unsafe { idt::activate_cpu_process_address_space(cpu, kernel_root, stack_top) }
+    {
+        loop {
+            unsafe { asm!("cli; hlt", options(nomem, nostack)) };
+        }
+    }
+    AP_CPL3_IDLE_MASK.fetch_or(1usize << cpu, Ordering::AcqRel);
+    PROCESS_REAP_ACKS[cpu].store(epoch, Ordering::Release);
+    while PROCESS_REAP_REQUEST_EPOCH.load(Ordering::Acquire) == epoch {
+        core::hint::spin_loop();
+    }
+    true
 }
 
 #[cfg(target_os = "none")]
@@ -1181,17 +1262,39 @@ extern "C" fn timer_process_switch(
     if frame.is_null() {
         return frame;
     }
+    if AP_CPL3_STOP.load(Ordering::Acquire) && is_secondary_cpu(cpu) && frame_user_mode(frame) {
+        return frame;
+    }
     let previous = PROCESS_SCHEDULER.current(cpu);
-    let next = PROCESS_SCHEDULER.preempt_frame(cpu, frame as u64);
+    if PROCESS_PROBE_STARTED.load(Ordering::Acquire) && previous.is_some() && frame_user_mode(frame)
+    {
+        PROCESS_PROBE_SWITCHES.fetch_add(1, Ordering::Relaxed);
+    }
+    if frame_user_mode(frame)
+        && previous.is_some_and(|process| {
+            process.id == PROCESS_PROBE_IDS[1].load(Ordering::Acquire)
+                || process.id == PROCESS_PROBE_IDS[2].load(Ordering::Acquire)
+        })
+        && is_secondary_cpu(cpu)
+    {
+        let bit = 1usize << cpu;
+        AP_CPL3_IDLE_MASK.fetch_and(!bit, Ordering::AcqRel);
+        let mask = AP_CPL3_CPU_MASK.fetch_or(bit, Ordering::AcqRel) | bit;
+        if mask.count_ones() >= 2 {
+            AP_CPL3_OVERLAP_PASSED.store(true, Ordering::Release);
+            AP_CPL3_STOP.store(true, Ordering::Release);
+            return frame;
+        }
+    }
+    let next = PROCESS_SCHEDULER.preempt_frame_local(cpu, frame as u64);
     let Ok(Some(process)) = next else {
         return frame;
     };
     if PROCESS_PROBE_STARTED.load(Ordering::Acquire)
         && previous.is_some_and(|old| old.id != process.id)
     {
-        let switches = PROCESS_PROBE_SWITCHES.fetch_add(1, Ordering::Relaxed);
-        if switches == 0 {
-            write("Timer: primeira troca de processo observada.\r\n");
+        if PROCESS_PROBE_SWITCHES.load(Ordering::Relaxed) == 1 {
+            write("Timer: primeira preempção CPL3 observada.\r\n");
         }
         if previous.is_some_and(|old| old.page_table != process.page_table) {
             PROCESS_PROBE_CR3_SWITCHES.fetch_add(1, Ordering::Relaxed);
@@ -1212,6 +1315,23 @@ extern "C" fn timer_process_switch(
 }
 
 #[cfg(target_os = "none")]
+pub(crate) fn stop_ap_process_probe(cpu: usize) -> bool {
+    if !is_secondary_cpu(cpu) || !AP_CPL3_STOP.load(Ordering::Acquire) {
+        return false;
+    }
+    if PROCESS_SCHEDULER.current(cpu).is_none() {
+        return true;
+    }
+    PROCESS_SCHEDULER.exit(cpu, 0).is_ok()
+}
+
+#[cfg(target_os = "none")]
+fn frame_user_mode(frame: *mut idt::UserInterruptFrame) -> bool {
+    // The interrupt frame is supplied by the x86 entry stub for this CPU.
+    unsafe { !frame.is_null() && (*frame).cs & 3 == 3 }
+}
+
+#[cfg(target_os = "none")]
 pub(crate) fn begin_process_switch_probe() -> Option<*mut idt::UserInterruptFrame> {
     const CODE_VA: u64 = 0x0000_4000_0000_3000;
     const STACK_VA: u64 = CODE_VA + 4096;
@@ -1219,13 +1339,19 @@ pub(crate) fn begin_process_switch_probe() -> Option<*mut idt::UserInterruptFram
         return None;
     }
     write("Runtime de processos: preparando tarefas CPL3.\r\n");
-    write("ABI Linux: probe CPL3 aguardando byte de entrada serial.\r\n");
     PROCESS_PROBE_SWITCHES.store(0, Ordering::Relaxed);
     PROCESS_PROBE_CR3_SWITCHES.store(0, Ordering::Relaxed);
     PROCESS_PROBE_FAULTS.store(0, Ordering::Relaxed);
     LINUX_GETPID_PROBE_PASSED.store(false, Ordering::Relaxed);
+    LINUX_VFS_DENIAL_PROBE_PASSED.store(false, Ordering::Relaxed);
+    LINUX_VFS_DENIAL_RESULT.store(0, Ordering::Relaxed);
     LINUX_CREDENTIAL_PROBE_MASK.store(0, Ordering::Relaxed);
     LINUX_MEMORY_PROBE_MASK.store(0, Ordering::Relaxed);
+    LINUX_MUNMAP_RESULT.store(0, Ordering::Relaxed);
+    AP_CPL3_CPU_MASK.store(0, Ordering::Relaxed);
+    AP_CPL3_IDLE_MASK.store(0, Ordering::Relaxed);
+    AP_CPL3_OVERLAP_PASSED.store(false, Ordering::Relaxed);
+    AP_CPL3_STOP.store(false, Ordering::Relaxed);
     let mut root: u64;
     unsafe { asm!("mov {}, cr3", out(reg) root, options(nomem, nostack, preserves_flags)) };
     root &= 0x000f_ffff_ffff_f000;
@@ -1233,11 +1359,8 @@ pub(crate) fn begin_process_switch_probe() -> Option<*mut idt::UserInterruptFram
     // The write buffer shares the read-only executable page, so the kernel
     // must validate/read it without requiring user write permission.
     let (task, task_len) = linux_syscall_probe_task();
-    let fault_address = 0x0000_7000_0000_0000u64;
     let mut fault_task = [0u8; 13];
-    fault_task[..2].copy_from_slice(&[0x48, 0xb8]); // movabs rax, imm64
-    fault_task[2..10].copy_from_slice(&fault_address.to_le_bytes());
-    fault_task[10..13].copy_from_slice(&[0x48, 0x8b, 0x00]); // mov rax, [rax]
+    fault_task[..2].copy_from_slice(&[0xeb, 0xfe]); // AP fixture stays in CPL3 until the overlap witness.
     let image_a = probe_elf_image(&task[..task_len]);
     let image_b = probe_elf_image(&fault_task);
     if !install_process_probe_images(&image_a, &image_b) {
@@ -1268,8 +1391,22 @@ pub(crate) fn begin_process_switch_probe() -> Option<*mut idt::UserInterruptFram
         PROCESS_PROBE_STARTED.store(false, Ordering::Release);
         return None;
     };
+    let Some((space_c, entry_c, user_stack_c)) = make_process_probe_space(
+        root,
+        STACK_VA,
+        "/programas/fault",
+        &["ap-probe-2"],
+        &["CARLIO_PROBE=1"],
+    ) else {
+        write("Runtime: falha ao criar espaço virtual C.\r\n");
+        let _ = space_a.try_destroy();
+        let _ = space_b.try_destroy();
+        PROCESS_PROBE_STARTED.store(false, Ordering::Release);
+        return None;
+    };
     let root_a = space_a.root();
     let root_b = space_b.root();
+    let root_c = space_c.root();
     let mut vm_a = RuntimeProcessVm::new(
         space_a,
         carlio_os::vma::USER_HEAP_BASE,
@@ -1280,16 +1417,24 @@ pub(crate) fn begin_process_switch_probe() -> Option<*mut idt::UserInterruptFram
         carlio_os::vma::USER_HEAP_BASE,
         carlio_os::vma::USER_HEAP_BASE + 0x1000_0000,
     );
+    let mut vm_c = RuntimeProcessVm::new(
+        space_c,
+        carlio_os::vma::USER_HEAP_BASE,
+        carlio_os::vma::USER_HEAP_BASE + 0x1000_0000,
+    );
     if vm_a.reserve_existing(CODE_VA, 2 * 4096).is_err()
         || vm_b.reserve_existing(CODE_VA, 2 * 4096).is_err()
+        || vm_c.reserve_existing(CODE_VA, 2 * 4096).is_err()
     {
         let _ = vm_a.try_destroy();
         let _ = vm_b.try_destroy();
+        let _ = vm_c.try_destroy();
         PROCESS_PROBE_STARTED.store(false, Ordering::Release);
         return None;
     }
     *PROCESS_PROBE_SPACE_A.lock() = Some(vm_a);
     *PROCESS_PROBE_SPACE_B.lock() = Some(vm_b);
+    *PROCESS_PROBE_SPACE_C.lock() = Some(vm_c);
 
     let context_a = CpuContext {
         rip: entry_a,
@@ -1297,8 +1442,21 @@ pub(crate) fn begin_process_switch_probe() -> Option<*mut idt::UserInterruptFram
         rflags: 0x202,
         ..CpuContext::default()
     };
+    let user_probe_security = carlio_os::process::ProcessSecurityContext::new(
+        Credentials {
+            uid: 1000,
+            gid: 1000,
+        },
+        &[],
+        0o022,
+    )?;
     let first = PROCESS_SCHEDULER
-        .create_with_stack_pool(&PROCESS_KERNEL_STACKS, root_a, context_a)
+        .create_with_stack_pool_and_security(
+            &PROCESS_KERNEL_STACKS,
+            root_a,
+            context_a,
+            user_probe_security,
+        )
         .ok()?;
     let context_b = CpuContext {
         rip: entry_b,
@@ -1316,9 +1474,52 @@ pub(crate) fn begin_process_switch_probe() -> Option<*mut idt::UserInterruptFram
                 return None;
             }
         };
+    let context_c = CpuContext {
+        rip: entry_c,
+        rsp: user_stack_c,
+        rflags: 0x202,
+        ..CpuContext::default()
+    };
+    let third =
+        match PROCESS_SCHEDULER.create_with_stack_pool(&PROCESS_KERNEL_STACKS, root_c, context_c) {
+            Ok(id) => id,
+            Err(_) => {
+                let _ = PROCESS_SCHEDULER.reap(second, &PROCESS_KERNEL_STACKS);
+                let _ = PROCESS_SCHEDULER.reap(first, &PROCESS_KERNEL_STACKS);
+                PROCESS_PROBE_STARTED.store(false, Ordering::Release);
+                return None;
+            }
+        };
     PROCESS_PROBE_IDS[0].store(first, Ordering::Release);
     PROCESS_PROBE_IDS[1].store(second, Ordering::Release);
-    for id in [first, second] {
+    PROCESS_PROBE_IDS[2].store(third, Ordering::Release);
+    let bsp_cpu = current_scheduler_cpu();
+    let mut secondary_cpus = [usize::MAX; 2];
+    let mut secondary_count = 0usize;
+    for cpu in 0..SMP_DETECTED_COUNT.load(Ordering::Acquire) {
+        if BOOT_CPU_LOCALS[cpu].online.load(Ordering::Acquire) != 0
+            && is_secondary_cpu(cpu)
+            && secondary_count < secondary_cpus.len()
+        {
+            secondary_cpus[secondary_count] = cpu;
+            secondary_count += 1;
+        }
+    }
+    let pinned = PROCESS_SCHEDULER.pin_ready_to_cpu(first, bsp_cpu).is_ok()
+        && secondary_count == secondary_cpus.len()
+        && PROCESS_SCHEDULER
+            .pin_ready_to_cpu(second, secondary_cpus[0])
+            .is_ok()
+        && PROCESS_SCHEDULER
+            .pin_ready_to_cpu(third, secondary_cpus[1])
+            .is_ok();
+    if !pinned {
+        write("Runtime: afinidade inicial das tarefas CPL3 não pôde ser aplicada.\r\n");
+        let _ = reap_process_probe();
+        PROCESS_PROBE_STARTED.store(false, Ordering::Release);
+        return None;
+    }
+    for id in [first, second, third] {
         let process = PROCESS_SCHEDULER.process(id)?;
         let frame =
             unsafe { idt::initialize_user_frame(process.kernel_stack_top, process.context) }?;
@@ -1327,7 +1528,11 @@ pub(crate) fn begin_process_switch_probe() -> Option<*mut idt::UserInterruptFram
             return None;
         }
     }
-    let process = PROCESS_SCHEDULER.schedule(current_scheduler_cpu()).ok()??;
+    let cpu = current_scheduler_cpu();
+    let process = schedule_process_on_cpu(cpu).ok()??;
+    if process.page_table != root {
+        PROCESS_PROBE_CR3_SWITCHES.fetch_add(1, Ordering::AcqRel);
+    }
     if !unsafe {
         idt::activate_cpu_process_address_space(
             current_scheduler_cpu(),
@@ -1338,6 +1543,7 @@ pub(crate) fn begin_process_switch_probe() -> Option<*mut idt::UserInterruptFram
         PROCESS_PROBE_STARTED.store(false, Ordering::Release);
         return None;
     }
+    AP_PROCESS_SCHEDULING.store(true, Ordering::Release);
     write("Runtime: tarefas com CR3 independentes despachadas.\r\n");
     Some(process.interrupt_frame as *mut idt::UserInterruptFrame)
 }
@@ -1363,16 +1569,18 @@ fn make_process_probe_space(
     };
     let context = AccessContext::new(Credentials { uid: 0, gid: 0 }, &[], 0);
     let mut scratch = ELF_LOAD_SCRATCH.lock();
+    let mut interpreter_scratch = ELF_INTERPRETER_SCRATCH.lock();
     let image = {
         let vfs = PROCESS_VFS.lock();
-        match carlio_os::elf::load_executable_from_vfs::<64, 32, _>(
+        match carlio_os::elf::load_interpreted_executable_from_vfs::<64, PROCESS_VFS_CAPACITY, _>(
             &vfs,
             path,
             context,
             &mut scratch[..],
+            &mut interpreter_scratch[..],
             &mut target,
         ) {
-            Ok((image, _)) => image,
+            Ok(image) => image,
             Err(_) => {
                 write("Runtime: ELF do VFS recusado por acesso, formato ou mapeamento.\r\n");
                 let _ = target.0.try_destroy();
@@ -1393,7 +1601,14 @@ fn make_process_probe_space(
         return None;
     }
     let stack_top = stack_va + 4096;
-    let stack = match carlio_os::elf::build_initial_user_stack(&mut target, stack_top, argv, env) {
+    let auxv = image.auxv();
+    let stack = match carlio_os::elf::build_initial_user_stack_with_auxv(
+        &mut target,
+        stack_top,
+        argv,
+        env,
+        &auxv,
+    ) {
         Ok(stack) => stack,
         Err(carlio_os::elf::ElfError::InvalidArguments) => {
             write("Runtime: argumentos excedem a stack inicial CPL3.\r\n");
@@ -1430,8 +1645,12 @@ fn install_process_probe_images(first: &[u8], second: &[u8]) -> bool {
     }
     let _ = vfs.remove_file_as("/programas/probe", access);
     let _ = vfs.remove_file_as("/programas/fault", access);
+    let _ = vfs.remove_file_as("/programas/restrito", access);
     if vfs.create_file("/programas", "probe", root, 0o755).is_err()
         || vfs.create_file("/programas", "fault", root, 0o755).is_err()
+        || vfs
+            .create_file("/programas", "restrito", root, 0o600)
+            .is_err()
     {
         return false;
     }
@@ -1477,7 +1696,7 @@ pub(crate) fn process_probe_exit(code: u64) -> Option<*mut idt::UserInterruptFra
     if PROCESS_SCHEDULER.exit(cpu, code as i64).is_err() {
         return None;
     }
-    let process = PROCESS_SCHEDULER.schedule(cpu).ok()??;
+    let process = schedule_process_on_cpu(cpu).ok()??;
     if !unsafe {
         idt::activate_cpu_process_address_space(cpu, process.page_table, process.kernel_stack_top)
     } {
@@ -1504,7 +1723,7 @@ pub(crate) fn process_runtime_fault(
     PROCESS_SCHEDULER
         .fault(cpu, vector as u8, error_code, cr2)
         .ok()?;
-    let process = PROCESS_SCHEDULER.schedule(cpu).ok()??;
+    let process = schedule_process_on_cpu(cpu).ok()??;
     if !unsafe {
         idt::activate_cpu_process_address_space(cpu, process.page_table, process.kernel_stack_top)
     } {
@@ -1602,16 +1821,28 @@ fn linux_syscall_probe_task() -> ([u8; 512], usize) {
     append_probe_bytes(&mut code, &mut length, &[0x48, 0x89, 0xc7]); // rdi = mapping
     append_probe_bytes(&mut code, &mut length, &[0xbe, 0x00, 0x10, 0, 0]);
     append_probe_syscall(&mut code, &mut length, carlio_os::linux_abi::SYS_MUNMAP);
+    // An unprivileged process must receive EACCES for a root-owned 0600 file.
+    append_probe_bytes(&mut code, &mut length, &[0x48, 0xbf]);
+    append_probe_bytes(&mut code, &mut length, &((-100i64) as u64).to_le_bytes());
+    append_probe_bytes(&mut code, &mut length, &[0x48, 0xbe]);
+    let denied_path_pointer_offset = length;
+    append_probe_bytes(&mut code, &mut length, &[0; 8]);
+    append_probe_bytes(&mut code, &mut length, &[0x31, 0xd2]);
+    append_probe_syscall(&mut code, &mut length, carlio_os::linux_abi::SYS_OPENAT);
     append_probe_bytes(&mut code, &mut length, &[0x31, 0xff]);
     append_probe_syscall(&mut code, &mut length, carlio_os::linux_abi::SYS_EXIT);
     let message_offset = length;
     append_probe_bytes(&mut code, &mut length, MESSAGE);
     let path_offset = length;
     append_probe_bytes(&mut code, &mut length, PATH);
+    let denied_path_offset = length;
+    append_probe_bytes(&mut code, &mut length, b"/programas/restrito\0");
     code[message_pointer_offset..message_pointer_offset + 8]
         .copy_from_slice(&(CODE_VA + message_offset as u64).to_le_bytes());
     code[path_pointer_offset..path_pointer_offset + 8]
         .copy_from_slice(&(CODE_VA + path_offset as u64).to_le_bytes());
+    code[denied_path_pointer_offset..denied_path_pointer_offset + 8]
+        .copy_from_slice(&(CODE_VA + denied_path_offset as u64).to_le_bytes());
     (code, length)
 }
 
@@ -1642,6 +1873,17 @@ fn current_scheduler_cpu() -> usize {
 }
 
 #[cfg(target_os = "none")]
+fn schedule_process_on_cpu(
+    cpu: usize,
+) -> Result<Option<carlio_os::process::Process>, carlio_os::process::ProcessError> {
+    if is_secondary_cpu(cpu) {
+        PROCESS_SCHEDULER.schedule_local(cpu)
+    } else {
+        PROCESS_SCHEDULER.schedule(cpu)
+    }
+}
+
+#[cfg(target_os = "none")]
 pub(crate) fn scheduler_has_current_process(cpu: usize) -> bool {
     PROCESS_SCHEDULER.current(cpu).is_some()
 }
@@ -1668,6 +1910,19 @@ pub(crate) fn dispatch_linux_syscall(
         },
         &mut io,
     );
+    if number == carlio_os::linux_abi::SYS_OPENAT && process.security.credentials.uid != 0 {
+        if let carlio_os::linux_abi::SyscallOutcome::Return(value) = outcome {
+            LINUX_VFS_DENIAL_RESULT.store(value, Ordering::Release);
+            if value == (-(carlio_os::linux_abi::EACCES as i64)) as u64 {
+                LINUX_VFS_DENIAL_PROBE_PASSED.store(true, Ordering::Release);
+            }
+        }
+    }
+    if number == carlio_os::linux_abi::SYS_MUNMAP {
+        if let carlio_os::linux_abi::SyscallOutcome::Return(value) = outcome {
+            LINUX_MUNMAP_RESULT.store(value, Ordering::Release);
+        }
+    }
     let identity_bit = match number {
         carlio_os::linux_abi::SYS_GETUID
             if outcome
@@ -1792,6 +2047,8 @@ impl KernelLinuxSyscallIo {
             &PROCESS_PROBE_SPACE_A
         } else if self.process.id == PROCESS_PROBE_IDS[1].load(Ordering::Acquire) {
             &PROCESS_PROBE_SPACE_B
+        } else if self.process.id == PROCESS_PROBE_IDS[2].load(Ordering::Acquire) {
+            &PROCESS_PROBE_SPACE_C
         } else {
             return Err(carlio_os::linux_abi::ENOMEM);
         };
@@ -1853,6 +2110,7 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
 
     fn read(&mut self, descriptor: u64, destination: &mut [u8]) -> Result<usize, u16> {
         if descriptor == 0 {
+            write("ABI Linux: probe CPL3 aguardando byte de entrada serial.\r\n");
             for (index, output) in destination.iter_mut().enumerate() {
                 let byte = match serial_read() {
                     Ok(byte) => byte,
@@ -2142,7 +2400,34 @@ pub(crate) fn is_secondary_cpu(cpu: usize) -> bool {
 
 #[cfg(target_os = "none")]
 pub(crate) fn process_probe_result() -> u64 {
-    PROCESS_PROBE_STARTED.store(false, Ordering::Release);
+    let mut ap_wait_spins = 0usize;
+    let mut ap_probe_passed = false;
+    while ap_wait_spins < 100_000_000 {
+        let active = AP_CPL3_CPU_MASK.load(Ordering::Acquire);
+        let idle = AP_CPL3_IDLE_MASK.load(Ordering::Acquire);
+        if AP_CPL3_OVERLAP_PASSED.load(Ordering::Acquire)
+            && active.count_ones() >= 2
+            && idle & active == active
+        {
+            ap_probe_passed = true;
+            break;
+        }
+        ap_wait_spins += 1;
+        core::hint::spin_loop();
+    }
+    if !ap_probe_passed {
+        AP_CPL3_STOP.store(true, Ordering::Release);
+        write("SMP CPL3: gate falhou; APs simultâneos ou retorno a idle ausentes.\r\n");
+        let mut drain_spins = 0usize;
+        while drain_spins < 100_000_000 {
+            let active = AP_CPL3_CPU_MASK.load(Ordering::Acquire);
+            if AP_CPL3_IDLE_MASK.load(Ordering::Acquire) & active == active {
+                break;
+            }
+            drain_spins += 1;
+            core::hint::spin_loop();
+        }
+    }
     PROCESS_PROBE_DONE.store(true, Ordering::Release);
     let switches = PROCESS_PROBE_SWITCHES.load(Ordering::Acquire);
     let cr3_switches = PROCESS_PROBE_CR3_SWITCHES.load(Ordering::Acquire);
@@ -2154,6 +2439,9 @@ pub(crate) fn process_probe_result() -> u64 {
     write(", faults isolados=");
     write_u64(faults as u64);
     write(".\r\n");
+    if ap_probe_passed {
+        write("SMP CPL3: 3 tarefas despachadas; dois APs executaram CPL3 com preempção e retornaram a idle.\r\n");
+    }
     if LINUX_GETPID_PROBE_PASSED.load(Ordering::Acquire) {
         write("ABI Linux x86_64: getpid/exit via SYSCALL passou.\r\n");
     } else {
@@ -2182,6 +2470,14 @@ pub(crate) fn process_probe_result() -> u64 {
     } else {
         write("ABI Linux: leitura de arquivo CPL3 pelo VFS não passou.\r\n");
     }
+    if LINUX_VFS_DENIAL_PROBE_PASSED.load(Ordering::Acquire) {
+        write("Segurança CPL3: openat negou arquivo 0600 de outro UID com EACCES.\r\n");
+    } else {
+        write("Segurança CPL3: negação POSIX de openat não passou.\r\n");
+        write("ABI diagnóstico: retorno de openat negado=");
+        write_hex_u64(LINUX_VFS_DENIAL_RESULT.load(Ordering::Acquire));
+        write(".\r\n");
+    }
     if abi_probe_mask & 0x100 != 0 {
         write("ABI Linux: read(0) CPL3 recebeu entrada serial.\r\n");
     } else {
@@ -2193,11 +2489,13 @@ pub(crate) fn process_probe_result() -> u64 {
     } else {
         write("ABI Linux: probe CPL3 de mmap/munmap incompleto; máscara=");
         write_hex_u64(memory_probe_mask as u64);
+        write(", munmap=");
+        write_hex_u64(LINUX_MUNMAP_RESULT.load(Ordering::Acquire));
         write(".\r\n");
     }
     if switches > 0
-        && cr3_switches > 0
         && faults == 1
+        && ap_probe_passed
         && LINUX_GETPID_PROBE_PASSED.load(Ordering::Acquire)
         && abi_probe_mask & 0x1ff == 0x1ff
         && memory_probe_mask & 0x3 == 0x3
@@ -2221,7 +2519,7 @@ pub(crate) fn process_probe_is_done() -> bool {
 #[cfg(target_os = "none")]
 fn reap_process_probe() -> bool {
     let mut success = true;
-    for index in 0..2 {
+    for index in 0..3 {
         let id = PROCESS_PROBE_IDS[index].load(Ordering::Acquire);
         if id == 0 {
             continue;
@@ -2231,6 +2529,8 @@ fn reap_process_probe() -> bool {
                 &PROCESS_PROBE_SPACE_A
             } else if process.id == PROCESS_PROBE_IDS[1].load(Ordering::Acquire) {
                 &PROCESS_PROBE_SPACE_B
+            } else if process.id == PROCESS_PROBE_IDS[2].load(Ordering::Acquire) {
+                &PROCESS_PROBE_SPACE_C
             } else {
                 return Err(());
             };
@@ -2248,6 +2548,64 @@ fn reap_process_probe() -> bool {
         }
     }
     success
+}
+
+#[cfg(target_os = "none")]
+fn quiesce_process_probe_aps() -> bool {
+    let mut current_epoch = PROCESS_REAP_NEXT_EPOCH.load(Ordering::Acquire);
+    let epoch = loop {
+        let Some(next_epoch) = current_epoch.checked_add(1) else {
+            return false;
+        };
+        match PROCESS_REAP_NEXT_EPOCH.compare_exchange_weak(
+            current_epoch,
+            next_epoch,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => break next_epoch,
+            Err(observed) => current_epoch = observed,
+        }
+    };
+    PROCESS_REAP_REQUEST_EPOCH.store(epoch, Ordering::Release);
+    let mut spins = 0usize;
+    loop {
+        let all_quiescent = BOOT_CPU_LOCALS.iter().enumerate().all(|(cpu, local)| {
+            if local.online.load(Ordering::Acquire) == 0
+                || local.lapic_id.load(Ordering::Acquire)
+                    == SMP_BSP_LAPIC_ID.load(Ordering::Acquire)
+            {
+                true
+            } else {
+                PROCESS_REAP_ACKS[cpu].load(Ordering::Acquire) == epoch
+            }
+        });
+        if all_quiescent {
+            let acknowledgements = BOOT_CPU_LOCALS
+                .iter()
+                .filter(|local| {
+                    local.online.load(Ordering::Acquire) != 0
+                        && local.lapic_id.load(Ordering::Acquire)
+                            != SMP_BSP_LAPIC_ID.load(Ordering::Acquire)
+                })
+                .count();
+            write("Reaper SMP: BSP fora dos CR3 de prova; ACKs de quiescência dos APs=");
+            write_u64(acknowledgements as u64);
+            write("; stacks, VM e page tables podem ser recolhidas.\r\n");
+            return true;
+        }
+        if spins >= 100_000_000 {
+            PROCESS_REAP_REQUEST_EPOCH.store(0, Ordering::Release);
+            return false;
+        }
+        spins += 1;
+        core::hint::spin_loop();
+    }
+}
+
+#[cfg(target_os = "none")]
+fn release_process_probe_aps() {
+    PROCESS_REAP_REQUEST_EPOCH.store(0, Ordering::Release);
 }
 
 #[cfg(target_os = "none")]
@@ -2638,6 +2996,7 @@ fn page_table_boot_probe(hhdm: u64) {
                 unsafe {
                     asm!("mov {}, cr3", out(reg) old_cr3, options(nomem, nostack, preserves_flags))
                 };
+                PROCESS_KERNEL_CR3.store(old_cr3 & 0x000f_ffff_ffff_f000, Ordering::Release);
                 let process_cr3 = space.root();
                 unsafe {
                     asm!("mov cr3, {}", in(reg) process_cr3, options(nostack, preserves_flags))
@@ -2650,7 +3009,19 @@ fn page_table_boot_probe(hhdm: u64) {
                 };
                 unsafe { idt::restore_bootstrap_kernel_stack() };
                 let entered = routine_results & 0x7ff == 0x7ff;
-                let preempted = routine_results == 0xfff && reap_process_probe();
+                unsafe { asm!("mov cr3, {}", in(reg) old_cr3, options(nostack, preserves_flags)) };
+                let quiescent = quiesce_process_probe_aps();
+                if quiescent {
+                    PROCESS_PROBE_STARTED.store(false, Ordering::Release);
+                }
+                let reaped = quiescent && reap_process_probe();
+                let preempted = routine_results == 0xfff && reaped;
+                if quiescent {
+                    release_process_probe_aps();
+                }
+                unsafe {
+                    asm!("mov cr3, {}", in(reg) process_cr3, options(nostack, preserves_flags))
+                };
                 unsafe {
                     core::ptr::write_volatile(code_pointer, 0x0f);
                     core::ptr::write_volatile(code_pointer.add(1), 0x0b);

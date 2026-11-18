@@ -1,0 +1,2 @@
+    Checking pegasus-sys v0.1.0 (/home/gabriel/Work/pegasus_ds/crates/pegasus-sys)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.13s

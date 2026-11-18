@@ -1,0 +1,9 @@
+Gate NAS/KVM pendente em 2026-11-18.
+
+Motivo: os gates locais QEMU TCG BIOS e UEFI com 4 CPUs/512 MiB falharam na etapa 1/7; com a afinidade das tarefas fixada por CPU, ambos ainda atingem o watchdog após `write ok` e o aviso emitido por `read(0)`, antes do resumo ABI/VM/reaper. Conforme CORRECT.md §§3-4 e AGENTS.md, NAS/KVM não deve avançar enquanto o gate local de processos/VM não passar.
+
+Evidências finais:
+- reports/logs/abi-vm-fix-r10-qemu-bios-20261118.log
+- reports/logs/abi-vm-fix-r10-qemu-uefi-20261118.log
+- reports/logs/abi-vm-fix-r10-host-20261118.txt
+- reports/logs/abi-vm-fix-r10-build-20261118.txt

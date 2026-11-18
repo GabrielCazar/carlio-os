@@ -436,6 +436,14 @@ static HEARTBEAT: AtomicU64 = AtomicU64::new(0);
 static LAST_HEARTBEAT: AtomicU64 = AtomicU64::new(0);
 static LAST_PROGRESS_TICK: AtomicU64 = AtomicU64::new(0);
 static TIMER_FRAME_SWITCH: AtomicUsize = AtomicUsize::new(0);
+static IRET_TARGET_RIP: [AtomicU64; MAX_CPU_TABLES] = [const { AtomicU64::new(0) }; MAX_CPU_TABLES];
+static IRET_TARGET_CS: [AtomicU64; MAX_CPU_TABLES] = [const { AtomicU64::new(0) }; MAX_CPU_TABLES];
+static IRET_TARGET_RSP: [AtomicU64; MAX_CPU_TABLES] = [const { AtomicU64::new(0) }; MAX_CPU_TABLES];
+static IRET_TARGET_SS: [AtomicU64; MAX_CPU_TABLES] = [const { AtomicU64::new(0) }; MAX_CPU_TABLES];
+static IRET_USER_DATA_DESC: [AtomicU64; MAX_CPU_TABLES] =
+    [const { AtomicU64::new(0) }; MAX_CPU_TABLES];
+static IRET_USER_CODE_DESC: [AtomicU64; MAX_CPU_TABLES] =
+    [const { AtomicU64::new(0) }; MAX_CPU_TABLES];
 const WATCHDOG_TICKS: u64 = 500; // 5 s em PIT 100 Hz
 
 unsafe extern "C" {
@@ -925,11 +933,38 @@ extern "C" fn exception_dispatch(frame: *mut ExceptionFrame) -> *mut ExceptionFr
                     unsafe { core::mem::transmute(hook) };
                 let next = hook(cpu, (frame as *mut ExceptionFrame).cast());
                 if !next.is_null() {
+                    record_iret_target(cpu, next);
+                    if scheduler_tick
+                        && crate::is_secondary_cpu(cpu)
+                        && crate::process_probe_is_active()
+                        && (crate::stop_ap_process_probe(cpu)
+                            || !crate::scheduler_has_current_process(cpu))
+                    {
+                        prepare_ap_idle_resume(frame);
+                        return frame;
+                    }
                     return next.cast();
                 }
             }
         }
         return frame;
+    }
+    if frame.vector == 13 && frame.error_code == 0x18 && cpu < MAX_CPU_TABLES {
+        super::write("Diagnóstico iretq: alvo CPU=");
+        super::write_u32(cpu as u32);
+        super::write(" RIP=0x");
+        super::write_hex_u64(IRET_TARGET_RIP[cpu].load(Ordering::Acquire));
+        super::write(" CS=0x");
+        super::write_hex_u64(IRET_TARGET_CS[cpu].load(Ordering::Acquire));
+        super::write(" RSP=0x");
+        super::write_hex_u64(IRET_TARGET_RSP[cpu].load(Ordering::Acquire));
+        super::write(" SS=0x");
+        super::write_hex_u64(IRET_TARGET_SS[cpu].load(Ordering::Acquire));
+        super::write(" GDT3=0x");
+        super::write_hex_u64(IRET_USER_DATA_DESC[cpu].load(Ordering::Acquire));
+        super::write(" GDT4=0x");
+        super::write_hex_u64(IRET_USER_CODE_DESC[cpu].load(Ordering::Acquire));
+        super::write("\r\n");
     }
     super::record_error(carlio_os::errors::KernelError::CpuException);
     super::write("\r\n=== CAPTURA DE EXCECAO CPU ===\r\nVetor: ");
@@ -949,6 +984,23 @@ extern "C" fn exception_dispatch(frame: *mut ExceptionFrame) -> *mut ExceptionFr
     }
     super::write("Sistema interrompido; diagnóstico serial somente leitura.\r\n");
     stop_cpu()
+}
+
+fn record_iret_target(cpu: usize, frame: *mut UserInterruptFrame) {
+    if cpu >= MAX_CPU_TABLES || frame.is_null() {
+        return;
+    }
+    // The dispatcher owns this selected return frame until exception_common restores it.
+    let selected = unsafe { &*frame };
+    IRET_TARGET_RIP[cpu].store(selected.rip, Ordering::Relaxed);
+    IRET_TARGET_CS[cpu].store(selected.cs, Ordering::Relaxed);
+    IRET_TARGET_RSP[cpu].store(selected.user_rsp, Ordering::Relaxed);
+    IRET_TARGET_SS[cpu].store(selected.user_ss, Ordering::Release);
+    // Read the per-CPU descriptors selected by CS/SS while this CPU owns its GDT.
+    let data_descriptor = unsafe { core::ptr::addr_of!(CPU_GDT[cpu][3]).read_volatile() };
+    let code_descriptor = unsafe { core::ptr::addr_of!(CPU_GDT[cpu][4]).read_volatile() };
+    IRET_USER_DATA_DESC[cpu].store(data_descriptor, Ordering::Relaxed);
+    IRET_USER_CODE_DESC[cpu].store(code_descriptor, Ordering::Release);
 }
 
 #[no_mangle]
@@ -995,9 +1047,27 @@ extern "C" fn carlio_syscall_dispatch(raw: *const LinuxSyscallFrame) -> u64 {
 }
 
 fn prepare_ap_idle_resume(frame: &mut ExceptionFrame) {
+    let interrupted_user = frame.cs & 3 == 3;
     frame.rip = core::ptr::addr_of!(scheduler_idle_resume_stub) as u64;
     frame.cs = KERNEL_CODE_SELECTOR as u64;
-    frame.rflags = 0x2;
+    // O scheduler idle depende de IF habilitada para receber timer e TLB IPI.
+    frame.rflags = 0x202;
+    // Every caller has a CPL3 interrupt frame. Its privilege-return tail
+    // follows ExceptionFrame immediately and is consumed by IRETQ in long mode.
+    // SAFETY: these call sites run only for frames with saved user CS, so the
+    // hardware supplied both saved RSP and SS after the common register frame.
+    let privilege_tail = unsafe {
+        (frame as *mut ExceptionFrame)
+            .cast::<u64>()
+            .add(core::mem::size_of::<ExceptionFrame>() / core::mem::size_of::<u64>())
+    };
+    if interrupted_user {
+        // The trampoline immediately switches to the dedicated AP boot stack.
+        unsafe { privilege_tail.write(frame as *mut ExceptionFrame as u64) };
+    }
+    unsafe {
+        privilege_tail.add(1).write(KERNEL_DATA_SELECTOR as u64);
+    }
 }
 
 fn resume_ring3_probe(frame: &mut ExceptionFrame, result: u64) {
@@ -1143,8 +1213,11 @@ unsafe fn prepare_tss_and_gdt() {
     unsafe {
         GDT[1] = 0x00af_9a00_0000_ffff; // código ring 0, 64 bits
         GDT[2] = 0x00cf_9200_0000_ffff; // dados ring 0
-        GDT[3] = 0x00cf_f200_0000_ffff; // dados ring 3
-        GDT[4] = 0x00af_fa00_0000_ffff; // código ring 3, 64 bits
+                                        // Deixe os bits Accessed pré-marcados: cada AP usa uma GDT privada que
+                                        // pode estar sob um CR3 distinto quando IRET valida SS/CS de usuário.
+                                        // Isso evita escrita implícita nos descritores durante a troca CPL0→3.
+        GDT[3] = 0x00cf_f300_0000_ffff; // dados ring 3, writable/accessed
+        GDT[4] = 0x00af_fb00_0000_ffff; // código ring 3, 64 bits, accessed
         GDT[5] = low;
         GDT[6] = high;
     }

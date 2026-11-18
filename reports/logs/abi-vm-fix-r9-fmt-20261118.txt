@@ -1,0 +1,11 @@
+Diff in /home/gabriel/Work/carlio-os/src/main.rs:1502:
+             secondary_count += 1;
+         }
+     }
+[31m-    let pinned = PROCESS_SCHEDULER
+(B[m[31m-        .pin_ready_to_cpu(first, bsp_cpu)
+(B[m[31m-        .is_ok()
+(B[m[32m+    let pinned = PROCESS_SCHEDULER.pin_ready_to_cpu(first, bsp_cpu).is_ok()
+(B[m         && secondary_count == secondary_cpus.len()
+         && PROCESS_SCHEDULER
+             .pin_ready_to_cpu(second, secondary_cpus[0])

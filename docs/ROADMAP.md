@@ -56,12 +56,14 @@ positivos, negativos e de falha; modelos host e detecção PCI não bastam.
 
 | Subsistema | Implementado e validado | Gate que continua aberto |
 | --- | --- | --- |
-| Processos / scheduler | ELF64 de prova, CR3/RSP0 isolados, preempção, saída/fault/reaper no BSP; filas SMP e timer LAPIC por CPU | Carga CPL3 simultânea real nos APs, ownership completo e tabelas dinâmicas |
+| Processos / scheduler | ELF64 de prova, CR3/RSP0 isolados, preempção, saída/fault/reaper; `destroy(id)` remove Ready/Blocked; APIs internas `clone_thread`/`join_current` compartilham grupo/VM e guardam resultado de término; retorno CPL3 AP e reaper passaram BIOS/UEFI local e NAS/KVM antes da revisão ABI/VM | Integração com syscall Linux `clone`, pilha de usuário própria, futex/POSIX join, ownership geral e estabilidade ABI/VM TCG: smoke BIOS/UEFI atual falha com watchdog depois de `write`/`read(0)`; `schedule_local` e pinning por CPU sem gate QEMU positivo. NAS/KVM pendente até gates locais passarem ([relatório](../reports/fase-2-memoria-execucao.md), [BIOS](../reports/logs/abi-vm-fix-r10-qemu-bios-20261118.log), [UEFI](../reports/logs/abi-vm-fix-r10-qemu-uefi-20261118.log)) |
+| Módulos do kernel (LKMs) | Parser ET_REL host com relocations x86_64, relocations PLT/PC-relative, zero de NOBITS, rejeição de W+X, transição RW/NX para permissões finais e hooks abstratos init/exit | Backend real x86_64 para páginas/exportações/invocação, dependências e referências, quiescência/unload seguro, rollback de init/exit e gates QEMU/NAS com objeto positivo/negativo/de falha |
 | Memória | Bitmap até 32 GiB, VM x86-64, folhas user owned, heap expansível e shootdown xAPIC com ACK | Pressão/concorrência geral de VM sob carga; swap permanece desligado |
 | Drivers / E/S | PCI read-only, framebuffer Limine, adaptador BlockDevice AHCI e Ethernet Intel QEMU; QEMU validou Hermione em disco descartável | Validação física de AHCI e demais dispositivos (RTL8111/I219, EHCI/xHCI, iGPU), timeout/remoção em hardware |
-| VFS | Políticas POSIX host, mounts roteáveis e backends de leitura para Hermione/FAT32/ext4; syscalls de arquivo sobre VFS inline de 16 KiB por arquivo, snapshots persistentes Hermione v2 e leitura retrocompatível v1 | Descoberta de partições e montagem no boot; syscalls ainda não consultam backends mounted; suporte a arquivos maiores que 16 KiB, nomes longos FAT, recursos ext4 completos, escrita nos mounts e enforcement completo de inode/processo |
+| VFS | Políticas POSIX host, mounts roteáveis e backends de leitura para Hermione/FAT32/ext4; syscalls de arquivo sobre VFS inline de 16 KiB; a fixture CPL3 ainda não conclui o gate integrado de leitura/negação após o watchdog atual | Descoberta de partições e montagem no boot; syscalls ainda não consultam backends mounted; suporte a arquivos maiores que 16 KiB, nomes longos FAT, recursos ext4 completos, escrita nos mounts e enforcement geral de inode/processo; repetir prova `openat` positiva/negativa em QEMU e NAS |
 | Rede | Intel 82574L QEMU TX/RX polling e DHCPv4 DORA; tabela de sockets bound para bind/listen | TCP/IP de ponta a ponta, `accept/connect/send/recv`, drivers físicos, rota, DNS e serviços |
-| Syscalls (SCI) | Entrada x86-64 `SYSCALL`; probes CPL3 de `getpid/exit`, credenciais/grupos, `write` serial, `read(0)` positivo e inválido, `openat/read/close` no VFS inline, `mmap/munmap` anônimo com páginas próprias; dispatcher também responde `uname`; libc freestanding inicial; parser bounded de `PT_INTERP`/`DT_NEEDED` e lookup host de símbolos versionados | Backends mounted, `O_CREAT`, `brk` positivo CPL3, mmap de arquivo/compartilhado, execução integrada do interpretador e `.so`, parser/lookup efetivo de GNU version tables, libc para zsh, sinais/threads e ABI ampla |
+| Syscalls (SCI) | Entrada x86-64 `SYSCALL`; probes CPL3 de `getpid/exit`, credenciais/grupos, `write` serial, `read(0)` positivo e inválido, `openat/read/close` no VFS inline, `mmap/munmap` anônimo com páginas próprias; dispatcher também responde `uname`; libc freestanding inicial; preparador host ELF carrega programa `PT_INTERP` + interpretador ET_DYN e monta `auxv` básico em fixture sintética | Syscall `execve` e troca transacional de imagem ainda ausentes; VFS inline de 16 KiB não comporta o `ld-linux` Arch real; carregar dependências, executar relocations/glibc, parser/lookup efetivo GNU version tables, libc para zsh, sinais/threads e ABI ampla. ABI/VM QEMU BIOS/UEFI permanece reprovada pelo watchdog dos logs desta revisão |
+| pegasusDS / servidor de diretório | Contrato ABI v1 congelado como documento; crate local `libcarlio` define interface Rust segura sem transporte de syscall | ABI implementada, capacidades, sandbox, hooks LSM, keyring, AF_UNIX/SCM_RIGHTS, IPv6/TCP/epoll, canais opt-in, verified boot e workload QEMU/NAS; não executar servidor de rede |
 | Interrupções | IDT/exceções, PIT/watchdog, timer LAPIC e IPI de TLB com ACK | IRQs de teclado, USB, rede e disco ligados a drivers; tratamento/recovery físico |
 
 A prioridade física é NAS-first para AHCI `8086:1c02`, RTL8111 `10ec:8168`,
@@ -363,9 +365,18 @@ biblioteca host e não equivalem à aplicação dessas permissões pelo kernel.
 Persistência, operações de arquivo, ACLs e enforcement em processos/syscalls
 continuam pendentes. Evidências: [relatório de segurança](../reports/fase-3-seguranca.md).
 
-Atualização: operações host `read_file_as`/`write_file_as` passaram a armazenar
-conteúdo inline limitado a 256 bytes e aplicar permissões POSIX por credencial.
-Continuam pendentes mounts e armazenamento real; não há enforcement no kernel.
+Atualização: operações host `read_file_as`/`write_file_as` armazenam conteúdo
+inline limitado a 16 KiB por arquivo e aplicam permissões POSIX por credencial.
+Mounts e armazenamento real seguem pendentes; enforcement no kernel foi
+demonstrado somente para concessão/negação de `openat` no fixture descrito a
+seguir.
+
+**Prova negativa CPL3 (2026-11-16):** a fixture executa como UID/GID 1000;
+`openat` lê arquivo permitido e recebe `EACCES` ao abrir arquivo root-owned
+modo `0600`. O smoke exige o marcador em BIOS/UEFI local e NAS/KVM. É evidência
+de enforcement no dispatcher para esta operação e fixture, não de login,
+persistência, auditoria durável ou autorização geral. Consulte o [relatório e
+logs da prova](../reports/fase-3-seguranca.md#correcao--negacao-posix-em-syscall-cpl3--2026-11-16).
 
 **Incremento de namespace (2026-11-16):** VFS cria a hierarquia FHS e mantém
 mounts para Hermione, FAT32, ext4, proc e dev, com validação de paths, mount
@@ -385,6 +396,12 @@ Ainda faltam drivers RTL8111/I219 físicos, roteamento, DNS, `accept`/`connect`/
 `send`/`recv` e teste em hardware. A interface não tem acesso geral à internet.
 
 ### 5 — ABI Linux e userlands Arch e Ubuntu
+
+O contrato versionado proposto para integração do pegasusDS está em
+[`KERNEL_ABI.md`](KERNEL_ABI.md), com dircache, auditoria e threat model em
+documentos próprios. A crate local `libcarlio` ainda não tem transporte de
+syscall e a fase permanece aberta; estado e gates em
+[`fase-5-pegasusds.md`](../reports/fase-5-pegasusds.md).
 
 Implementar a ABI necessária por fatias: ELF dinâmico x86_64, syscalls e
 semântica de processos, sinais, `mmap`, `clone`, `futex`, threads, relógio,

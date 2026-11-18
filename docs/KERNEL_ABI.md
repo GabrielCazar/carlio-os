@@ -1,0 +1,69 @@
+# CarlioOS kernel ABI — v1.0.0
+
+Estado: contrato versionado **congelado para a ABI v1**. Congelar a forma e a
+semântica não declara que uma chamada já está implementada. “Pendente” exige
+execução e testes antes de ser anunciada como disponível. Mudanças incompatíveis
+exigem ABI v2; extensões compatíveis ficam reservadas a flags, opções e novas
+chamadas. Alvo: ELF x86-64, chamada `SYSCALL`, `RAX` como número/retorno e
+`RDI, RSI, RDX, R10, R8, R9` como argumentos. Erros retornam `-errno` em `RAX`.
+
+| Syscall x86-64 | Semântica contratada | Estabilidade v1 | Estado no kernel (2026-11-18) |
+| --- | --- | --- | --- |
+| `openat` (257) | Abre relativo a dirfd; flags/modo Linux x86-64 | Congelada | Parcial; VFS inline de prova |
+| `read` (0), `write` (1) | I/O por fd; retorno de bytes, interrupção/EOF conforme POSIX-like | Congelada | Parcial; console/VFS de prova |
+| `close` (3), `fsync` (74) | Fecha fd; `fsync` persiste dados e metadados do fd | Congelada | `close` parcial; `fsync` pendente |
+| `renameat2` (316) | Renomeia entre dirfds; flags Linux, flags desconhecidas dão `EINVAL` | Congelada | Pendente |
+| `statx` (332) | Metadados selecionados por mask; campos ausentes marcados no mask | Congelada | Pendente |
+| `mmap` (9), `munmap` (11), `mprotect` (10) | VM por processo; valida faixa/alinhamento e ownership; W^X | Congelada | mmap/munmap anônimo de prova; mprotect pendente |
+| `clone` (56) | Cria processo/thread conforme flags; recursos compartilhados apenas quando pedidos | Congelada | Pendente como syscall geral |
+| `futex` (202) | Espera/notify atômicos em palavra user; timeout monotônico | Congelada | Pendente |
+| `execve` (59) | Substitui imagem apenas após validar ELF, argv/envp e preparar rollback | Congelada | Fixture ELF, syscall geral pendente |
+| `rt_sigaction` (13), `rt_sigprocmask` (14), `rt_sigreturn` (15), `tgkill` (234) | Entrega e máscara de sinais em retorno seguro | Congelada | Pendente |
+| `getrandom` (318) | CSPRNG do kernel; flags inválidas rejeitadas; falha explícita sem entropia | Congelada | Pendente |
+| `clock_gettime` (228) | Relógios monotônico e realtime; estrutura compatível com Linux x86-64 | Congelada | Pendente |
+| `epoll_create1` (291), `epoll_ctl` (233), `epoll_wait` (232) | Multiplexação por fd com eventos level-triggered v1 | Congelada | Pendente |
+| `socket` (41), `bind` (49), `listen` (50), `accept4` (288), `connect` (42) | Sockets stream/datagram; flags de `accept4` validadas | Congelada | socket/bind/listen parciais; accept/connect pendentes |
+| `sendmsg` (46), `recvmsg` (47), `AF_UNIX`, `SCM_RIGHTS` | Stream/datagram local e transferência limitada de descritores | Congelada | Pendente |
+| `AF_INET`, `AF_INET6` | Endereços IPv4/IPv6 Linux; erros de rede tipados | Congelada | IPv4 parcial; IPv6 pendente |
+| `SO_REUSEPORT` (`setsockopt` 54) | Reuso controlado por protocolo/endereço/porta e credenciais | Congelada | Pendente |
+| `sendfile` (40), `splice` (275) | Transferência entre fd sem cópia para user quando backend permitir | Congelada | Pendente |
+
+## Capabilities v1
+
+Capabilities pertencem ao contexto de credenciais do processo, são reduzidas
+por `execve` conforme política e não são inferidas apenas de `uid=0`:
+
+| Capability | Autoridade |
+| --- | --- |
+| `CAP_NET_BIND_SERVICE` | Bind a portas privilegiadas abaixo de 1024 |
+| `CAP_DAC_OVERRIDE` | Bypass explícito de verificações DAC de arquivo, nunca de LSM |
+| `CAP_AUDIT_WRITE` | Leitura do barramento estruturado de auditoria conforme ACL |
+
+Sem capability ou hook LSM autorizado, a operação retorna `EPERM` e pode
+produzir evento de auditoria sem encerrar o processo. A implementação e os
+valores numéricos internos permanecem pendentes; não reutilizar os números
+Linux de capability como garantia de suporte até o gate correspondente passar.
+
+## Regras transversais
+
+- Ponteiros user são faixas validadas no CR3 atual; comprimento zero, overflow,
+  alinhamento e permissões são tratados explicitamente antes de tocar memória.
+- `mprotect` não cria páginas executáveis graváveis; mapeamentos executáveis são
+  imutáveis enquanto executáveis. O kernel mantém a política W^X.
+- `clone`/`execve` não publicam tarefa/fd parcialmente inicializados. Falha
+  reverte recursos e deixa o processo original consistente.
+- `EPERM` de `carlio_sandbox` é auditado e não termina o processo. Falhas de
+  memória user isolam a tarefa; não podem derrubar o kernel.
+- `AF_CARLIO`, dircache e auditoria são extensões opt-in documentadas nos
+  protocolos dedicados; não alteram semântica POSIX da v1.
+- ABI Linux compatível não implica compatibilidade completa com glibc/musl ou
+  Arch. Isso exige loader ELF dinâmico, VFS, threads, sinais, rede e testes de
+  workload integrados.
+
+## Mudança de versão
+
+O número v1 e as semânticas acima não podem ser reutilizados com outro
+comportamento. Nova chamada, flag ou campo extensível compatível pode ser
+adicionado dentro da v1 se seu comportamento ausente for `ENOSYS`/`EOPNOTSUPP`
+e a detecção for documentada. Remoção, renumeração, mudança de layout ou
+semântica incompatível exige tabela separada e negociação de v2.

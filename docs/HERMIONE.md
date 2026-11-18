@@ -31,11 +31,11 @@ descartável QEMU; isso não monta volume no boot normal.
 - Superbloco no LBA 0; diretórios alternados nos LBAs 1 e 2; journal redo no
   LBA 3; dados a partir do LBA 4. Cada arquivo tem duas cópias contíguas,
   checksum CRC32 e tamanho máximo de 32 bits.
-- Meta de capacidade do dispositivo: até 2 TiB, isto é, 2^32 setores de 512
-  bytes. O código v3 ainda rejeita contagens maiores que `u32::MAX`, portanto
-  não aceita a capacidade exata de 2 TiB (2^32 setores). O superbloco já guarda
-  a contagem em 64 bits, mas os limites de volume e extents precisam ser
-  ajustados e testados antes de declarar suporte.
+- Capacidade do dispositivo: exatamente até 2 TiB, isto é, 2^32 setores de 512
+  bytes. O superbloco guarda a contagem em 64 bits; extents usam LBA de 32 bits
+  e podem endereçar o último setor (`2^32-1`). Teste host com imagem esparsa
+  grava/lê o último LBA e rejeita um setor após o fim. Isso não comprova AHCI
+  físico nem liberação para dados reais.
 - Commit grava os dois extents, faz `flush`, grava no journal a imagem completa
   do diretório com geração/CRC e faz `flush`, publica o diretório alternado e faz
   `flush`, então limpa o journal e sincroniza novamente. `mount` reaplica um

@@ -291,7 +291,10 @@ impl<A: PageTableAccess, const MAPPINGS: usize> AddressSpace<A, MAPPINGS> {
                 }
             };
             if entry & ENTRY_PRESENT != 0 {
-                if let Err(error) = access.write_entry(root, index, entry) {
+                // U/S é cumulativo em x86-64. Limpar o bit no PML4 privado
+                // mantém todo o half superior supervisor, mesmo que a árvore
+                // compartilhada tenha um nível inferior marcado como user.
+                if let Err(error) = access.write_entry(root, index, entry & !ENTRY_USER) {
                     let _ = access.release_table(root);
                     return Err(error);
                 }
@@ -557,6 +560,7 @@ impl<A: PageTableAccess> PageTableManager<A> {
     pub fn mapping(&self, virtual_address: u64) -> Result<PageMapping, FrameError> {
         let indices = page_indices(virtual_address)?;
         let mut table = self.root;
+        let mut effective_flags = ENTRY_PRESENT | ENTRY_USER | ENTRY_WRITABLE;
         for index in indices.iter().take(3) {
             let entry = self.access.read_entry(table, *index)?;
             if entry & ENTRY_PRESENT == 0 {
@@ -565,15 +569,24 @@ impl<A: PageTableAccess> PageTableManager<A> {
             if entry & ENTRY_HUGE != 0 {
                 return Err(FrameError::HugePageConflict);
             }
+            effective_flags &= entry;
+            effective_flags |= entry & PAGE_FLAG_NO_EXECUTE;
             table = entry & ENTRY_ADDRESS_MASK;
         }
         let entry = self.access.read_entry(table, indices[3])?;
         if entry & ENTRY_PRESENT == 0 {
             return Err(FrameError::NotMapped);
         }
+        effective_flags &= entry;
+        effective_flags |= entry & PAGE_FLAG_NO_EXECUTE;
+        let leaf_flags = entry & !ENTRY_ADDRESS_MASK;
+        let effective_permissions = ENTRY_PRESENT
+            | (effective_flags & (ENTRY_USER | ENTRY_WRITABLE))
+            | (effective_flags & PAGE_FLAG_NO_EXECUTE);
         Ok(PageMapping {
             physical: (entry & ENTRY_ADDRESS_MASK) | (virtual_address & (PAGE_SIZE - 1)),
-            flags: entry & !ENTRY_ADDRESS_MASK,
+            flags: (leaf_flags & !(ENTRY_USER | ENTRY_WRITABLE | PAGE_FLAG_NO_EXECUTE))
+                | effective_permissions,
         })
     }
 
@@ -1239,6 +1252,31 @@ mod tests {
     }
 
     #[test]
+    fn mapping_reports_effective_user_permissions_from_every_level() {
+        let root = 0x1000;
+        let mut access = FakePageTables::new();
+        // A user-marked leaf is still supervisor-only when an ancestor lacks U/S.
+        access
+            .entries
+            .insert((root, 0), 0x2000 | ENTRY_PRESENT | ENTRY_WRITABLE);
+        access.entries.insert(
+            (0x2000, 1),
+            0x3000 | ENTRY_PRESENT | ENTRY_USER | ENTRY_WRITABLE,
+        );
+        access
+            .entries
+            .insert((0x3000, 0), 0x4000 | ENTRY_PRESENT | ENTRY_USER);
+        access.entries.insert(
+            (0x4000, 0),
+            0x8000 | ENTRY_PRESENT | ENTRY_USER | ENTRY_WRITABLE,
+        );
+        let manager = PageTableManager::new(access, root).unwrap();
+        let mapping = manager.mapping(0x4000_0000).unwrap();
+        assert_eq!(mapping.flags & ENTRY_USER, 0);
+        assert_eq!(mapping.flags & ENTRY_WRITABLE, 0);
+    }
+
+    #[test]
     fn user_mapping_rejects_kernel_half_and_legacy_map_rejects_user_flag() {
         let mut manager = PageTableManager::new(FakePageTables::new(), 0x1000).unwrap();
         assert_eq!(
@@ -1278,6 +1316,23 @@ mod tests {
         );
         assert!(!access.allocated.contains(&process_root));
         assert!(access.allocated.is_empty());
+        assert_eq!(access.entries.get(&(kernel_root, 511)), Some(&kernel_entry));
+    }
+
+    #[test]
+    fn address_space_forces_inherited_kernel_half_to_supervisor() {
+        let kernel_root = 0x1000;
+        let kernel_entry = 0x3000 | ENTRY_PRESENT | ENTRY_USER | ENTRY_WRITABLE;
+        let mut access = FakePageTables::new();
+        access.entries.insert((kernel_root, 511), kernel_entry);
+        let space = AddressSpace::<_, 1>::new(access, kernel_root).unwrap();
+        let process_root_entry = space.tables.access.read_entry(space.root(), 511).unwrap();
+        assert_eq!(process_root_entry & ENTRY_USER, 0);
+        assert_eq!(process_root_entry & !ENTRY_USER, kernel_entry & !ENTRY_USER);
+        let access = match space.try_destroy() {
+            Ok(access) => access,
+            Err((_, error)) => panic!("falha ao destruir espaço de teste: {error:?}"),
+        };
         assert_eq!(access.entries.get(&(kernel_root, 511)), Some(&kernel_entry));
     }
 
