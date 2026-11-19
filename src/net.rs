@@ -190,6 +190,20 @@ impl<const N: usize> SocketTable<N> {
         Ok(())
     }
 
+    pub fn close_process(&mut self, process_id: u64) -> usize {
+        if process_id == 0 {
+            return 0;
+        }
+        let mut closed = 0usize;
+        for entry in &mut self.entries {
+            if entry.occupied && entry.info.process_id == process_id {
+                *entry = SocketEntry::EMPTY;
+                closed += 1;
+            }
+        }
+        closed
+    }
+
     pub fn info(&self, process_id: u64, descriptor: u32) -> Option<SocketInfo> {
         self.find(process_id, descriptor)
             .map(|index| self.entries[index].info)

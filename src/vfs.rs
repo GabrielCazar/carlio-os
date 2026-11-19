@@ -125,6 +125,14 @@ impl Access {
     pub const READ_WRITE: Self = Self(6);
     pub const READ_EXECUTE: Self = Self(5);
 
+    pub const fn from_posix_bits(bits: u8) -> Option<Self> {
+        if bits & !0b111 == 0 {
+            Some(Self(bits))
+        } else {
+            None
+        }
+    }
+
     const fn contains(self, requested: Self) -> bool {
         self.0 & requested.0 == requested.0
     }
@@ -141,6 +149,8 @@ pub enum VfsError {
     NotOwner,
     NotExecutable,
     IsDirectory,
+    DirectoryNotEmpty,
+    Busy,
     BufferTooSmall,
     FileTooLarge,
     MountTableFull,
@@ -810,13 +820,97 @@ impl<const N: usize> Vfs<N> {
         Ok(())
     }
 
+    /// Remove um diretório vazio com as mesmas regras de DAC e sticky bit do
+    /// unlink. Um ponto de mount permanece preso ao namespace.
+    pub fn remove_dir_as(
+        &mut self,
+        path: &str,
+        context: AccessContext<'_>,
+    ) -> Result<(), VfsError> {
+        let (parent_path, name) = path.rsplit_once('/').ok_or(VfsError::InvalidPath)?;
+        if name.is_empty()
+            || name.len() >= NAME_MAX
+            || name == "."
+            || name == ".."
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+        {
+            return Err(VfsError::InvalidPath);
+        }
+        let parent_path = if parent_path.is_empty() {
+            "/"
+        } else {
+            parent_path
+        };
+        let parent = self.resolve(parent_path, context)?;
+        if self.nodes[parent].kind != NodeKind::Directory {
+            return Err(VfsError::NotDirectory);
+        }
+        self.check_node_access(parent, context, Access::WRITE_EXECUTE)?;
+        let index = self
+            .find_child(parent, name.as_bytes())
+            .ok_or(VfsError::NotFound)?;
+        if self.nodes[index].kind != NodeKind::Directory {
+            return Err(VfsError::NotDirectory);
+        }
+        if self.nodes[..self.len]
+            .iter()
+            .any(|node| node.occupied && node.parent == index)
+        {
+            return Err(VfsError::DirectoryNotEmpty);
+        }
+        for mount in &self.mounts {
+            if !mount.occupied {
+                continue;
+            }
+            let mount_path = core::str::from_utf8(&mount.path[..mount.path_len as usize])
+                .map_err(|_| VfsError::InvalidPath)?;
+            let root_context = AccessContext::new(Credentials { uid: 0, gid: 0 }, &[], 0);
+            let mut mount_node = self.resolve(mount_path, root_context)?;
+            loop {
+                if mount_node == index {
+                    return Err(VfsError::Busy);
+                }
+                let ancestor = self.nodes[mount_node].parent;
+                if ancestor == mount_node {
+                    break;
+                }
+                mount_node = ancestor;
+            }
+        }
+        let credentials = context.credentials;
+        if self.nodes[parent].mode & 0o1000 != 0
+            && credentials.uid != 0
+            && credentials.uid != self.nodes[parent].uid
+            && credentials.uid != self.nodes[index].uid
+        {
+            return Err(VfsError::NotOwner);
+        }
+        self.nodes[index].occupied = false;
+        self.nodes[index].name.fill(0);
+        self.contents[index].fill(0);
+        self.content_lengths[index] = 0;
+        Ok(())
+    }
+
     pub fn set_mode(
         &mut self,
         path: &str,
         credentials: Credentials,
         mode: u16,
     ) -> Result<(), VfsError> {
-        let index = self.resolve(path, AccessContext::new(credentials, &[], 0))?;
+        self.set_mode_as(path, AccessContext::new(credentials, &[], 0), mode)
+    }
+
+    pub fn set_mode_as(
+        &mut self,
+        path: &str,
+        context: AccessContext<'_>,
+        mode: u16,
+    ) -> Result<(), VfsError> {
+        let index = self.resolve(path, context)?;
+        let credentials = context.credentials;
         if credentials.uid != 0 && credentials.uid != self.nodes[index].uid {
             return Err(VfsError::NotOwner);
         }
@@ -833,12 +927,26 @@ impl<const N: usize> Vfs<N> {
         uid: u32,
         gid: u32,
     ) -> Result<(), VfsError> {
-        if credentials.uid != 0 {
+        self.set_owner_as(path, AccessContext::new(credentials, &[], 0), uid, gid)
+    }
+
+    pub fn set_owner_as(
+        &mut self,
+        path: &str,
+        context: AccessContext<'_>,
+        uid: u32,
+        gid: u32,
+    ) -> Result<(), VfsError> {
+        if context.credentials.uid != 0 {
             return Err(VfsError::NotOwner);
         }
-        let index = self.resolve(path, AccessContext::new(credentials, &[], 0))?;
+        let index = self.resolve(path, context)?;
+        let owner_changed = self.nodes[index].uid != uid || self.nodes[index].gid != gid;
         self.nodes[index].uid = uid;
         self.nodes[index].gid = gid;
+        if owner_changed {
+            self.nodes[index].mode &= !0o6000;
+        }
         Ok(())
     }
 
@@ -846,10 +954,15 @@ impl<const N: usize> Vfs<N> {
         let index = self.resolve(path, context)?;
         let node = self.nodes[index];
         Ok(Metadata {
+            inode: u64::try_from(index)
+                .ok()
+                .and_then(|value| value.checked_add(1))
+                .ok_or(VfsError::Full)?,
             kind: node.kind,
             uid: node.uid,
             gid: node.gid,
             mode: node.mode,
+            size: u64::from(self.content_lengths[index]),
         })
     }
 
@@ -1057,10 +1170,12 @@ impl<const N: usize> Vfs<N> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Metadata {
+    pub inode: u64,
     pub kind: NodeKind,
     pub uid: u32,
     pub gid: u32,
     pub mode: u16,
+    pub size: u64,
 }
 
 impl<const N: usize> Default for Vfs<N> {

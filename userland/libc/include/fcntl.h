@@ -8,6 +8,8 @@
 #define O_EXCL 0200
 #define O_TRUNC 01000
 #define O_APPEND 02000
+#define AT_REMOVEDIR 0x200
+#define AT_SYMLINK_NOFOLLOW 0x100
 int open(const char *path, int flags, ...);
 int openat(int dirfd, const char *path, int flags, ...);
 #endif

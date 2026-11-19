@@ -9,18 +9,26 @@ chamadas. Alvo: ELF x86-64, chamada `SYSCALL`, `RAX` como número/retorno e
 
 | Syscall x86-64 | Semântica contratada | Estabilidade v1 | Estado no kernel (2026-11-18) |
 | --- | --- | --- | --- |
-| `openat` (257) | Abre relativo a dirfd; flags/modo Linux x86-64 | Congelada | Parcial; VFS inline de prova |
+| `openat` (257) | Abre relativo a dirfd; flags/modo Linux x86-64 | Congelada | Parcial; VFS inline, O_CREAT/O_EXCL e caminhos relativos sob `/` |
 | `read` (0), `write` (1) | I/O por fd; retorno de bytes, interrupção/EOF conforme POSIX-like | Congelada | Parcial; console/VFS de prova |
-| `close` (3), `fsync` (74) | Fecha fd; `fsync` persiste dados e metadados do fd | Congelada | `close` parcial; `fsync` pendente |
+| `fstat` (5) | Preenche `struct stat` x86-64 a partir do descritor aberto | Extensão v1 | Parcial; somente arquivos do VFS inline, sem timestamps reais; validação pendente |
+| `access` (21) | Verifica F/R/W/X pela política POSIX do VFS | Extensão v1 | Parcial; IDs do contexto atual, cwd `/` |
+| `getcwd` (79) | Copia o cwd NUL-terminated e retorna comprimento incluindo NUL | Extensão v1 | Parcial; cwd fixo `/`, sem `chdir` |
+| `newfstatat` (262) | Metadados de caminho relativo a dirfd com flags Linux | Extensão v1 | Parcial; cwd `/`, dirfd só para caminhos relativos, flags zero |
+| `mkdir` (83), `umask` (95) | Cria diretório e consulta/define máscara de permissões por processo | Extensão v1 | Parcial; VFS inline, cwd `/`, gates pendentes |
+| `chmod` (90), `fchmod` (91), `fchmodat` (268) | Altera modo por caminho/descritor conforme proprietário/root e persiste rootfs | Extensão v1 | Parcial; VFS inline, cwd `/`, gates pendentes |
+| `chown` (92), `fchown` (93), `lchown` (94), `fchownat` (260) | Altera UID/GID via caminho ou descritor; `-1` mantém campo | Extensão v1 | Parcial; somente root, VFS inline, sem links simbólicos |
+| `unlink` (87), `rmdir` (84), `unlinkat` (263) | Remove arquivo/diretório conforme permissões do pai e persiste rootfs | Extensão v1 | Parcial; `AT_REMOVEDIR`, diretórios vazios, cwd `/`; arquivo aberto retorna `EBUSY` |
+| `close` (3), `fsync` (74) | Fecha fd; `fsync` persiste dados e metadados do fd | Congelada | `close` parcial; `fsync` grava snapshot VFS inline para fd de arquivo |
 | `renameat2` (316) | Renomeia entre dirfds; flags Linux, flags desconhecidas dão `EINVAL` | Congelada | Pendente |
 | `statx` (332) | Metadados selecionados por mask; campos ausentes marcados no mask | Congelada | Pendente |
-| `mmap` (9), `munmap` (11), `mprotect` (10) | VM por processo; valida faixa/alinhamento e ownership; W^X | Congelada | mmap/munmap anônimo de prova; mprotect pendente |
+| `mmap` (9), `munmap` (11), `mprotect` (10) | VM por processo; valida faixa/alinhamento e ownership; W^X | Congelada | mmap/munmap anônimo comprovados anteriormente; mprotect parcial em VMA anônima, validação suspensa nesta etapa |
 | `clone` (56) | Cria processo/thread conforme flags; recursos compartilhados apenas quando pedidos | Congelada | Pendente como syscall geral |
 | `futex` (202) | Espera/notify atômicos em palavra user; timeout monotônico | Congelada | Pendente |
 | `execve` (59) | Substitui imagem apenas após validar ELF, argv/envp e preparar rollback | Congelada | Fixture ELF, syscall geral pendente |
 | `rt_sigaction` (13), `rt_sigprocmask` (14), `rt_sigreturn` (15), `tgkill` (234) | Entrega e máscara de sinais em retorno seguro | Congelada | Pendente |
 | `getrandom` (318) | CSPRNG do kernel; flags inválidas rejeitadas; falha explícita sem entropia | Congelada | Pendente |
-| `clock_gettime` (228) | Relógios monotônico e realtime; estrutura compatível com Linux x86-64 | Congelada | Pendente |
+| `clock_gettime` (228) | Relógios monotônico e realtime; estrutura compatível com Linux x86-64 | Congelada | CLOCK_MONOTONIC implementado em probe; CLOCK_REALTIME pendente |
 | `epoll_create1` (291), `epoll_ctl` (233), `epoll_wait` (232) | Multiplexação por fd com eventos level-triggered v1 | Congelada | Pendente |
 | `socket` (41), `bind` (49), `listen` (50), `accept4` (288), `connect` (42) | Sockets stream/datagram; flags de `accept4` validadas | Congelada | socket/bind/listen parciais; accept/connect pendentes |
 | `sendmsg` (46), `recvmsg` (47), `AF_UNIX`, `SCM_RIGHTS` | Stream/datagram local e transferência limitada de descritores | Congelada | Pendente |

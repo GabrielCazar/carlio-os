@@ -325,6 +325,17 @@ impl<A: PageTableAccess, const MAPPINGS: usize> AddressSpace<A, MAPPINGS> {
         self.root
     }
 
+    /// Número de folhas user owned neste address space. O valor permite
+    /// contabilização isolada por processo sem consultar tabelas compartilhadas.
+    pub const fn owned_user_pages(&self) -> usize {
+        self.frame_count
+    }
+
+    /// Tabelas de página privadas alcançáveis na metade user, incluindo a raiz.
+    pub fn owned_user_page_table_pages(&self) -> Result<usize, FrameError> {
+        self.space.tables.user_page_table_pages()
+    }
+
     pub fn map_user(
         &mut self,
         virtual_address: u64,
@@ -629,6 +640,45 @@ impl<A: PageTableAccess> PageTableManager<A> {
             flags: (leaf_flags & !(ENTRY_USER | ENTRY_WRITABLE | PAGE_FLAG_NO_EXECUTE))
                 | effective_permissions,
         })
+    }
+
+    /// Conta a raiz privada e as tabelas inferiores alcançáveis por endereços
+    /// user. Entradas de half kernel compartilhado não entram na contagem.
+    pub fn user_page_table_pages(&self) -> Result<usize, FrameError> {
+        let mut count = 1usize; // raiz PML4 privada
+        for index in 0..256 {
+            let entry = self.access.read_entry(self.root, index)?;
+            if entry & ENTRY_PRESENT == 0 {
+                continue;
+            }
+            if entry & ENTRY_HUGE != 0 {
+                return Err(FrameError::HugePageConflict);
+            }
+            count = count
+                .checked_add(self.count_user_table_subtree(entry & ENTRY_ADDRESS_MASK, 1)?)
+                .ok_or(FrameError::CapacityExceeded)?;
+        }
+        Ok(count)
+    }
+
+    fn count_user_table_subtree(&self, table: u64, depth: usize) -> Result<usize, FrameError> {
+        let mut count = 1usize;
+        if depth >= 3 {
+            return Ok(count);
+        }
+        for index in 0..PAGE_TABLE_ENTRIES {
+            let entry = self.access.read_entry(table, index)?;
+            if entry & ENTRY_PRESENT == 0 {
+                continue;
+            }
+            if entry & ENTRY_HUGE != 0 {
+                return Err(FrameError::HugePageConflict);
+            }
+            count = count
+                .checked_add(self.count_user_table_subtree(entry & ENTRY_ADDRESS_MASK, depth + 1)?)
+                .ok_or(FrameError::CapacityExceeded)?;
+        }
+        Ok(count)
     }
 
     fn protect_user(&mut self, virtual_address: u64, flags: u64) -> Result<(), FrameError> {

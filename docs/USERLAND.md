@@ -38,9 +38,25 @@ nativos quando seu driver for integrado.
 contêm suporte parcial: ELF ET_EXEC/PIE sem relocations, argv/env, ownership de
 páginas, CPL3, entrada `SYSCALL`, cópias validadas e probes de identidade,
 `write`, rejeição de `read` inválido e `openat/read/close` positivo em arquivo
-VFS inline. Falta execução geral de ELF, VMA/mmap/brk, leitura serial positiva
-CPL3 automatizada, scheduler SMP CPL3 validado, sinais, threads e ABI necessária
-a libc.
+VFS inline. `getcwd` retorna `/`; caminhos relativos de `openat`, `access` e
+`newfstatat` são resolvidos sob esse cwd fixo, ainda sem `chdir`. `mkdir(83)`, `umask(95)`, `chmod(90)`, `fchmod(91)`, `chown/fchown/lchown`, `unlink/unlinkat` e `rmdir(84)` usam as regras DAC do VFS inline. `unlinkat` aceita `AT_REMOVEDIR`; somente diretórios vazios e não montados podem ser removidos. Arquivos abertos retornam `EBUSY`. `mmap/munmap/brk` e
+`fchmodat(268)` e `fchownat(260)` também foram conectados para cwd `/` e caminhos absolutos; caminhos relativos a dirfds reais e flags além de `AT_SYMLINK_NOFOLLOW` seguem sem suporte. `CLOCK_MONOTONIC` já têm implementação ligada
+ao dispatcher; `mprotect` foi conectado para intervalos dentro de uma VMA
+anônima, com W^X e rollback local, mas aguarda validação. Falta execução geral
+de ELF, suporte completo a VMA, relógio realtime, scheduler SMP CPL3 sob carga,
+sinais, threads e ABI necessária à glibc.
+
+`openat` também aceita `O_CREAT` e `O_EXCL` no VFS inline; flags não conectadas,
+como `O_CLOEXEC`, continuam sendo recusadas.
+
+A libc freestanding em `userland/libc` agora também declara wrappers para
+`mprotect`, `clock_gettime`, `clock_getres`, `gettid`, IDs reais/efetivos e
+`getgroups`, `access`, `fsync`, `brk` com errno e `sbrk` com checagem de overflow, alinhados às
+chamadas já disponíveis no dispatcher. Também foram adicionados `fstat` e
+`fstatat` para arquivos/caminhos do VFS inline, ainda sem validação. A cobertura
+integrada desses wrappers e de `mprotect` está
+suspensa até os gates voltarem a ser executados; não indica compatibilidade com
+glibc.
 
 O preparador ELF também aceita `PT_INTERP`: mapeia programa e interpretador
 ET_DYN no mesmo address space, entrega o controle ao entry do interpretador e
