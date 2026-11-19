@@ -381,28 +381,20 @@ Logs da suíte: [host local](logs/herm-rootfs-final-20261116-host-20261116-13225
 NAS](logs/herm-rootfs-final-20261116-nas-20261116-132345-qemu-kvm-bios.log) e
 [UEFI NAS](logs/herm-rootfs-final-20261116-nas-20261116-132345-qemu-kvm-uefi.log).
 
-## Bootstrap host da base Arch — início (2026-11-16)
+## Resumo consolidado do progresso — 2026-11-16
 
-Foi adicionado um perfil enxuto de pacotes Arch x86_64 e um script host para
-preparar uma rootfs usando um snapshot explícito do Arch Linux Archive. O
-construtor limita saídas a `/tmp/carlioos-arch-userland-*`, exige `pacstrap -N`
-sem fallback privilegiado e registra no artefato a revisão do kernel, o estado
-do checkout, o snapshot e a lista de pacotes. A revisão remota consultada no
-início do trabalho era `ccc30642a6e9ee2de06fb14edc71af0659c36477`; builds futuros
-registram as revisões observadas no momento da execução.
+O pedido de concluir a userland exige três integrações ainda abertas; os
+incrementos existentes são fundações, não suporte funcional completo:
 
-O perfil inclui `filesystem`, `glibc`, `bash`, `coreutils`, `zsh`, `pacman`,
-`archlinux-keyring` e `tzdata`; exclui systemd, kernel Linux, AUR e desktop. Isso
-é apenas preparação host de uma árvore de arquivos, não instalação ou execução
-no kernel CarlioOS. O ABI dinâmico, montagem no boot, pacman funcional no alvo,
-isolamento e rollback continuam pendentes.
+| Frente | Estado comprovado/documentado | Gate restante |
+|---|---|---|
+| Loader dinâmico ELF | Parser limitado de `PT_INTERP`/`DT_NEEDED`, execução ELF estática/PIE limitada e resolução de símbolos em biblioteca host | Integrar o interpretador e dependências `.so` ao `exec`, carregar tabelas GNU de versões e aplicar relocations necessárias; validar executáveis reais em CPL3 |
+| ABI da libc/glibc | Dispatcher `SYSCALL` parcial, probes CPL3 selecionados e `libcarlio.a` freestanding | Implementar e validar semânticas/syscalls requeridas pela glibc, inclusive heap/VMA, mmap de arquivo, TLS/threads e sinais conforme os binários-alvo |
+| Descoberta e mounts | AHCI experimental, snapshot Hermione inicializado e remontado em QEMU; backends de leitura host e tabela VFS | Descobrir tabela de partições, identificar filesystem, montar no boot e rotear operações VFS/syscalls aos backends; provar positivo, negativo e falha |
 
-Checagens: `bash -n userland/arch/build-rootfs.sh` e `git diff --check` passaram.
-`pacstrap` não está instalado neste host, então a geração da rootfs não foi
-executada. Nenhum fonte do kernel foi alterado; QEMU/NAS e testes de kernel não
-foram executados nesta fatia. Log: [checagens host](logs/phase5-arch-userland-bootstrap-20261116-host.txt).
-
-Próximo gate: executar o construtor em host Arch preparado com
-`arch-install-scripts`, snapshot válido e namespaces de usuário habilitados;
-depois registrar inventário/manifesto da rootfs e avançar a integração apenas
-quando loader dinâmico, glibc e montagem persistente estiverem disponíveis.
+Rootfs Arch instalável, glibc, zsh e binários Arch continuam sem execução
+validada no kernel. Não foram executados novos testes nesta atualização
+documental. A página [`progress/index.html`](../progress/index.html) e o
+[roadmap](../docs/ROADMAP.md) refletem esses limites; os gates de kernel
+permanecem abertos e exigem evidências host, QEMU BIOS/UEFI e NAS/KVM aplicáveis
+em `reports/logs/` antes de qualquer estado de suporte.
