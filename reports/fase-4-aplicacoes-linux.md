@@ -1,5 +1,42 @@
 # Relatório — Fase 4: aplicações e pacotes Linux
 
+## ABI Linux: IDs de thread, relógio monotônico e `brk` CPL3 — 2026-11-19
+
+O dispatcher Linux agora separa `getpid` (PID do grupo) de `gettid` (ID da
+thread), fornece `clock_gettime`/`clock_getres` para `CLOCK_MONOTONIC` com
+`timespec` x86_64 de 16 bytes e retorna `EINVAL` para clocks ainda não
+suportados. A fonte monotônica é o PIT do kernel a 100 Hz; conversões de faixa
+usam validação checked. A cópia para user memory passa pelo backend validado.
+O backend `ProcessVm` já conectado a `mmap`/`munmap` agora também teve `brk`
+provado em CPL3: crescimento, escrita no último byte e redução com liberação da
+página. O fixture ELF foi ampliado para acomodar o bytecode adicional.
+
+Provas negativas host cobrem clock não suportado e ponteiro inválido; a ABI
+host totaliza 184 testes e Clippy passou. `cargo fmt --check` e
+`cargo check --target x86_64-unknown-none --bin carlio-kernel` passaram
+([formato](logs/fase4-linux-abi-timers-final-fmt-20261119.txt),
+[host](logs/fase4-linux-abi-timers-final-host-20261119.txt),
+[Clippy](logs/fase4-linux-abi-timers-final-clippy-20261119.txt),
+[kernel](logs/fase4-linux-abi-timers-final-kernel-20261119.txt)). A ISO BIOS e
+UEFI local validou `gettid`, relógio monotônico e `mmap/munmap/brk`, mais 27 ACKs
+de shootdown ([BIOS](logs/fase4-linux-abi-timers-qemu-bios-20261119-021750.log),
+[UEFI](logs/fase4-linux-abi-timers-qemu-uefi-20261119-021750.log)). O NAS/KVM
+de 5 GiB passou o gate BIOS, mas UEFI não fechou o smoke completo: a probe de
+duas CR3 teve zero trocas do timer (`preempted=0`) e o teste de page tables
+recusou declarar sucesso. O mesmo log mostra os novos probes ABI passando; a
+falha fica registrada, sem repetir a execução NAS
+([resumo](logs/fase4-linux-abi-timers-nas-20261119-021821.txt),
+[BIOS](logs/fase4-linux-abi-timers-nas-20261119-021821-qemu-kvm-bios.log),
+[UEFI](logs/fase4-linux-abi-timers-nas-20261119-021821-qemu-kvm-uefi.log)).
+
+Uma execução BIOS inicial falhou por fixture ELF de 512 bytes pequena demais;
+foi expandida para 1 KiB e a execução local BIOS/UEFI seguinte passou
+([falha registrada](logs/fase4-linux-abi-timers-qemu-bios-20261119-021705.log)).
+O gate da ABI fica parcialmente validado, não suportado para userlands gerais.
+Permanecem fora desta fatia `CLOCK_REALTIME`, `execve` integrado, linker e
+dependências ELF dinâmicas, sinais, futex, chamadas de thread completas,
+mapeamento de arquivo, mounts no VFS e compatibilidade com glibc/systemd.
+
 ## Linker dinâmico, libc e arquivos maiores (2026-11-16)
 
 ### Incremento de metadados, símbolos versionados e libc (2026-11-16)

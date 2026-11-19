@@ -66,6 +66,8 @@ pub const MAX_WRITE_BYTES: usize = 64 * 1024;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ProcessContext {
     pub process_id: u64,
+    /// ID único da thread atual; `gettid` pode divergir do PID do grupo.
+    pub thread_id: u64,
     /// IDs POSIX efetivos e reais do processo no modelo atual.
     pub uid: u32,
     pub gid: u32,
@@ -182,7 +184,7 @@ pub fn dispatch<I: LinuxSyscallIo>(
         SYS_MUNMAP => result(io.munmap(arguments[0], arguments[1]).map(|_| 0)),
         SYS_BRK => SyscallOutcome::Return(io.brk(context.program_break, arguments[0])),
         SYS_GETPID => SyscallOutcome::Return(context.process_id),
-        SYS_GETTID => SyscallOutcome::Return(context.process_id),
+        SYS_GETTID => SyscallOutcome::Return(context.thread_id),
         SYS_CLOCK_GETTIME => clock_syscall(arguments[0], arguments[1], false, io),
         SYS_CLOCK_GETRES => clock_syscall(arguments[0], arguments[1], true, io),
         SYS_UNAME => uname_syscall(arguments[0], io),
@@ -587,7 +589,8 @@ mod tests {
     fn dispatches_linux_getpid_exit_and_exit_group() {
         let mut io = fake_io();
         let context = ProcessContext {
-            process_id: 42,
+            process_id: 40,
+            thread_id: 42,
             uid: 1000,
             gid: 2000,
             supplementary_groups: [3000, 4000, 0, 0, 0, 0, 0, 0],
@@ -596,7 +599,7 @@ mod tests {
         };
         assert_eq!(
             dispatch(SYS_GETPID, [0; 6], context, &mut io),
-            SyscallOutcome::Return(42)
+            SyscallOutcome::Return(40)
         );
         assert_eq!(
             dispatch(SYS_GETTID, [0; 6], context, &mut io),
@@ -621,6 +624,7 @@ mod tests {
                 [CLOCK_MONOTONIC, 0x4000, 0, 0, 0, 0],
                 ProcessContext {
                     process_id: 1,
+                    thread_id: 1,
                     uid: 0,
                     gid: 0,
                     supplementary_groups: [0; 8],
@@ -640,6 +644,7 @@ mod tests {
                 [CLOCK_MONOTONIC, 0x4010, 0, 0, 0, 0],
                 ProcessContext {
                     process_id: 1,
+                    thread_id: 1,
                     uid: 0,
                     gid: 0,
                     supplementary_groups: [0; 8],
@@ -655,6 +660,7 @@ mod tests {
 
         let context = ProcessContext {
             process_id: 1,
+            thread_id: 1,
             uid: 0,
             gid: 0,
             supplementary_groups: [0; 8],
@@ -662,7 +668,12 @@ mod tests {
             program_break: 0,
         };
         assert_eq!(
-            dispatch(SYS_CLOCK_GETTIME, [CLOCK_REALTIME, 0x4000, 0, 0, 0, 0], context, &mut io),
+            dispatch(
+                SYS_CLOCK_GETTIME,
+                [CLOCK_REALTIME, 0x4000, 0, 0, 0, 0],
+                context,
+                &mut io
+            ),
             SyscallOutcome::Return((-(EINVAL as i64)) as u64)
         );
         assert_eq!(
@@ -687,6 +698,7 @@ mod tests {
                 [AT_FDCWD, 0x4000, 0, 0, 0, 0],
                 ProcessContext {
                     process_id: 1,
+                    thread_id: 1,
                     uid: 1000,
                     gid: 1000,
                     supplementary_groups: [0; 8],
@@ -705,6 +717,7 @@ mod tests {
         let mut io = fake_io();
         let context = ProcessContext {
             process_id: 9,
+            thread_id: 9,
             uid: 1201,
             gid: 3004,
             supplementary_groups: [0; 8],
@@ -729,6 +742,7 @@ mod tests {
         let mut io = fake_io();
         let context = ProcessContext {
             process_id: 9,
+            thread_id: 9,
             uid: 1000,
             gid: 1000,
             supplementary_groups: [0; 8],
@@ -755,6 +769,7 @@ mod tests {
         let mut io = fake_io();
         let context = ProcessContext {
             process_id: 9,
+            thread_id: 9,
             uid: 1201,
             gid: 3004,
             supplementary_groups: [3005, 4006, 0, 0, 0, 0, 0, 0],
@@ -784,6 +799,7 @@ mod tests {
             [1, 0x4000, 17, 0, 0, 0],
             ProcessContext {
                 process_id: 1,
+                thread_id: 1,
                 uid: 0,
                 gid: 0,
                 supplementary_groups: [0; 8],
@@ -805,6 +821,7 @@ mod tests {
                 [9, 0x4000, 1, 0, 0, 0],
                 ProcessContext {
                     process_id: 1,
+                    thread_id: 1,
                     uid: 0,
                     gid: 0,
                     supplementary_groups: [0; 8],
@@ -821,6 +838,7 @@ mod tests {
                 [1, 0x9000, 1, 0, 0, 0],
                 ProcessContext {
                     process_id: 1,
+                    thread_id: 1,
                     uid: 0,
                     gid: 0,
                     supplementary_groups: [0; 8],
@@ -839,6 +857,7 @@ mod tests {
                 [1, 0x4000, 17, 0, 0, 0],
                 ProcessContext {
                     process_id: 1,
+                    thread_id: 1,
                     uid: 0,
                     gid: 0,
                     supplementary_groups: [0; 8],
@@ -855,6 +874,7 @@ mod tests {
     fn linux_socket_bind_and_listen_dispatch_validate_sockaddr_in() {
         let context = ProcessContext {
             process_id: 3,
+            thread_id: 3,
             uid: 0,
             gid: 0,
             supplementary_groups: [0; 8],
@@ -901,6 +921,7 @@ mod tests {
             [1, 0x4000, 14, 0, 0, 0],
             ProcessContext {
                 process_id: 7,
+                thread_id: 7,
                 uid: 0,
                 gid: 0,
                 supplementary_groups: [0; 8],
@@ -919,6 +940,7 @@ mod tests {
                 [1, 0x9000, 4, 0, 0, 0],
                 ProcessContext {
                     process_id: 7,
+                    thread_id: 7,
                     uid: 0,
                     gid: 0,
                     supplementary_groups: [0; 8],
@@ -939,6 +961,7 @@ mod tests {
             [1, 0x4000 + io.user.len() as u64 - 1, 2, 0, 0, 0],
             ProcessContext {
                 process_id: 7,
+                thread_id: 7,
                 uid: 0,
                 gid: 0,
                 supplementary_groups: [0; 8],
@@ -959,6 +982,7 @@ mod tests {
                 [0; 6],
                 ProcessContext {
                     process_id: 1,
+                    thread_id: 1,
                     uid: 0,
                     gid: 0,
                     supplementary_groups: [0; 8],
