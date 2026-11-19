@@ -7,7 +7,7 @@
   <img alt="Rust" src="https://img.shields.io/badge/kernel-Rust-orange?style=for-the-badge&logo=rust">
   <img alt="x86-64" src="https://img.shields.io/badge/alvo-x86__64-4776b4?style=for-the-badge">
   <img alt="Status experimental" src="https://img.shields.io/badge/status-experimental-yellow?style=for-the-badge">
-  <a href="LICENSE"><img alt="Licença personalizada de redistribuição" src="https://img.shields.io/badge/licen%C3%A7a-customizada-8b5cf6?style=for-the-badge"></a>
+  <a href="LICENSE"><img alt="GNU GPL v3" src="https://img.shields.io/badge/licen%C3%A7a-GPL--3.0--only-blue?style=for-the-badge"></a>
 </p>
 
 <p align="center">
@@ -17,8 +17,7 @@
 
 > **Estado:** protótipo experimental. Os badges e cartões mostram metadados do
 > GitHub; não são evidência de que uma função do sistema esteja suportada.
-> A licença permite redistribuir o projeto completo e inalterado; não permite
-> reutilizar trechos do código nem publicar versões modificadas. Veja [LICENSE](LICENSE).
+> O CarlioOS é distribuído sob GNU GPL versão 3. Veja [LICENSE](LICENSE).
 
 Sistema operacional experimental de 64 bits, escrito em Rust e direcionado a
 x86_64. Kernel, processos e ABI têm como requisito operar em 64 bits. O desenvolvimento usa Arch Linux; o primeiro alvo executável é QEMU e,
@@ -170,7 +169,6 @@ feitos.
 
 ## Licença
 
-Licença personalizada de redistribuição; não é uma licença open source aprovada
-pela OSI. É permitido compartilhar cópias completas e inalteradas do projeto,
-preservando os avisos de direitos autorais. Reutilização de trechos e versões
-modificadas não são autorizadas. Consulte [LICENSE](LICENSE).
+GNU General Public License versão 3.0 (GPL-3.0-only). Consulte [LICENSE](LICENSE)
+para os termos completos. Componentes de terceiros mantêm suas licenças e avisos
+próprios.
