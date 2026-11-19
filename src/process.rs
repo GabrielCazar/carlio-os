@@ -5,6 +5,10 @@ use crate::sync::IrqSpinLock;
 use crate::vfs::Credentials;
 use core::sync::atomic::{AtomicU64, Ordering};
 
+#[cfg(all(target_os = "none", feature = "stack-watermark"))]
+pub static SYSCALL_STACK_HIGH_WATER: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
+
 /// Bytes occupied by the x86_64 return frame plus all saved general registers.
 pub const USER_INTERRUPT_FRAME_BYTES: u64 = 22 * 8;
 
@@ -143,11 +147,25 @@ impl<const N: usize, const BYTES: usize> KernelStackPool<N, BYTES> {
         let mut state = self.state.lock();
         let slot = state.used.iter().position(|used| !used)?;
         state.used[slot] = true;
+        state.stacks[slot].0.fill(0xa5);
         let base = stack_base::<N, BYTES>(&state, slot);
         Some(KernelStack {
             slot,
             top: base.checked_add(BYTES as u64)?,
         })
+    }
+
+    /// Mede o maior consumo observado na pilha cujo topo foi passado.
+    /// A pool preenche cada slot com 0xa5 ao alocá-lo; o primeiro byte alterado
+    /// a partir da base fornece um limite superior para o crescimento da pilha.
+    pub fn high_water_bytes_for_top(&self, top: u64) -> Option<usize> {
+        let state = self.state.lock();
+        let slot = state.used.iter().enumerate().find_map(|(slot, used)| {
+            (*used && stack_base::<N, BYTES>(&state, slot) + BYTES as u64 == top).then_some(slot)
+        })?;
+        let stack = &state.stacks[slot].0;
+        let first_modified = stack.iter().position(|byte| *byte != 0xa5).unwrap_or(BYTES);
+        Some(BYTES - first_modified)
     }
 
     /// Liberação apenas após o processo deixar de executar nesta pilha.
