@@ -1,5 +1,39 @@
 # Relatório — Fase 2: memória e execução
 
+### Bundle de recursos associado ao `Process` — 2026-11-19
+
+O scheduler passou a carregar um `ProcessResourceBundle` no descritor do
+processo antes de habilitar o despacho. O manifesto vincula slot de VM, raiz
+CR3 e stack user; associação duplicada, raiz/stack divergentes, slot inválido
+ou associação após dispatch são rejeitados. As syscalls selecionam o VM pelo
+bundle do processo, e o reaper usa o mesmo token para teardown, validando a
+raiz antes de destruir o espaço. Os objetos `ProcessVm` ainda residem no
+registro fixo do backend; gerenciamento dinâmico geral e contabilização por
+processo permanecem gates separados.
+
+Teste host cobre associação positiva e rejeições (slot inválido, duplicata e
+associação após dispatch). `cargo fmt --check`, 185 testes host, Clippy com
+`-D warnings` e build `x86_64-unknown-none` passaram ([fmt](logs/fase2-process-bundle-fmt-20261119.txt),
+[host](logs/fase2-process-bundle-host-20261119-022753.txt),
+[Clippy](logs/fase2-process-bundle-clippy-20261119.txt),
+[kernel](logs/fase2-process-bundle-kernel-20261119.txt)). QEMU TCG local
+BIOS/UEFI confirmou probes ABI, CR3, teardown e 3 ACKs do reaper ([BIOS](logs/fase2-process-bundle-qemu-bios-20261119-022753.log),
+[UEFI](logs/fase2-process-bundle-qemu-uefi-20261119-022753.log)). NAS/KVM BIOS
+com 5 GiB passou 180 testes de biblioteca + binários e as probes; UEFI iniciou,
+mas manteve falha já observada na prova de duas CR3 (`trocas de timer=0`) e no
+probe de page tables (`fault-result=0x106`). O resumo e ambos os logs foram
+capturados; execução remota ficou confinada a
+`/tmp/carlioos-test-20261119-022823` e foi removida pelo cleanup ([NAS](logs/fase2-process-bundle-nas-20261119-022823.txt),
+[BIOS](logs/fase2-process-bundle-nas-20261119-022823-qemu-kvm-bios.log),
+[UEFI](logs/fase2-process-bundle-nas-20261119-022823-qemu-kvm-uefi.log)).
+
+**A fase continua aberta.** O bundle agora tem manifesto no `Process`, mas o
+registro do backend continua fixo; faltam allocator/memória por processo,
+stress sustentado de scheduler/VM/allocator, gate UEFI NAS e fechamento segundo
+§§3–4 do `CORRECT.md`. Não habilitar swap nem concluir a fase. Próximo gate:
+stress concorrente repetido e probes adversos de ownership/memória; anexar cada
+log em `reports/logs/`.
+
 ### Correção — espera por sobreposição CPL3 e ACK global do reaper — 2026-11-19
 
 Sintoma e causa: a espera da prova SMP usava dois loops de até 100 milhões de

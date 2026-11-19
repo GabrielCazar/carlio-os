@@ -89,9 +89,16 @@ BSP e APs antes do reaper. A revalidação BIOS/UEFI local confirmou que
 `read(0)` recebe e copia o byte serial; as probes BIOS/UEFI locais e NAS/KVM
 agora confirmam sobreposição CPL3 em dois APs e ACK global do reaper em três
 APs, após validar CR3 kernel e stack de idle. Isso é uma prova pontual, não
-stress sustentado de scheduler/VM/allocator. O bundle completo de recursos ainda não
-pertence ao `Process`; não é runtime persistente nem base dimensionada
-dinamicamente.
+stress sustentado de scheduler/VM/allocator. A posse direta dos objetos VM e
+dimensionamento dinâmico ainda não estão implementados.
+
+O descritor `Process` agora carrega um manifesto `ProcessResourceBundle` com
+slot do VM gerenciado pelo backend, raiz CR3 e stack user. Syscalls e reaper
+consultam esse manifesto e validam a raiz antes de operar. Os objetos `ProcessVm`
+continuam em registro fixo do backend, portanto ownership dinâmico e
+contabilização geral por processo ainda não estão demonstrados. QEMU local
+BIOS/UEFI e NAS/KVM BIOS passaram; NAS UEFI segue pendente por falha no smoke de
+preempção/page tables. Evidências no [relatório da fase 2](../reports/fase-2-memoria-execucao.md).
 
 Para cargas grandes de VM e arquivos, o desenho alvo precisa provisionar
 processos e memória conforme recursos disponíveis, aplicar limites e pressão de

@@ -1564,6 +1564,28 @@ pub(crate) fn begin_process_switch_probe() -> Option<*mut idt::UserInterruptFram
                 return None;
             }
         };
+    let bundles = [
+        (first, root_a, user_stack_a, 0u8),
+        (second, root_b, user_stack_b, 1u8),
+        (third, root_c, user_stack_c, 2u8),
+    ];
+    for (id, page_table, user_stack, slot) in bundles {
+        if PROCESS_SCHEDULER
+            .attach_resource_bundle(
+                id,
+                carlio_os::process::ProcessResourceBundle {
+                    slot,
+                    page_table,
+                    user_stack,
+                },
+            )
+            .is_err()
+        {
+            let _ = reap_process_probe();
+            PROCESS_PROBE_STARTED.store(false, Ordering::Release);
+            return None;
+        }
+    }
     PROCESS_PROBE_IDS[0].store(first, Ordering::Release);
     PROCESS_PROBE_IDS[1].store(second, Ordering::Release);
     PROCESS_PROBE_IDS[2].store(third, Ordering::Release);
@@ -2193,18 +2215,25 @@ impl KernelLinuxSyscallIo {
         &mut self,
         operation: impl FnOnce(&mut RuntimeProcessVm) -> Result<R, u16>,
     ) -> Result<R, u16> {
-        let slot = if self.process.id == PROCESS_PROBE_IDS[0].load(Ordering::Acquire) {
-            &PROCESS_PROBE_SPACE_A
-        } else if self.process.id == PROCESS_PROBE_IDS[1].load(Ordering::Acquire) {
-            &PROCESS_PROBE_SPACE_B
-        } else if self.process.id == PROCESS_PROBE_IDS[2].load(Ordering::Acquire) {
-            &PROCESS_PROBE_SPACE_C
-        } else {
-            return Err(carlio_os::linux_abi::ENOMEM);
-        };
+        let bundle = self
+            .process
+            .resources
+            .filter(|bundle| bundle.page_table == self.process.page_table)
+            .ok_or(carlio_os::linux_abi::ENOMEM)?;
+        let slot = process_probe_vm_slot(bundle.slot).ok_or(carlio_os::linux_abi::ENOMEM)?;
         let mut guard = slot.lock();
         let vm = guard.as_mut().ok_or(carlio_os::linux_abi::ENOMEM)?;
         operation(vm)
+    }
+}
+
+#[cfg(target_os = "none")]
+fn process_probe_vm_slot(slot: u8) -> Option<&'static IrqSpinLock<Option<RuntimeProcessVm>>> {
+    match slot {
+        0 => Some(&PROCESS_PROBE_SPACE_A),
+        1 => Some(&PROCESS_PROBE_SPACE_B),
+        2 => Some(&PROCESS_PROBE_SPACE_C),
+        _ => None,
     }
 }
 
@@ -2712,15 +2741,11 @@ fn reap_process_probe() -> bool {
             continue;
         }
         let result = PROCESS_SCHEDULER.reap_with(id, &PROCESS_KERNEL_STACKS, |process| {
-            let storage = if process.id == PROCESS_PROBE_IDS[0].load(Ordering::Acquire) {
-                &PROCESS_PROBE_SPACE_A
-            } else if process.id == PROCESS_PROBE_IDS[1].load(Ordering::Acquire) {
-                &PROCESS_PROBE_SPACE_B
-            } else if process.id == PROCESS_PROBE_IDS[2].load(Ordering::Acquire) {
-                &PROCESS_PROBE_SPACE_C
-            } else {
+            let bundle = process.resources.ok_or(())?;
+            if bundle.page_table != process.page_table {
                 return Err(());
-            };
+            }
+            let storage = process_probe_vm_slot(bundle.slot).ok_or(())?;
             if destroy_process_probe_space(storage) {
                 Ok(())
             } else {

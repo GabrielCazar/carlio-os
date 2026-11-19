@@ -56,7 +56,7 @@ positivos, negativos e de falha; modelos host e detecção PCI não bastam.
 
 | Subsistema | Implementado e validado | Gate que continua aberto |
 | --- | --- | --- |
-| Processos / scheduler | ELF64 de prova, CR3/RSP0 isolados, preempção, saída/fault/reaper; `destroy(id)` remove Ready/Blocked; APIs internas `clone_thread`/`join_current`; sobreposição CPL3 pontual em dois APs e reaper com 3 ACKs globais comprovados em BIOS/UEFI local e NAS/KVM | Stress sustentado concorrente de scheduler, VM e allocator ainda sem prova; bundle de recursos das fixtures continua fora de `Process`. Também faltam tabela/pool dimensionados conforme recursos, integração `clone`, pilha user própria, futex/POSIX join e estabilidade ABI/VM ([relatório](../reports/fase-2-memoria-execucao.md), [BIOS local](../reports/logs/fase2-process-probes-final-qemu-bios-20261119-020243.log), [UEFI local](../reports/logs/fase2-process-probes-final-qemu-uefi-20261119-020243.log), [BIOS NAS](../reports/logs/fase2-process-probes-final-nas-20261119-020333-qemu-kvm-bios.log), [UEFI NAS](../reports/logs/fase2-process-probes-final-nas-20261119-020333-qemu-kvm-uefi.log)) |
+| Processos / scheduler | ELF64 de prova, CR3/RSP0 isolados, preempção, saída/fault/reaper; `destroy(id)` remove Ready/Blocked; APIs internas `clone_thread`/`join_current`; manifesto `ProcessResourceBundle` associado ao `Process`; sobreposição CPL3 pontual em dois APs e reaper com 3 ACKs globais comprovados em BIOS/UEFI local e NAS/KVM BIOS | Ownership direto dos objetos VM ainda fica no registro fixo do backend; stress sustentado concorrente de scheduler, VM e allocator continua sem prova. Também faltam tabela/pool dimensionados conforme recursos, integração `clone`, pilha user própria, futex/POSIX join e estabilidade ABI/VM ([relatório](../reports/fase-2-memoria-execucao.md), [BIOS bundle local](../reports/logs/fase2-process-bundle-qemu-bios-20261119-022753.log), [UEFI bundle local](../reports/logs/fase2-process-bundle-qemu-uefi-20261119-022753.log), [BIOS NAS bundle](../reports/logs/fase2-process-bundle-nas-20261119-022823-qemu-kvm-bios.log), [UEFI NAS bundle](../reports/logs/fase2-process-bundle-nas-20261119-022823-qemu-kvm-uefi.log)) |
 | Módulos do kernel (LKMs) | Parser ET_REL host com relocations x86_64, extração de exports da `.symtab`, registro persistente host, lookup kernel/módulos e contabilidade host de dependências; `SmpPageTableManager::protect` com shootdown testado em host ([log fase 2](../reports/fase-2-memoria-execucao.md)) | Ciclo runtime ainda não ligado; backend x86_64 para alocação/mapeamento/invocação, bloqueio de novas chamadas, rollback transacional e quiescência SMP; gates QEMU/NAS que carreguem objetos ET_REL positivos, negativos e de falha |
 | Memória | Bitmap até 32 GiB, VM x86-64, folhas user owned, heap expansível e shootdown xAPIC com ACK | Pressão/concorrência geral de VM sob carga; swap permanece desligado |
 | Drivers / E/S | PCI read-only, framebuffer Limine, adaptador BlockDevice AHCI e Ethernet Intel QEMU; QEMU validou Hermione em disco descartável | Validação física de AHCI e demais dispositivos (RTL8111/I219, EHCI/xHCI, iGPU), timeout/remoção em hardware |
@@ -159,6 +159,13 @@ de arquivos exigem cache e I/O concorrente com recuperação; hospedagem de VMs
 exige backend VT-x/AMD-V e isolamento de dispositivos. Nenhum desses serviços
 de servidor está entregue hoje. Consulte o [relatório da fase
 2](../reports/fase-2-memoria-execucao.md).
+
+Revalidação do bundle (2026-11-19): host e QEMU BIOS/UEFI local passaram; NAS/KVM
+BIOS passou com 5 GiB. NAS UEFI repetiu falha na prova de preempção e no probe
+de page tables. O `Process` agora guarda manifesto que encaminha syscall e
+reaper ao registro de VM, ainda fixo no backend. Stress sustentado e ownership
+direto dos objetos continuam abertos; evidências no relatório da
+[Fase 2](../reports/fase-2-memoria-execucao.md).
 
 **Meta de capacidade do kernel:** suportar até 32 GiB de RAM física instalada,
 incluindo alocação e mapeamento de frames acima de 4 GiB. O bitmap e os contadores
