@@ -29,6 +29,10 @@ pub trait ReadOnlyMountBackend {
     fn filesystem_type(&self) -> FilesystemType;
     fn read_file(&mut self, path: &str, output: &mut [u8]) -> Result<usize, VfsError>;
 
+    fn metadata(&mut self, _path: &str) -> Result<MountMetadata, VfsError> {
+        Err(VfsError::NotFound)
+    }
+
     /// Reads a byte range without buffering the entire file in the kernel.
     /// Backends should override this for filesystems used by process I/O.
     fn read_file_range(
@@ -43,6 +47,16 @@ pub trait ReadOnlyMountBackend {
             Err(VfsError::NotFound)
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MountMetadata {
+    pub inode: u64,
+    pub kind: NodeKind,
+    pub uid: u32,
+    pub gid: u32,
+    pub mode: u16,
+    pub size: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -614,6 +628,50 @@ impl<const N: usize> Vfs<N> {
             &path[mount.path.len()..]
         };
         backend.read_file_range(relative, offset, output)
+    }
+
+    /// Valida execução em arquivo fornecido por um mount. Permissões vêm do
+    /// inode do backend; a opção `no_exec` do mount sempre prevalece.
+    pub fn authorize_mounted_execution<B: ReadOnlyMountBackend>(
+        &self,
+        path: &str,
+        context: AccessContext<'_>,
+        backend: &mut B,
+    ) -> Result<(), VfsError> {
+        let mount = self.mount_for(path).ok_or(VfsError::NotMounted)?;
+        if mount.filesystem != backend.filesystem_type() {
+            return Err(VfsError::InvalidMountPath);
+        }
+        if mount.options.no_exec {
+            return Err(VfsError::NotExecutable);
+        }
+        let mount_node = self.resolve(mount.path, context)?;
+        self.check_node_access(mount_node, context, Access::READ_EXECUTE)?;
+        let relative = if path == mount.path {
+            "/"
+        } else if mount.path == "/" {
+            path
+        } else {
+            &path[mount.path.len()..]
+        };
+        let metadata = backend.metadata(relative)?;
+        let credentials = context.credentials;
+        let executable = if credentials.uid == 0 {
+            metadata.mode & 0o111 != 0
+        } else {
+            let shift = if credentials.uid == metadata.uid {
+                6
+            } else if context.in_group(metadata.gid) {
+                3
+            } else {
+                0
+            };
+            (metadata.mode >> shift) & 0o5 == 0o5
+        };
+        if metadata.kind != NodeKind::File || !executable {
+            return Err(VfsError::NotExecutable);
+        }
+        Ok(())
     }
 
     pub fn create_dir(

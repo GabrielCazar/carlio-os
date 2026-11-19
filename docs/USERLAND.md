@@ -63,11 +63,15 @@ O preparador ELF também aceita `PT_INTERP`: mapeia programa e interpretador
 ET_DYN no mesmo address space, entrega o controle ao entry do interpretador e
 monta `AT_PHDR`, `AT_PHENT`, `AT_PHNUM`, `AT_PAGESZ`, `AT_BASE` e `AT_ENTRY`.
 O interpretador, e não o kernel, fica responsável por dependências e
-relocations dinâmicas. Esse caminho ainda não é chamado por um syscall
-`execve`: não existe substituição transacional do processo em execução. O VFS
-do kernel limita arquivos inline a 16 KiB e ainda não oferece acesso geral a
-arquivos grandes/montados e symlinks; portanto não carrega o `ld-linux.so` real
-da userland Arch neste estado. O teste host usa executáveis sintéticos pequenos.
+relocations dinâmicas. O syscall Linux `execve` (59) agora prepara uma nova
+imagem e stack em um address space separado, atualiza o processo preservando
+PID/credenciais e só troca o CR3 de retorno após o commit. A VM antiga é
+liberada depois da troca; uma falha de teardown é registrada e pode deixar
+páginas antigas retidas. O caminho é limitado a 8 argumentos e 8 variáveis de
+ambiente, strings UTF-8 de até 256 bytes e processos sem threads irmãs. A
+leitura de ELF montado usa buffers fixos; persistência no dispositivo e
+compatibilidade geral com glibc/userland Arch continuam ausentes. Não há gate
+QEMU/NAS desta integração.
 
 ## Mounts e interoperabilidade
 

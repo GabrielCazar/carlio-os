@@ -286,6 +286,8 @@ pub struct ExecImage {
     pub program_headers: u64,
     pub program_header_entry_size: u64,
     pub program_header_count: u64,
+    /// Page-aligned enclosing ranges of the main image and optional loader.
+    pub image_ranges: [(u64, u64); 2],
 }
 
 impl ExecImage {
@@ -339,15 +341,32 @@ pub fn build_initial_user_stack_with_auxv<T: ElfLoadTarget>(
     env: &[&str],
     auxv: &[AuxEntry],
 ) -> Result<UserStack, ElfError> {
-    const STACK_BYTES: u64 = 4096;
+    build_initial_user_stack_with_auxv_sized(target, stack_top, 4096, argv, env, auxv)
+}
+
+/// Variante com tamanho explícito para stacks com mais de uma página.
+pub fn build_initial_user_stack_with_auxv_sized<T: ElfLoadTarget>(
+    target: &mut T,
+    stack_top: u64,
+    stack_bytes: u64,
+    argv: &[&str],
+    env: &[&str],
+    auxv: &[AuxEntry],
+) -> Result<UserStack, ElfError> {
+    const STACK_BYTES_MIN: u64 = 4096;
     const VECTOR_LIMIT: usize = 16;
     if argv.len() > VECTOR_LIMIT || env.len() > VECTOR_LIMIT {
         return Err(ElfError::InvalidArguments);
     }
-    if !(STACK_BYTES..=USER_TOP).contains(&stack_top) || stack_top & 0xf != 0 {
+    if !(STACK_BYTES_MIN..=USER_TOP).contains(&stack_top)
+        || stack_top & 0xf != 0
+        || stack_bytes < STACK_BYTES_MIN
+        || stack_bytes & 0xfff != 0
+        || stack_bytes > stack_top
+    {
         return Err(ElfError::InvalidArguments);
     }
-    let lower_bound = stack_top - STACK_BYTES;
+    let lower_bound = stack_top - stack_bytes;
     let mut sp = stack_top;
     let mut arg_ptrs = [0u64; VECTOR_LIMIT];
     let mut env_ptrs = [0u64; VECTOR_LIMIT];
@@ -494,10 +513,132 @@ pub fn load_interpreted_executable_from_vfs<const S: usize, const N: usize, T: E
     interpreter_scratch: &mut [u8],
     target: &mut T,
 ) -> Result<ExecImage, VfsElfError> {
-    vfs.authorize_execution_as(path, access)
-        .map_err(VfsElfError::Vfs)?;
-    let program_len = vfs
-        .read_file_as(path, access, program_scratch)
+    let mut source = TreeExecutableSource { vfs };
+    load_interpreted_executable_from_source::<S, _, _>(
+        &mut source,
+        path,
+        access,
+        program_scratch,
+        interpreter_scratch,
+        target,
+    )
+}
+
+/// Variante que carrega arquivos do namespace montado, com arquivos overlay
+/// em RAM tendo precedência sobre o filesystem de base.
+pub fn load_interpreted_executable_from_mounted<
+    const S: usize,
+    const N: usize,
+    T: ElfLoadTarget,
+    B: crate::vfs::ReadOnlyMountBackend,
+>(
+    vfs: &crate::vfs::Vfs<N>,
+    backend: &mut B,
+    path: &str,
+    access: crate::vfs::AccessContext<'_>,
+    program_scratch: &mut [u8],
+    interpreter_scratch: &mut [u8],
+    target: &mut T,
+) -> Result<ExecImage, VfsElfError> {
+    let mut source = MountedExecutableSource { vfs, backend };
+    load_interpreted_executable_from_source::<S, _, _>(
+        &mut source,
+        path,
+        access,
+        program_scratch,
+        interpreter_scratch,
+        target,
+    )
+}
+
+trait ExecutableSource {
+    fn authorize(
+        &mut self,
+        path: &str,
+        access: crate::vfs::AccessContext<'_>,
+    ) -> Result<(), crate::vfs::VfsError>;
+    fn read(
+        &mut self,
+        path: &str,
+        access: crate::vfs::AccessContext<'_>,
+        output: &mut [u8],
+    ) -> Result<usize, crate::vfs::VfsError>;
+}
+
+struct TreeExecutableSource<'a, const N: usize> {
+    vfs: &'a crate::vfs::Vfs<N>,
+}
+impl<const N: usize> ExecutableSource for TreeExecutableSource<'_, N> {
+    fn authorize(
+        &mut self,
+        path: &str,
+        access: crate::vfs::AccessContext<'_>,
+    ) -> Result<(), crate::vfs::VfsError> {
+        self.vfs.authorize_execution_as(path, access)
+    }
+    fn read(
+        &mut self,
+        path: &str,
+        access: crate::vfs::AccessContext<'_>,
+        output: &mut [u8],
+    ) -> Result<usize, crate::vfs::VfsError> {
+        self.vfs.read_file_as(path, access, output)
+    }
+}
+
+struct MountedExecutableSource<'a, const N: usize, B> {
+    vfs: &'a crate::vfs::Vfs<N>,
+    backend: &'a mut B,
+}
+impl<const N: usize, B: crate::vfs::ReadOnlyMountBackend> ExecutableSource
+    for MountedExecutableSource<'_, N, B>
+{
+    fn authorize(
+        &mut self,
+        path: &str,
+        access: crate::vfs::AccessContext<'_>,
+    ) -> Result<(), crate::vfs::VfsError> {
+        match self.vfs.authorize_execution_as(path, access) {
+            Ok(()) => Ok(()),
+            Err(crate::vfs::VfsError::NotFound) => {
+                self.vfs
+                    .authorize_mounted_execution(path, access, self.backend)
+            }
+            Err(error) => Err(error),
+        }
+    }
+    fn read(
+        &mut self,
+        path: &str,
+        access: crate::vfs::AccessContext<'_>,
+        output: &mut [u8],
+    ) -> Result<usize, crate::vfs::VfsError> {
+        match self.vfs.read_file_as(path, access, output) {
+            Ok(length) => Ok(length),
+            Err(crate::vfs::VfsError::NotFound) => {
+                self.vfs
+                    .read_mounted_file(path, access, self.backend, output)
+            }
+            Err(error) => Err(error),
+        }
+    }
+}
+
+fn load_interpreted_executable_from_source<
+    const S: usize,
+    T: ElfLoadTarget,
+    F: ExecutableSource,
+>(
+    source: &mut F,
+    path: &str,
+    access: crate::vfs::AccessContext<'_>,
+    program_scratch: &mut [u8],
+    interpreter_scratch: &mut [u8],
+    target: &mut T,
+) -> Result<ExecImage, VfsElfError> {
+    source.authorize(path, access).map_err(VfsElfError::Vfs)?;
+    let program_len = source
+        .read(path, access, program_scratch)
         .map_err(VfsElfError::Vfs)?;
     let program = &program_scratch[..program_len];
     let metadata = ElfDynamicMetadata::<S>::parse(program).map_err(VfsElfError::Elf)?;
@@ -513,10 +654,11 @@ pub fn load_interpreted_executable_from_vfs<const S: usize, const N: usize, T: E
         ElfImage::<S>::parse_with_load_bias(program, main_bias).map_err(VfsElfError::Elf)?
     };
     if let Some(interpreter_path) = interpreter_path {
-        vfs.authorize_execution_as(interpreter_path, access)
+        source
+            .authorize(interpreter_path, access)
             .map_err(VfsElfError::Vfs)?;
-        let interpreter_len = vfs
-            .read_file_as(interpreter_path, access, interpreter_scratch)
+        let interpreter_len = source
+            .read(interpreter_path, access, interpreter_scratch)
             .map_err(VfsElfError::Vfs)?;
         let interpreter = &interpreter_scratch[..interpreter_len];
         let interpreter_image =
@@ -538,6 +680,10 @@ pub fn load_interpreted_executable_from_vfs<const S: usize, const N: usize, T: E
             program_headers: program_image.program_headers,
             program_header_entry_size: PROGRAM_HEADER_SIZE as u64,
             program_header_count: program_image.program_header_count,
+            image_ranges: [
+                program_image.mapped_range().map_err(VfsElfError::Elf)?,
+                interpreter_image.mapped_range().map_err(VfsElfError::Elf)?,
+            ],
         })
     } else {
         program_image
@@ -550,6 +696,10 @@ pub fn load_interpreted_executable_from_vfs<const S: usize, const N: usize, T: E
             program_headers: program_image.program_headers,
             program_header_entry_size: PROGRAM_HEADER_SIZE as u64,
             program_header_count: program_image.program_header_count,
+            image_ranges: [
+                program_image.mapped_range().map_err(VfsElfError::Elf)?,
+                (0, 0),
+            ],
         })
     }
 }
@@ -822,6 +972,28 @@ impl<const N: usize> ElfImage<N> {
 
     pub fn segments(&self) -> &[LoadSegment] {
         &self.segments[..self.segment_count]
+    }
+
+    fn mapped_range(&self) -> Result<(u64, u64), ElfError> {
+        let mut start = u64::MAX;
+        let mut end = 0u64;
+        for segment in self.segments() {
+            start = start.min(segment.virtual_address & !0xfff);
+            let segment_end = segment
+                .virtual_address
+                .checked_add(segment.memory_size)
+                .ok_or(ElfError::InvalidSegment)?;
+            end = end.max(
+                segment_end
+                    .checked_add(0xfff)
+                    .ok_or(ElfError::InvalidSegment)?
+                    & !0xfff,
+            );
+        }
+        if start == u64::MAX || end <= start {
+            return Err(ElfError::InvalidSegment);
+        }
+        Ok((start, end - start))
     }
 
     /// Mapeia/copia segmentos PT_LOAD, zera BSS (as páginas começam zeradas)
