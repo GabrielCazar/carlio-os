@@ -3321,6 +3321,18 @@ pub(crate) fn is_secondary_cpu(cpu: usize) -> bool {
     })
 }
 
+/// Assembly hook sampled after syscall dispatch, before restoring the user frame.
+#[cfg(target_os = "none")]
+#[no_mangle]
+extern "C" fn carlio_measure_syscall_stack(kernel_stack_top: u64) {
+    #[cfg(feature = "stack-watermark")]
+    if let Some(bytes) = PROCESS_KERNEL_STACKS.high_water_bytes_for_top(kernel_stack_top) {
+        carlio_os::process::SYSCALL_STACK_HIGH_WATER.fetch_max(bytes, Ordering::Relaxed);
+    }
+    #[cfg(not(feature = "stack-watermark"))]
+    let _ = kernel_stack_top;
+}
+
 #[cfg(target_os = "none")]
 pub(crate) fn process_probe_result() -> u64 {
     let ap_mask = secondary_cpu_mask();
@@ -3398,6 +3410,12 @@ pub(crate) fn process_probe_result() -> u64 {
     write(", faults isolados=");
     write_u64(faults as u64);
     write(".\r\n");
+    #[cfg(feature = "stack-watermark")]
+    {
+        write("Pilha kernel observada após syscalls (limite superior, 64 KiB): ");
+        write_usize(carlio_os::process::SYSCALL_STACK_HIGH_WATER.load(Ordering::Acquire));
+        write(" bytes; inclui a instrumentação de medição.\r\n");
+    }
     if ap_probe_passed {
         write("SMP CPL3: mmap/munmap concluídos nos dois APs; sobreposição simultânea e retorno a idle confirmados.\r\n");
         write("SMP CPL3 ciclos: AP1=");

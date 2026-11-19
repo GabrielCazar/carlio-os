@@ -12,6 +12,7 @@ resolver = "2"
 [features]
 crash-test = []
 storage-test = []
+stack-watermark = []
 graphics = ["dep:embedded-graphics"]
 
 [lib]

@@ -74,42 +74,9 @@ scheduler_idle_resume_stub:
 
     .global tlb_shootdown_stub
 tlb_shootdown_stub:
-        cld
-        pushq %rax
-        pushq %rcx
-        pushq %rdx
-        pushq %rbx
-        pushq %rbp
-        pushq %rsi
-        pushq %rdi
-        pushq %r8
-        pushq %r9
-        pushq %r10
-        pushq %r11
-        pushq %r12
-        pushq %r13
-        pushq %r14
-        pushq %r15
-        movq %rsp, %r12
-        andq $-16, %rsp
-        call handle_tlb_shootdown_ipi
-        movq %r12, %rsp
-        popq %r15
-        popq %r14
-        popq %r13
-        popq %r12
-        popq %r11
-        popq %r10
-        popq %r9
-        popq %r8
-        popq %rdi
-        popq %rsi
-        popq %rbp
-        popq %rbx
-        popq %rdx
-        popq %rcx
-        popq %rax
-        iretq
+        pushq $0
+        pushq $241
+        jmp exception_common
 
     .global carlio_ring3_test_int80_stub
 carlio_ring3_test_int80_stub:
@@ -134,8 +101,14 @@ carlio_syscall_entry:
         movq %gs:8, %rax
         pushq %rax
         movq %rsp, %rdi
+        # The user RFLAGS snapshot is already saved. Allow local IPIs while
+        # kernel syscalls wait on remote TLB shootdowns or blocking I/O.
+        sti
         call carlio_syscall_dispatch
+        cli
         movq %rax, 72(%rsp)
+        movq %gs:0, %rdi
+        call carlio_measure_syscall_stack
         movq 24(%rsp), %r9
         movq 32(%rsp), %r8
         movq 40(%rsp), %r10
@@ -210,10 +183,30 @@ exception_common:
         pushq %rcx
         pushq %rax
         movq %rsp, %rdi
+        # External interrupts run their dispatcher on a per-CPU IRQ stack.
+        # The saved register frame stays on the interrupted stack so a
+        # scheduler frame switch can still return through the same epilogue.
+        cmpq $32, 120(%rsp)
+        jb 2f
+        movq %rsp, %r12
+        andq $-16, %rsp
+        call carlio_irq_stack_enter
+        testq %rax, %rax
+        jz 1b
+        movq %rax, %rsp
+        andq $-16, %rsp
+        movq %r12, %rdi
+        call exception_dispatch
+        movq %rax, %r12
+        call carlio_irq_stack_leave
+        movq %r12, %rsp
+        jmp 3f
+    2:
         movq %rsp, %r12
         andq $-16, %rsp
         call exception_dispatch
         movq %rax, %rsp
+    3:
         popq %rax
         popq %rcx
         popq %rdx
@@ -420,6 +413,18 @@ static mut CPU_ENTRY_STACKS: [CpuEntryStack; MAX_CPU_TABLES] =
 struct CpuDoubleFaultStack([u8; 16 * 1024]);
 static mut CPU_DOUBLE_FAULT_STACKS: [CpuDoubleFaultStack; MAX_CPU_TABLES] =
     [const { CpuDoubleFaultStack([0; 16 * 1024]) }; MAX_CPU_TABLES];
+const IRQ_STACK_SIZE: usize = 64 * 1024;
+const IRQ_NESTING_SLOT_SIZE: usize = 16 * 1024;
+const IRQ_NESTING_SLOTS: usize = IRQ_STACK_SIZE / IRQ_NESTING_SLOT_SIZE;
+#[repr(align(16))]
+struct CpuIrqStack([u8; IRQ_STACK_SIZE]);
+static mut CPU_IRQ_STACKS: [CpuIrqStack; MAX_CPU_TABLES] =
+    [const { CpuIrqStack([0; IRQ_STACK_SIZE]) }; MAX_CPU_TABLES];
+static CPU_IRQ_NESTING: [AtomicUsize; MAX_CPU_TABLES] =
+    [const { AtomicUsize::new(0) }; MAX_CPU_TABLES];
+static CPU_IRQ_MAX_NESTING: [AtomicUsize; MAX_CPU_TABLES] =
+    [const { AtomicUsize::new(0) }; MAX_CPU_TABLES];
+static IRQ_STACK_NESTING_PROBE: AtomicBool = AtomicBool::new(false);
 
 #[no_mangle]
 static mut CARLIO_RING3_SAVED_RSP: u64 = 0;
@@ -429,6 +434,72 @@ pub const KERNEL_DATA_SELECTOR: u16 = 0x10;
 pub const USER_DATA_SELECTOR: u16 = 0x1b;
 pub const USER_CODE_SELECTOR: u16 = 0x23;
 pub const TSS_SELECTOR: u16 = 0x28;
+
+/// Reserva uma fatia de 16 KiB da pilha IRQ desta CPU. IF fica desabilitado
+/// nos gates de interrupção; as fatias também mantêm faults síncronos aninhados
+/// dentro de um handler IRQ longe da fatia que contém o frame externo.
+#[no_mangle]
+extern "C" fn carlio_irq_stack_enter() -> u64 {
+    let cpu = crate::lapic::local_id()
+        .and_then(crate::cpu_index_for_lapic)
+        .unwrap_or(0);
+    if cpu >= MAX_CPU_TABLES {
+        return 0;
+    }
+    let depth = CPU_IRQ_NESTING[cpu].fetch_add(1, Ordering::AcqRel);
+    if depth >= IRQ_NESTING_SLOTS {
+        CPU_IRQ_NESTING[cpu].fetch_sub(1, Ordering::Release);
+        return 0;
+    }
+    CPU_IRQ_MAX_NESTING[cpu].fetch_max(depth + 1, Ordering::Relaxed);
+    let base = unsafe { core::ptr::addr_of_mut!(CPU_IRQ_STACKS[cpu].0).cast::<u8>() as u64 };
+    base + IRQ_STACK_SIZE as u64 - depth as u64 * IRQ_NESTING_SLOT_SIZE as u64
+}
+
+#[no_mangle]
+extern "C" fn carlio_irq_stack_leave() {
+    let cpu = crate::lapic::local_id()
+        .and_then(crate::cpu_index_for_lapic)
+        .unwrap_or(0);
+    if cpu < MAX_CPU_TABLES {
+        let previous = CPU_IRQ_NESTING[cpu].fetch_sub(1, Ordering::Release);
+        if previous == 0 {
+            CPU_IRQ_NESTING[cpu].store(0, Ordering::Release);
+        }
+    }
+}
+
+pub fn irq_stack_max_nesting(cpu: usize) -> Option<usize> {
+    CPU_IRQ_MAX_NESTING
+        .get(cpu)
+        .map(|depth| depth.load(Ordering::Acquire))
+}
+
+/// Prova as duas fatias internas usadas para handlers síncronos aninhados.
+/// A chamada ocorre com IRQs locais desabilitadas durante a instalação da IDT.
+pub fn irq_stack_nesting_selftest() -> bool {
+    let outer = carlio_irq_stack_enter();
+    if outer == 0 {
+        return false;
+    }
+    let inner = carlio_irq_stack_enter();
+    let valid = inner != 0 && outer.saturating_sub(inner) == IRQ_NESTING_SLOT_SIZE as u64;
+    if inner != 0 {
+        carlio_irq_stack_leave();
+    }
+    carlio_irq_stack_leave();
+    if !valid {
+        return false;
+    }
+
+    // Exercise the real assembly switch and a nested software-delivered IRQ.
+    // Hardware IRQ gates keep IF clear, so this is also the supported nesting
+    // model: synchronous/nested delivery gets another 16 KiB slice.
+    CPU_IRQ_MAX_NESTING[0].store(0, Ordering::Release);
+    IRQ_STACK_NESTING_PROBE.store(true, Ordering::Release);
+    unsafe { asm!("int 32") };
+    irq_stack_max_nesting(0).is_some_and(|depth| depth >= 2)
+}
 
 static TICKS: AtomicU64 = AtomicU64::new(0);
 static RING3_PROBE_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -498,6 +569,11 @@ pub unsafe fn install() {
     };
     unsafe {
         asm!("lidt [{}]", in(reg) &pointer, options(readonly, nostack, preserves_flags));
+    }
+    if irq_stack_nesting_selftest() {
+        super::write("IRQ stack: pilha por CPU e duas fatias aninhadas passaram.\r\n");
+    } else {
+        super::write("IRQ stack: falha no teste de fatias aninhadas.\r\n");
     }
 }
 
@@ -781,6 +857,10 @@ pub unsafe fn initialize_user_frame(
 #[no_mangle]
 extern "C" fn exception_dispatch(frame: *mut ExceptionFrame) -> *mut ExceptionFrame {
     let frame = unsafe { &mut *frame };
+    if frame.vector == crate::lapic::TLB_IPI_VECTOR as u64 {
+        crate::lapic::handle_tlb_shootdown_ipi();
+        return frame;
+    }
     let cpu = crate::lapic::local_id()
         .and_then(crate::cpu_index_for_lapic)
         .unwrap_or(0);
@@ -928,6 +1008,9 @@ extern "C" fn exception_dispatch(frame: *mut ExceptionFrame) -> *mut ExceptionFr
             unsafe { super::out(0x20, 0x20) };
         }
         if !scheduler_tick {
+            if IRQ_STACK_NESTING_PROBE.swap(false, Ordering::AcqRel) {
+                unsafe { asm!("int 32") };
+            }
             let ticks = TICKS.fetch_add(1, Ordering::Relaxed) + 1;
             let heartbeat = HEARTBEAT.load(Ordering::Relaxed);
             if heartbeat != LAST_HEARTBEAT.load(Ordering::Relaxed) {
