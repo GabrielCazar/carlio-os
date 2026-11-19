@@ -1,0 +1,154 @@
+   Compiling carlio-os v0.1.0 (/home/gabriel/Work/carlio-os)
+error[E0599]: no method named `protect_user` found for struct `OwnedAddressSpace<A, PAGES>` in the current scope
+   --> src/vma.rs:311:52
+    |
+311 |             if let Err(error) = self.address_space.protect_user(page, new_flags) {
+    |                                                    ^^^^^^^^^^^^
+    |
+   ::: src/memory.rs:163:1
+    |
+163 | pub struct OwnedAddressSpace<A, const PAGES: usize> {
+    | --------------------------------------------------- method `protect_user` not found for this struct
+    |
+help: there is a method `protect` with a similar name
+    |
+311 -             if let Err(error) = self.address_space.protect_user(page, new_flags) {
+311 +             if let Err(error) = self.address_space.protect(page, new_flags) {
+    |
+
+error[E0599]: no method named `protect_user` found for struct `OwnedAddressSpace<A, PAGES>` in the current scope
+   --> src/vma.rs:316:26
+    |
+314 |                     if self
+315 |                         .address_space
+316 |                         .protect_user(rollback, old_flags)
+    |                          ^^^^^^^^^^^^
+    |
+   ::: src/memory.rs:163:1
+    |
+163 | pub struct OwnedAddressSpace<A, const PAGES: usize> {
+    | --------------------------------------------------- method `protect_user` not found for this struct
+    |
+help: there is a method `protect` with a similar name
+    |
+316 -                         .protect_user(rollback, old_flags)
+316 +                         .protect(rollback, old_flags)
+    |
+
+error[E0599]: no method named `owned_user_pages` found for struct `OwnedAddressSpace<A, PAGES>` in the current scope
+   --> src/vma.rs:90:28
+    |
+ 90 |         self.address_space.owned_user_pages()
+    |                            ^^^^^^^^^^^^^^^^ method not found in `OwnedAddressSpace<A, PAGES>`
+    |
+   ::: src/memory.rs:163:1
+    |
+163 | pub struct OwnedAddressSpace<A, const PAGES: usize> {
+    | --------------------------------------------------- method `owned_user_pages` not found for this struct
+
+error[E0599]: no method named `owned_user_page_table_pages` found for struct `OwnedAddressSpace<A, PAGES>` in the current scope
+   --> src/vma.rs:95:28
+    |
+ 95 |         self.address_space.owned_user_page_table_pages()
+    |                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^ method not found in `OwnedAddressSpace<A, PAGES>`
+    |
+   ::: src/memory.rs:163:1
+    |
+163 | pub struct OwnedAddressSpace<A, const PAGES: usize> {
+    | --------------------------------------------------- method `owned_user_page_table_pages` not found for this struct
+
+error[E0599]: no method named `owned_user_pages` found for struct `memory::OwnedAddressSpace<A, PAGES>` in the current scope
+   --> src/vma.rs:90:28
+    |
+ 90 |         self.address_space.owned_user_pages()
+    |                            ^^^^^^^^^^^^^^^^ method not found in `memory::OwnedAddressSpace<A, PAGES>`
+    |
+   ::: src/memory.rs:163:1
+    |
+163 | pub struct OwnedAddressSpace<A, const PAGES: usize> {
+    | --------------------------------------------------- method `owned_user_pages` not found for this struct
+
+error[E0599]: no method named `owned_user_page_table_pages` found for struct `memory::OwnedAddressSpace<A, PAGES>` in the current scope
+   --> src/vma.rs:95:28
+    |
+ 95 |         self.address_space.owned_user_page_table_pages()
+    |                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^ method not found in `memory::OwnedAddressSpace<A, PAGES>`
+    |
+   ::: src/memory.rs:163:1
+    |
+163 | pub struct OwnedAddressSpace<A, const PAGES: usize> {
+    | --------------------------------------------------- method `owned_user_page_table_pages` not found for this struct
+
+error[E0599]: no method named `protect_user` found for struct `memory::OwnedAddressSpace<A, PAGES>` in the current scope
+   --> src/vma.rs:311:52
+    |
+311 |             if let Err(error) = self.address_space.protect_user(page, new_flags) {
+    |                                                    ^^^^^^^^^^^^
+    |
+   ::: src/memory.rs:163:1
+    |
+163 | pub struct OwnedAddressSpace<A, const PAGES: usize> {
+    | --------------------------------------------------- method `protect_user` not found for this struct
+    |
+help: there is a method `protect` with a similar name
+    |
+311 -             if let Err(error) = self.address_space.protect_user(page, new_flags) {
+311 +             if let Err(error) = self.address_space.protect(page, new_flags) {
+    |
+
+error[E0599]: no method named `protect_user` found for struct `memory::OwnedAddressSpace<A, PAGES>` in the current scope
+   --> src/vma.rs:316:26
+    |
+314 |                     if self
+315 |                         .address_space
+316 |                         .protect_user(rollback, old_flags)
+    |                          ^^^^^^^^^^^^
+    |
+   ::: src/memory.rs:163:1
+    |
+163 | pub struct OwnedAddressSpace<A, const PAGES: usize> {
+    | --------------------------------------------------- method `protect_user` not found for this struct
+    |
+help: there is a method `protect` with a similar name
+    |
+316 -                         .protect_user(rollback, old_flags)
+316 +                         .protect(rollback, old_flags)
+    |
+
+error[E0609]: no field `frame_count` on type `&AddressSpace<A, MAPPINGS>`
+   --> src/memory.rs:331:14
+    |
+331 |         self.frame_count
+    |              ^^^^^^^^^^^ unknown field
+    |
+    = note: available fields are: `tables`, `root`, `user_mappings`, `user_mapping_count`
+
+error[E0609]: no field `space` on type `&AddressSpace<A, MAPPINGS>`
+   --> src/memory.rs:336:14
+    |
+336 |         self.space.tables.user_page_table_pages()
+    |              ^^^^^ unknown field
+    |
+    = note: available fields are: `tables`, `root`, `user_mappings`, `user_mapping_count`
+
+error[E0609]: no field `frame_count` on type `&memory::AddressSpace<A, MAPPINGS>`
+   --> src/memory.rs:331:14
+    |
+331 |         self.frame_count
+    |              ^^^^^^^^^^^ unknown field
+    |
+    = note: available fields are: `tables`, `root`, `user_mappings`, `user_mapping_count`
+
+error[E0609]: no field `space` on type `&memory::AddressSpace<A, MAPPINGS>`
+   --> src/memory.rs:336:14
+    |
+336 |         self.space.tables.user_page_table_pages()
+    |              ^^^^^ unknown field
+    |
+    = note: available fields are: `tables`, `root`, `user_mappings`, `user_mapping_count`
+
+Some errors have detailed explanations: E0599, E0609.
+For more information about an error, try `rustc --explain E0599`.
+error: could not compile `carlio-os` (lib) due to 6 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `carlio-os` (lib test) due to 6 previous errors

@@ -55,6 +55,17 @@ pub struct ProcessVm<A, const PAGES: usize, const REGIONS: usize> {
     vmas: VmaMap<REGIONS>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ProcessMemoryUsage {
+    pub owned_leaf_pages: usize,
+    pub private_page_table_pages: usize,
+    pub total_owned_pages: usize,
+    pub leaf_page_limit: usize,
+    /// Cota superior conservadora: folha + três níveis de tabela por folha,
+    /// mais o PML4 privado do processo.
+    pub maximum_owned_pages: usize,
+}
+
 impl<A: crate::memory::PageTableAccess, const PAGES: usize, const REGIONS: usize>
     ProcessVm<A, PAGES, REGIONS>
 {
@@ -71,6 +82,41 @@ impl<A: crate::memory::PageTableAccess, const PAGES: usize, const REGIONS: usize
 
     pub const fn root(&self) -> u64 {
         self.address_space.root()
+    }
+
+    /// Folhas de usuário atualmente pertencentes a este processo, incluindo
+    /// imagem, stack, heap e mappings anônimos.
+    pub const fn owned_user_pages(&self) -> usize {
+        self.address_space.owned_user_pages()
+    }
+
+    /// Tabelas de página privadas do processo, incluindo o PML4 próprio.
+    pub fn owned_page_table_pages(&self) -> Result<usize, crate::memory::FrameError> {
+        self.address_space.owned_user_page_table_pages()
+    }
+
+    pub fn memory_usage(&self) -> Result<ProcessMemoryUsage, crate::memory::FrameError> {
+        let owned_leaf_pages = self.owned_user_pages();
+        let private_page_table_pages = self.owned_page_table_pages()?;
+        let total_owned_pages = owned_leaf_pages
+            .checked_add(private_page_table_pages)
+            .ok_or(crate::memory::FrameError::CapacityExceeded)?;
+        let maximum_owned_pages = PAGES
+            .checked_mul(4)
+            .and_then(|pages| pages.checked_add(1))
+            .ok_or(crate::memory::FrameError::CapacityExceeded)?;
+        Ok(ProcessMemoryUsage {
+            owned_leaf_pages,
+            private_page_table_pages,
+            total_owned_pages,
+            leaf_page_limit: self.user_page_capacity(),
+            maximum_owned_pages,
+        })
+    }
+
+    /// Limite estático de folhas do address space deste processo.
+    pub const fn user_page_capacity(&self) -> usize {
+        PAGES
     }
 
     pub const fn program_break(&self) -> u64 {
@@ -160,7 +206,9 @@ impl<A: crate::memory::PageTableAccess, const PAGES: usize, const REGIONS: usize
         if flags != MAP_PRIVATE | MAP_ANONYMOUS || descriptor != u64::MAX || offset != 0 {
             return Err(ProcessVmError::UnsupportedMapping);
         }
-        self.mmap_anonymous(hint, length, protection as u8)
+        let protection =
+            u8::try_from(protection).map_err(|_| ProcessVmError::Vma(VmaError::InvalidRange))?;
+        self.mmap_anonymous(hint, length, protection)
     }
 
     pub fn munmap(&mut self, address: u64, length: u64) -> Result<(), ProcessVmError> {
@@ -182,6 +230,99 @@ impl<A: crate::memory::PageTableAccess, const PAGES: usize, const REGIONS: usize
             self.address_space
                 .unmap(page)
                 .map_err(ProcessVmError::Memory)?;
+            page += PAGE_SIZE;
+        }
+        self.vmas = staged;
+        Ok(())
+    }
+
+    /// Altera permissões de um intervalo contido em uma única VMA anônima.
+    /// W+X e PROT_NONE ficam indisponíveis até que a política e o rollback de
+    /// páginas não presentes sejam implementados.
+    pub fn mprotect(
+        &mut self,
+        address: u64,
+        length: u64,
+        protection: u64,
+    ) -> Result<(), ProcessVmError> {
+        if !address.is_multiple_of(PAGE_SIZE) || length == 0 || protection & !0x7 != 0 {
+            return Err(ProcessVmError::Vma(VmaError::InvalidRange));
+        }
+        if protection & 0x2 != 0 && protection & 0x4 != 0 {
+            return Err(ProcessVmError::PermissionDenied);
+        }
+        if protection & 0x7 == 0 {
+            return Err(ProcessVmError::UnsupportedMapping);
+        }
+        let protection =
+            u8::try_from(protection).map_err(|_| ProcessVmError::Vma(VmaError::InvalidRange))?;
+        let aligned_length =
+            page_ceil(length).ok_or(ProcessVmError::Vma(VmaError::InvalidRange))?;
+        let end = address
+            .checked_add(aligned_length)
+            .filter(|end| *end <= USER_TOP)
+            .ok_or(ProcessVmError::Vma(VmaError::InvalidRange))?;
+        let mut staged = self.vmas;
+        let index = staged
+            .regions()
+            .position(|region| {
+                region.kind == RegionKind::Mmap && address >= region.start && end <= region.end
+            })
+            .ok_or(ProcessVmError::Vma(VmaError::NotMapped))?;
+        let original = staged
+            .regions()
+            .nth(index)
+            .ok_or(ProcessVmError::Vma(VmaError::NotMapped))?;
+        let pieces = 1 + usize::from(address > original.start) + usize::from(end < original.end);
+        if staged.count - 1 + pieces > REGIONS {
+            return Err(ProcessVmError::Vma(VmaError::Capacity));
+        }
+        staged.remove(index);
+        if original.start < address {
+            staged
+                .insert(Region {
+                    end: address,
+                    ..original
+                })
+                .map_err(ProcessVmError::Vma)?;
+        }
+        staged
+            .insert(Region {
+                start: address,
+                end,
+                protection,
+                ..original
+            })
+            .map_err(ProcessVmError::Vma)?;
+        if end < original.end {
+            staged
+                .insert(Region {
+                    start: end,
+                    ..original
+                })
+                .map_err(ProcessVmError::Vma)?;
+        }
+
+        let old_flags = page_flags(original.protection);
+        let new_flags = page_flags(protection);
+        let mut changed = 0usize;
+        let mut page = address;
+        while page < end {
+            if let Err(error) = self.address_space.protect_user(page, new_flags) {
+                let mut rollback = address;
+                for _ in 0..changed {
+                    if self
+                        .address_space
+                        .protect_user(rollback, old_flags)
+                        .is_err()
+                    {
+                        return Err(ProcessVmError::RollbackFailed);
+                    }
+                    rollback += PAGE_SIZE;
+                }
+                return Err(ProcessVmError::Memory(error));
+            }
+            changed += 1;
             page += PAGE_SIZE;
         }
         self.vmas = staged;
@@ -257,6 +398,7 @@ pub enum ProcessVmError {
     Memory(crate::memory::FrameError),
     RollbackFailed,
     UnsupportedMapping,
+    PermissionDenied,
 }
 
 fn page_flags(protection: u8) -> u64 {
@@ -617,6 +759,51 @@ mod tests {
         vm.munmap(base, PAGE_SIZE * 2).unwrap();
         assert_eq!(vm.mapping(base), Err(crate::memory::FrameError::NotMapped));
         assert_eq!(vm.mmap_anonymous(base, PAGE_SIZE, 0b001), Ok(base));
+    }
+
+    #[test]
+    fn process_vm_accounts_owned_leaf_and_private_table_frames() {
+        let mut vm = process_vm::<8>();
+        let address = vm.mmap_anonymous(0, PAGE_SIZE, 0b011).unwrap();
+        assert_eq!(vm.owned_user_pages(), 1);
+        assert_eq!(vm.owned_page_table_pages().unwrap(), 4);
+        let usage = vm.memory_usage().unwrap();
+        assert_eq!(usage.total_owned_pages, 5);
+        assert_eq!(usage.maximum_owned_pages, 33);
+        vm.munmap(address, PAGE_SIZE).unwrap();
+        assert_eq!(vm.owned_user_pages(), 0);
+        assert_eq!(vm.owned_page_table_pages().unwrap(), 1);
+        assert_eq!(vm.memory_usage().unwrap().total_owned_pages, 1);
+    }
+
+    #[test]
+    fn process_vm_mprotect_splits_vma_and_rejects_wx_and_none() {
+        let mut vm = process_vm::<8>();
+        let base = vm.mmap_anonymous(0, PAGE_SIZE * 3, 0b011).unwrap();
+        vm.mprotect(base + PAGE_SIZE, PAGE_SIZE, 0b001).unwrap();
+        assert_ne!(
+            vm.mapping(base).unwrap().flags & crate::memory::PAGE_FLAG_WRITABLE,
+            0
+        );
+        assert_eq!(
+            vm.mapping(base + PAGE_SIZE).unwrap().flags & crate::memory::PAGE_FLAG_WRITABLE,
+            0
+        );
+        assert_ne!(
+            vm.mapping(base + PAGE_SIZE * 2).unwrap().flags & crate::memory::PAGE_FLAG_WRITABLE,
+            0
+        );
+        assert_eq!(
+            vm.mprotect(base, PAGE_SIZE, 0b110),
+            Err(ProcessVmError::PermissionDenied)
+        );
+        assert_eq!(
+            vm.mprotect(base, PAGE_SIZE, 0),
+            Err(ProcessVmError::UnsupportedMapping)
+        );
+        vm.munmap(base, PAGE_SIZE).unwrap();
+        vm.munmap(base + PAGE_SIZE, PAGE_SIZE).unwrap();
+        vm.munmap(base + PAGE_SIZE * 2, PAGE_SIZE).unwrap();
     }
 
     #[test]

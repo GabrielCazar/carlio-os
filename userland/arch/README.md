@@ -42,3 +42,21 @@ O build usa os namespaces user/mount oferecidos por `pacstrap -N`, mas mantém a
 conectividade de rede do host para baixar pacotes. Ainda exige revisão de
 isolamento antes de usar pacotes não oficiais; AUR e scriptlets fora dos
 pacotes do snapshot oficial são explicitamente excluídos.
+
+O dispatcher também oferece implementação inicial de `mprotect(10)` para
+intervalos contidos em uma única VMA anônima; a libc freestanding expõe a
+declaração e o wrapper. A libc também expõe wrappers iniciais de identidade,
+`clock_gettime`/`clock_getres` monotônicos, `brk` e `sbrk`. W+X é negado, `PROT_NONE`
+e intervalos fora desse escopo continuam sem suporte. Essas alterações estão
+aguardando os gates host/QEMU/NAS e não devem ser consideradas validadas nem
+disponíveis em uma rootfs Arch executável.
+
+A libc também declara `getcwd` (cwd fixo `/`), `access`, `fsync`, `fstat`, `stat`, `fstatat` e o layout x86-64 de
+`struct stat`; caminhos relativos de `access/openat/fstatat` são interpretados
+sob cwd `/`. `fstatat` ignora dirfd em caminhos absolutos e ainda recusa dirfds
+relativos diferentes de `AT_FDCWD`; flags não nulas não estão implementadas.
+Timestamps permanecem zero e a compatibilidade continua sem validação.
+`mkdir`, `umask`, `chmod`, `fchmod`, `chown`, `fchown`, `lchown`, `unlink/unlinkat` e `rmdir` também estão ligados ao VFS inline e ao contexto do processo;
+essa extensão aguarda validação.
+`fchmodat`, `fchownat` e as formas de `chown` também foram ligadas com as
+restrições descritas no registro de implementação local.

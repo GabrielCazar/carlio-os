@@ -264,7 +264,7 @@ pub struct Process {
     /// Frame de retorno salvo em interrupção (ponteiro virtual no espaço kernel).
     pub interrupt_frame: u64,
     pub state: ProcessState,
-    /// Identidade POSIX immutable para autorizar VFS/syscalls por processo.
+    /// Credenciais POSIX por processo; a umask é mutável via `umask(2)`.
     pub security: ProcessSecurityContext,
     /// Descritor dos recursos de execução pertencentes ao processo. O backend
     /// associa o token ao VM e ao teardown antes de publicar a tarefa.
@@ -1039,15 +1039,20 @@ impl<const P: usize, const C: usize> Scheduler<P, C> {
         id: u64,
         bundle: ProcessResourceBundle,
     ) -> Result<(), ProcessError> {
-        if bundle.page_table == 0
-            || bundle.page_table & 0xfff != 0
-            || bundle.user_stack == 0
-            || bundle.slot >= 3
-        {
+        if bundle.page_table == 0 || bundle.page_table & 0xfff != 0 || bundle.user_stack == 0 {
             return Err(ProcessError::NotRunnable);
         }
         let mut state = self.state.lock();
         let slot = find(&state.processes, id).ok_or(ProcessError::UnknownProcess)?;
+        if state.processes.iter().any(|other| {
+            other.id != id
+                && other.state != ProcessState::Vacant
+                && other
+                    .resources
+                    .is_some_and(|resources| resources.slot == bundle.slot)
+        }) {
+            return Err(ProcessError::Duplicate);
+        }
         let process = &mut state.processes[slot];
         if process.state != ProcessState::Ready
             || process.resources.is_some()
@@ -1527,6 +1532,52 @@ mod tests {
         assert_eq!(q.schedule(0).unwrap().unwrap().id, a);
         assert_eq!(q.schedule(1).unwrap().unwrap().id, b);
         assert_eq!(q.schedule(0).unwrap().unwrap().id, a);
+    }
+
+    #[test]
+    fn sustained_parallel_local_preemption_keeps_cpu_ownership() {
+        use std::sync::Arc;
+
+        const CPUS: usize = 4;
+        const PER_CPU: usize = 4;
+        const ROUNDS: usize = 20_000;
+        let scheduler = Arc::new(Scheduler::<{ CPUS * PER_CPU }, CPUS>::new());
+        let mut ids = [[0u64; PER_CPU]; CPUS];
+        for (cpu, cpu_ids) in ids.iter_mut().enumerate() {
+            for (index, id) in cpu_ids.iter_mut().enumerate() {
+                let slot = cpu * PER_CPU + index;
+                *id = scheduler
+                    .create(0x1000 + (slot as u64) * 0x1000, 0x400000, 0x800000)
+                    .unwrap();
+                scheduler.pin_ready_to_cpu(*id, cpu).unwrap();
+            }
+        }
+
+        let workers: std::vec::Vec<_> = (0..CPUS)
+            .map(|cpu| {
+                let scheduler = Arc::clone(&scheduler);
+                std::thread::spawn(move || {
+                    let frame = 0xffff_8000_0000_1000 + (cpu as u64) * 0x10;
+                    assert!(scheduler.schedule_local(cpu).unwrap().is_some());
+                    for _ in 0..ROUNDS {
+                        let next = scheduler.preempt_frame_local(cpu, frame).unwrap();
+                        assert!(next.is_some());
+                    }
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+
+        for (cpu, cpu_ids) in ids.iter().enumerate() {
+            for id in cpu_ids {
+                assert!(matches!(
+                    scheduler.process(*id).unwrap().state,
+                    ProcessState::Running { cpu: owner } if owner == cpu
+                ));
+            }
+        }
     }
 
     #[test]
@@ -2016,8 +2067,8 @@ mod tests {
         let scheduler = Scheduler::<2, 1>::new();
         let id = scheduler.create(0x1000, 0x400000, 0x800000).unwrap();
         let invalid = ProcessResourceBundle {
-            slot: 3,
-            page_table: 0x1000,
+            slot: 1,
+            page_table: 0x1001,
             user_stack: 0x800000,
         };
         assert_eq!(
@@ -2031,6 +2082,18 @@ mod tests {
         };
         scheduler.attach_resource_bundle(id, bundle).unwrap();
         assert_eq!(scheduler.process(id).unwrap().resources, Some(bundle));
+        let other = scheduler.create(0x2000, 0x400000, 0x900000).unwrap();
+        assert_eq!(
+            scheduler.attach_resource_bundle(
+                other,
+                ProcessResourceBundle {
+                    slot: bundle.slot,
+                    page_table: 0x2000,
+                    user_stack: 0x900000,
+                },
+            ),
+            Err(ProcessError::Duplicate)
+        );
         assert_eq!(
             scheduler.attach_resource_bundle(id, bundle),
             Err(ProcessError::NotRunnable)

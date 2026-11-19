@@ -96,7 +96,9 @@ O descritor `Process` agora carrega um manifesto `ProcessResourceBundle` com
 slot do VM gerenciado pelo backend, raiz CR3 e stack user. Syscalls e reaper
 consultam esse manifesto e validam a raiz antes de operar. Os objetos `ProcessVm`
 continuam em registro fixo do backend, portanto ownership dinâmico e
-contabilização geral por processo ainda não estão demonstrados. QEMU local
+contabilização geral por processo ainda não estão demonstrados. Há alteração
+local não validada substituindo três slots da fixture por pool estático bounded
+de 64 VMs; isso não altera o estado implementado/validado. QEMU local
 BIOS/UEFI e NAS/KVM BIOS passaram; NAS UEFI segue pendente por falha no smoke de
 preempção/page tables. Evidências no [relatório da fase 2](../reports/fase-2-memoria-execucao.md).
 
