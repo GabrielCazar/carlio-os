@@ -1,5 +1,122 @@
 # Relatório — Fase 2: memória e execução
 
+### Watchdog durante execução CPL3 — 2026-11-19
+
+O watchdog tratava ausência de chamadas explícitas a `heartbeat()` como falta
+de progresso mesmo quando o PIT interrompia CPL3 e o kernel retomava o scheduler.
+Agora uma interrupção de timer que salva contexto CPL3 também renova o prazo,
+mantendo watchdog para ausência real de ticks/preempção. A fixture reduziu a
+espera artificial de 67 milhões para 1 milhão de iterações, que excedia o prazo
+em TCG.
+
+O primeiro log BIOS reproduziu o watchdog no `RIP=0x400000003000`; depois da
+mudança, o mesmo ponto deixou de emitir watchdog, mas a execução ainda parou no
+`read(0)` serial. As tentativas com um byte tardio, byte pré-enfileirado e quatro
+bytes falharam em avançar a etapa 1/7 ([watchdog original](logs/fase2-watchdog-20261119-qemu-bios-20261119-011029.log),
+[sem watchdog, timeout](logs/fase2-watchdog-cpl3-20261119-qemu-bios-20261119-011425.log),
+[serial concorrente](logs/fase2-watchdog-multiinput-20261119-qemu-bios.log)).
+Assim, a correção do falso positivo está no handler, mas o gate de runtime CPL3
+permanece aberto até resolver a leitura serial concorrente e obter BIOS/UEFI
+positivos. O limite de polling UART foi reduzido para 100 mil iterações; ainda
+precisa validação positiva e negativa. Host/fmt/Clippy/build x86_64 iniciais
+passaram antes das últimas tentativas; repetir antes de versionar.
+
+### Testemunha de CPL3 simultâneo e barreira global do reaper — 2026-11-19
+
+A máscara anterior contava interrupções CPL3 por AP, o que não demonstrava que
+os dois estavam em CPL3 ao mesmo tempo. Agora cada AP marca execução antes do
+retorno `iretq`, limpa a marca ao entrar no kernel e registra a prova somente
+quando o handler CPL3 observa outro AP ainda marcado como executando. O gate
+exige os dois APs participantes de volta ao estado idle e nenhum bit CPL3 ativo.
+O smoke QEMU exige o marcador novo de sobreposição.
+
+Antes de iniciar a época de reaping, o BSP verifica que está na raiz kernel e
+que nenhum AP está marcado CPL3. Cada AP muda para a raiz kernel, lê CR3 de
+volta, verifica que não mantém contexto CPL3 e só então publica ACK da época. O
+reaper só destrói VM/page tables e libera stacks depois de todos os ACKs remotos
+e da máscara ativa permanecer vazia; timeout ou divergência de CR3 falha fechado.
+
+Host: `cargo fmt --check`, 181 testes, Clippy e build
+`x86_64-unknown-none` passaram ([fmt](logs/process-smp-quiescence-fmt-20261119.txt),
+[host](logs/process-smp-quiescence-host-20261119.txt),
+[Clippy](logs/process-smp-quiescence-clippy-20261119.txt),
+[kernel](logs/process-smp-quiescence-kernel-20261119.txt)). QEMU BIOS falhou
+antes dos marcadores novos, com watchdog no probe CPL3 em
+`RIP=0x400000003000`, antes de `read(0)`. Comando:
+`CARLIO_TEST_PHASE=process-smp-quiescence-final-20261119 scripts/test-local-iso.sh`
+([log](logs/process-smp-quiescence-final-20261119-qemu-bios-20261119-010630.log)).
+UEFI não iniciou porque o script para após BIOS; NAS não foi repetido após os
+gates locais falharem. Assim, simultaneidade e barreira global estão mais
+estritamente instrumentadas no código, mas ainda não têm prova runtime válida.
+Não houve validação em hardware físico.
+
+### Permissões de página com shootdown SMP para preparação de LKMs — 2026-11-19
+
+O `SmpPageTableManager` agora expõe `protect`: altera as flags da folha
+supervisor mantendo o frame, serializa a edição por `IrqSpinLock` e só retorna
+depois do `TlbShootdown` explícito. O teste host verifica preservação do frame,
+remoção de escrita, NX e solicitação de invalidação para map e protect.
+
+Validação: `cargo fmt --check`, `cargo test --all-targets` (181 testes),
+`cargo clippy --all-targets -- -D warnings` e build do kernel
+`x86_64-unknown-none` passaram ([fmt](logs/lkm-smp-protect-fmt-20261119.txt),
+[host](logs/lkm-smp-protect-host-20261119.txt),
+[Clippy](logs/lkm-smp-protect-clippy-20261119.txt),
+[kernel](logs/lkm-smp-protect-kernel-20261119.txt)). O gate local BIOS repetiu
+watchdog no probe CPL3/ABI antes de carregar qualquer módulo
+([QEMU BIOS](logs/lkm-smp-protect-20261119-qemu-bios-20261119-005829.log));
+UEFI não foi alcançado nesta execução. NAS permanece pendente: a tentativa
+anterior também parou no probe ABI/VM e não foi repetida. Não houve teste de
+hardware físico.
+
+Esta alteração fecha somente a primitiva de proteção com shootdown. Ainda não
+há backend x86_64 de alocação/mapeamento/invocação ligado ao allocator e às
+page tables, nem bloqueio de novas chamadas/referências ativas com quiescência
+SMP. Fixtures ET_REL positivas, negativas e de falha continuam sem execução em
+QEMU BIOS/UEFI e NAS; LKMs reais permanecem não suportados.
+
+### Tabela de exports e resolução de símbolos ELF de módulos — 2026-11-19
+
+O loader hostável extrai símbolos globais/fracos definidos da `.symtab` ET_REL,
+armazena nomes e endereços dentro de `LoadedModule` e publica os exports no
+`ModuleRegistry` persistente. A resolução pode retornar o ID do provedor; o
+loader registra dependências únicas e o registro bloqueia unload de provedores
+referenciados. Unload exige que `ModulePlatform` confirme quiescência antes de
+liberar páginas. Isso ainda é um contrato hostável: não há implementação x86_64
+que faça alocação/mapeamento/invocação, bloqueie novas chamadas, faça shootdown
+e confirme quiescência SMP no kernel.
+
+Fixtures ET_REL sintéticas passam pelo loader completo: relocação positiva,
+strong ausente com rollback, weak ausente resolvendo para zero, relocação não
+suportada com rollback e extração/publicação de export. Testes adicionais cobrem
+dependência, unload ocupado e precedência kernel sobre módulos.
+
+Arquivos alterados: `src/kernel_module.rs`, `docs/ARQUITETURA-KERNEL.md`,
+`docs/ROADMAP.md` e este relatório. `cargo fmt --check`,
+`cargo test --all-targets` (180 testes), Clippy e `cargo check --bin
+carlio-kernel --target x86_64-unknown-none` passaram ([fmt](logs/lkm-lifecycle-fmt-20261119.txt),
+[host](logs/lkm-lifecycle-host-20261119.txt),
+[Clippy](logs/lkm-lifecycle-clippy-20261119.txt),
+[kernel x86_64](logs/lkm-lifecycle-kernel-20261119.txt)). O QEMU BIOS parou na etapa
+1/7 após `write ok`, com watchdog antes de
+`read(0)` ([BIOS](logs/lkm-symbol-20261118-qemu-bios-20261119-003423.log)).
+UEFI apresentou a mesma falha
+([UEFI](logs/lkm-symbol-qemu-uefi-20261119.log)). O smoke não carrega objeto
+ET_REL, portanto esses logs não validam a tabela nem relocations no kernel.
+NAS/KVM passou testes host remotos e `herm-fs status`, mas o QEMU BIOS também
+expirou no mesmo probe; UEFI NAS não foi alcançado
+([resumo NAS](logs/kernel-context-switch-nas-20261119-003551.txt),
+[BIOS NAS](logs/kernel-context-switch-nas-20261119-003551-qemu-kvm-bios.log)).
+
+Limites: exports extraídos, registro e contabilidade host de dependências existem no
+modelo hostável, mas ainda não estão ligados a um ciclo runtime de módulos. Não
+há backend x86_64 de páginas/invocação nem fixture ET_REL carregada em QEMU/NAS;
+os logs de smoke citados não cobrem LKMs e falham no probe ABI/VM. Portanto,
+LKMs reais seguem não suportados. Faltam bloqueio de novas chamadas, rollback
+transacional de publicação/init, backend W^X com frames próprios e shootdown/
+quiescência SMP testados. NAS não foi repetido após a falha registrada; gate
+pendente. Nenhuma validação física foi feita.
+
 ### Preparação ELF com `PT_INTERP` e `auxv` — 2026-11-18
 
 Sintoma e causa: `ElfImage::parse` rejeitava todo `PT_INTERP`, então o fluxo de

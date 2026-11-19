@@ -916,6 +916,13 @@ extern "C" fn exception_dispatch(frame: *mut ExceptionFrame) -> *mut ExceptionFr
                 LAST_HEARTBEAT.store(heartbeat, Ordering::Relaxed);
                 LAST_PROGRESS_TICK.store(ticks, Ordering::Relaxed);
             }
+            // Uma interrupção periódica que salva um contexto CPL3 e retorna
+            // ao scheduler comprova que o kernel continua executando. Sem este
+            // avanço, uma fixture/usuário em loop pode disparar falso watchdog
+            // mesmo com o PIT e a preempção funcionando normalmente.
+            if frame.cs & 3 == 3 {
+                LAST_PROGRESS_TICK.store(ticks, Ordering::Relaxed);
+            }
             if ticks.saturating_sub(LAST_PROGRESS_TICK.load(Ordering::Relaxed)) > WATCHDOG_TICKS {
                 super::record_error(carlio_os::errors::KernelError::WatchdogTimeout);
                 super::write("\r\n=== WATCHDOG: SEM PROGRESSO ===\r\n");
