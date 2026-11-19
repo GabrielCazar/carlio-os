@@ -36,7 +36,9 @@ const COM1: u16 = 0x3f8;
 #[cfg(target_os = "none")]
 const INPUT_LIMIT: usize = 128;
 #[cfg(target_os = "none")]
-const SERIAL_POLL_LIMIT: usize = 1_000_000;
+// Leituras concorrentes em APs podem disputar o único byte injetado pelo
+// harness; um timeout curto mantém serial best-effort sem prender o scheduler.
+const SERIAL_POLL_LIMIT: usize = 100_000;
 #[cfg(target_os = "none")]
 const ERROR_LOG_CAPACITY: usize = 16;
 #[cfg(target_os = "none")]
@@ -108,6 +110,8 @@ static PROCESS_REAP_NEXT_EPOCH: AtomicU64 = AtomicU64::new(0);
 static PROCESS_REAP_ACKS: [AtomicU64; MAX_BOOT_CPUS] = [const { AtomicU64::new(0) }; MAX_BOOT_CPUS];
 #[cfg(target_os = "none")]
 static AP_CPL3_CPU_MASK: AtomicUsize = AtomicUsize::new(0);
+#[cfg(target_os = "none")]
+static AP_CPL3_RUNNING_MASK: AtomicUsize = AtomicUsize::new(0);
 #[cfg(target_os = "none")]
 static AP_CPL3_IDLE_MASK: AtomicUsize = AtomicUsize::new(0);
 #[cfg(target_os = "none")]
@@ -555,6 +559,9 @@ extern "C" fn carlio_ap_main(info: *mut LimineSmpInfo) -> ! {
                             )
                         }
                     {
+                        if is_secondary_cpu(index) && is_ap_cpl3_probe_id(process.id) {
+                            mark_ap_cpl3_running(index);
+                        }
                         unsafe {
                             idt::enter_user_frame(
                                 process.interrupt_frame as *mut idt::UserInterruptFrame,
@@ -620,6 +627,9 @@ extern "C" fn carlio_ap_scheduler_idle(cpu: usize) -> ! {
                     )
                 }
             {
+                if is_secondary_cpu(cpu) && is_ap_cpl3_probe_id(process.id) {
+                    mark_ap_cpl3_running(cpu);
+                }
                 unsafe {
                     idt::enter_user_frame(process.interrupt_frame as *mut idt::UserInterruptFrame)
                 };
@@ -647,6 +657,15 @@ fn ap_acknowledge_process_quiescence(cpu: usize) -> bool {
         loop {
             unsafe { asm!("cli; hlt", options(nomem, nostack)) };
         }
+    }
+    let current_root: u64;
+    // SAFETY: CR3 é lido em long mode para validar que esta CPU já está na raiz do kernel.
+    unsafe { asm!("mov {}, cr3", out(reg) current_root, options(nomem, nostack, preserves_flags)) };
+    let bit = 1usize << cpu;
+    if current_root & 0x000f_ffff_ffff_f000 != kernel_root
+        || AP_CPL3_RUNNING_MASK.load(Ordering::Acquire) & bit != 0
+    {
+        return false;
     }
     AP_CPL3_IDLE_MASK.fetch_or(1usize << cpu, Ordering::AcqRel);
     PROCESS_REAP_ACKS[cpu].store(epoch, Ordering::Release);
@@ -1262,32 +1281,31 @@ extern "C" fn timer_process_switch(
     if frame.is_null() {
         return frame;
     }
-    if AP_CPL3_STOP.load(Ordering::Acquire) && is_secondary_cpu(cpu) && frame_user_mode(frame) {
+    let previous = PROCESS_SCHEDULER.current(cpu);
+    let previous_is_ap_probe =
+        is_secondary_cpu(cpu) && previous.is_some_and(|process| is_ap_cpl3_probe_id(process.id));
+    if previous_is_ap_probe && frame_user_mode(frame) {
+        let bit = 1usize << cpu;
+        let active = AP_CPL3_RUNNING_MASK.fetch_and(!bit, Ordering::AcqRel);
+        let other_aps = active & secondary_cpu_mask() & !bit;
+        if active & bit != 0 && other_aps != 0 {
+            AP_CPL3_CPU_MASK.fetch_or(bit | other_aps, Ordering::AcqRel);
+            AP_CPL3_OVERLAP_PASSED.store(true, Ordering::Release);
+            AP_CPL3_STOP.store(true, Ordering::Release);
+        }
+    }
+    if AP_CPL3_STOP.load(Ordering::Acquire) && previous_is_ap_probe && frame_user_mode(frame) {
         return frame;
     }
-    let previous = PROCESS_SCHEDULER.current(cpu);
     if PROCESS_PROBE_STARTED.load(Ordering::Acquire) && previous.is_some() && frame_user_mode(frame)
     {
         PROCESS_PROBE_SWITCHES.fetch_add(1, Ordering::Relaxed);
     }
-    if frame_user_mode(frame)
-        && previous.is_some_and(|process| {
-            process.id == PROCESS_PROBE_IDS[1].load(Ordering::Acquire)
-                || process.id == PROCESS_PROBE_IDS[2].load(Ordering::Acquire)
-        })
-        && is_secondary_cpu(cpu)
-    {
-        let bit = 1usize << cpu;
-        AP_CPL3_IDLE_MASK.fetch_and(!bit, Ordering::AcqRel);
-        let mask = AP_CPL3_CPU_MASK.fetch_or(bit, Ordering::AcqRel) | bit;
-        if mask.count_ones() >= 2 {
-            AP_CPL3_OVERLAP_PASSED.store(true, Ordering::Release);
-            AP_CPL3_STOP.store(true, Ordering::Release);
-            return frame;
-        }
-    }
     let next = PROCESS_SCHEDULER.preempt_frame_local(cpu, frame as u64);
     let Ok(Some(process)) = next else {
+        if previous_is_ap_probe && frame_user_mode(frame) {
+            mark_ap_cpl3_running(cpu);
+        }
         return frame;
     };
     if PROCESS_PROBE_STARTED.load(Ordering::Acquire)
@@ -1311,7 +1329,40 @@ extern "C" fn timer_process_switch(
             unsafe { asm!("cli; hlt", options(nomem, nostack)) };
         }
     }
+    if is_secondary_cpu(cpu) && is_ap_cpl3_probe_id(process.id) {
+        mark_ap_cpl3_running(cpu);
+    }
     process.interrupt_frame as *mut idt::UserInterruptFrame
+}
+
+#[cfg(target_os = "none")]
+fn is_ap_cpl3_probe_id(id: u64) -> bool {
+    id != 0
+        && (id == PROCESS_PROBE_IDS[1].load(Ordering::Acquire)
+            || id == PROCESS_PROBE_IDS[2].load(Ordering::Acquire))
+}
+
+#[cfg(target_os = "none")]
+fn secondary_cpu_mask() -> usize {
+    let mut mask = 0usize;
+    for cpu in 0..SMP_DETECTED_COUNT
+        .load(Ordering::Acquire)
+        .min(MAX_BOOT_CPUS)
+    {
+        if BOOT_CPU_LOCALS[cpu].online.load(Ordering::Acquire) != 0 && is_secondary_cpu(cpu) {
+            mask |= 1usize << cpu;
+        }
+    }
+    mask
+}
+
+#[cfg(target_os = "none")]
+fn mark_ap_cpl3_running(cpu: usize) {
+    if cpu < MAX_BOOT_CPUS {
+        let bit = 1usize << cpu;
+        AP_CPL3_IDLE_MASK.fetch_and(!bit, Ordering::AcqRel);
+        AP_CPL3_RUNNING_MASK.fetch_or(bit, Ordering::Release);
+    }
 }
 
 #[cfg(target_os = "none")]
@@ -1349,6 +1400,7 @@ pub(crate) fn begin_process_switch_probe() -> Option<*mut idt::UserInterruptFram
     LINUX_MEMORY_PROBE_MASK.store(0, Ordering::Relaxed);
     LINUX_MUNMAP_RESULT.store(0, Ordering::Relaxed);
     AP_CPL3_CPU_MASK.store(0, Ordering::Relaxed);
+    AP_CPL3_RUNNING_MASK.store(0, Ordering::Relaxed);
     AP_CPL3_IDLE_MASK.store(0, Ordering::Relaxed);
     AP_CPL3_OVERLAP_PASSED.store(false, Ordering::Relaxed);
     AP_CPL3_STOP.store(false, Ordering::Relaxed);
@@ -1740,7 +1792,11 @@ fn linux_syscall_probe_task() -> ([u8; 512], usize) {
     const PATH: &[u8] = b"/programas/probe\0";
     let mut code = [0u8; 512];
     let mut length = 0usize;
-    append_probe_bytes(&mut code, &mut length, &[0xb9, 0xff, 0xff, 0xff, 0x03]);
+    // Pequena janela para os APs entrarem simultaneamente em CPL3. O contador
+    // anterior (67 milhões) podia exceder o watchdog de 5 s sob QEMU TCG antes
+    // de qualquer syscall e transformar lentidão previsível da fixture em falso
+    // travamento do kernel.
+    append_probe_bytes(&mut code, &mut length, &[0xb9, 0x00, 0x00, 0x10, 0x00]);
     append_probe_bytes(&mut code, &mut length, &[0xe2, 0xfe]); // loop
     append_probe_bytes(&mut code, &mut length, &[0xbf, 1, 0, 0, 0]); // write(1, ...)
     append_probe_bytes(&mut code, &mut length, &[0x48, 0xbe]);
@@ -2408,6 +2464,7 @@ pub(crate) fn process_probe_result() -> u64 {
         if AP_CPL3_OVERLAP_PASSED.load(Ordering::Acquire)
             && active.count_ones() >= 2
             && idle & active == active
+            && AP_CPL3_RUNNING_MASK.load(Ordering::Acquire) & active == 0
         {
             ap_probe_passed = true;
             break;
@@ -2440,7 +2497,7 @@ pub(crate) fn process_probe_result() -> u64 {
     write_u64(faults as u64);
     write(".\r\n");
     if ap_probe_passed {
-        write("SMP CPL3: 3 tarefas despachadas; dois APs executaram CPL3 com preempção e retornaram a idle.\r\n");
+        write("SMP CPL3: sobreposição simultânea confirmada em dois APs; ambos retornaram a idle.\r\n");
     }
     if LINUX_GETPID_PROBE_PASSED.load(Ordering::Acquire) {
         write("ABI Linux x86_64: getpid/exit via SYSCALL passou.\r\n");
@@ -2552,6 +2609,17 @@ fn reap_process_probe() -> bool {
 
 #[cfg(target_os = "none")]
 fn quiesce_process_probe_aps() -> bool {
+    let kernel_root = PROCESS_KERNEL_CR3.load(Ordering::Acquire);
+    let bsp_root: u64;
+    // SAFETY: o BSP lê seu CR3 atual enquanto executa código e stack do kernel.
+    unsafe { asm!("mov {}, cr3", out(reg) bsp_root, options(nomem, nostack, preserves_flags)) };
+    if kernel_root == 0
+        || bsp_root & 0x000f_ffff_ffff_f000 != kernel_root
+        || AP_CPL3_RUNNING_MASK.load(Ordering::Acquire) & secondary_cpu_mask() != 0
+    {
+        write("Reaper SMP: BSP/AP ainda usam contexto CPL3; liberação cancelada.\r\n");
+        return false;
+    }
     let mut current_epoch = PROCESS_REAP_NEXT_EPOCH.load(Ordering::Acquire);
     let epoch = loop {
         let Some(next_epoch) = current_epoch.checked_add(1) else {
@@ -2570,16 +2638,18 @@ fn quiesce_process_probe_aps() -> bool {
     PROCESS_REAP_REQUEST_EPOCH.store(epoch, Ordering::Release);
     let mut spins = 0usize;
     loop {
-        let all_quiescent = BOOT_CPU_LOCALS.iter().enumerate().all(|(cpu, local)| {
-            if local.online.load(Ordering::Acquire) == 0
-                || local.lapic_id.load(Ordering::Acquire)
-                    == SMP_BSP_LAPIC_ID.load(Ordering::Acquire)
-            {
-                true
-            } else {
-                PROCESS_REAP_ACKS[cpu].load(Ordering::Acquire) == epoch
-            }
-        });
+        let all_quiescent = AP_CPL3_RUNNING_MASK.load(Ordering::Acquire) & secondary_cpu_mask()
+            == 0
+            && BOOT_CPU_LOCALS.iter().enumerate().all(|(cpu, local)| {
+                if local.online.load(Ordering::Acquire) == 0
+                    || local.lapic_id.load(Ordering::Acquire)
+                        == SMP_BSP_LAPIC_ID.load(Ordering::Acquire)
+                {
+                    true
+                } else {
+                    PROCESS_REAP_ACKS[cpu].load(Ordering::Acquire) == epoch
+                }
+            });
         if all_quiescent {
             let acknowledgements = BOOT_CPU_LOCALS
                 .iter()
@@ -2589,9 +2659,9 @@ fn quiesce_process_probe_aps() -> bool {
                             != SMP_BSP_LAPIC_ID.load(Ordering::Acquire)
                 })
                 .count();
-            write("Reaper SMP: BSP fora dos CR3 de prova; ACKs de quiescência dos APs=");
+            write("Reaper SMP: BSP e APs confirmaram CR3 kernel; ACKs dos APs=");
             write_u64(acknowledgements as u64);
-            write("; stacks, VM e page tables podem ser recolhidas.\r\n");
+            write("; CPL3 ativo=0; stacks, VM e page tables liberáveis.\r\n");
             return true;
         }
         if spins >= 100_000_000 {
