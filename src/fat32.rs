@@ -1,5 +1,5 @@
 //! Leitor inicial FAT32 (somente leitura), sem heap e sobre setores de 512 B.
-use crate::hermione::{BlockDevice, SECTOR_SIZE};
+use crate::block::{BlockDevice, SECTOR_SIZE};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fat32Error {
@@ -122,6 +122,25 @@ impl<D: BlockDevice> Fat32Volume<D> {
 
     /// Lê caminho relativo ao volume, incluindo diretórios 8.3.
     pub fn read_path(&mut self, path: &str, output: &mut [u8]) -> Result<usize, Fat32Error> {
+        let file = self.resolve_file(path)?;
+        if output.len() < file.size as usize {
+            return Err(Fat32Error::BufferTooSmall);
+        }
+        self.read_file_entry_range(file, 0, output)
+    }
+
+    /// Reads a byte range by walking the FAT chain from the requested cluster.
+    pub fn read_path_range(
+        &mut self,
+        path: &str,
+        offset: u64,
+        output: &mut [u8],
+    ) -> Result<usize, Fat32Error> {
+        let file = self.resolve_file(path)?;
+        self.read_file_entry_range(file, offset, output)
+    }
+
+    fn resolve_file(&mut self, path: &str) -> Result<Fat32File, Fat32Error> {
         let mut directory = self.root_cluster;
         let mut components = path.split('/').filter(|part| !part.is_empty());
         let mut component = components.next().ok_or(Fat32Error::InvalidName)?;
@@ -129,7 +148,7 @@ impl<D: BlockDevice> Fat32Volume<D> {
             let file = self.find_child(directory, component)?;
             match components.next() {
                 None if file.attributes & 0x10 == 0 => {
-                    return self.read_file_entry(file, output);
+                    return Ok(file);
                 }
                 Some(next) if file.attributes & 0x10 != 0 => {
                     directory = file.first_cluster;
@@ -154,23 +173,49 @@ impl<D: BlockDevice> Fat32Volume<D> {
     }
 
     fn read_file_entry(&mut self, file: Fat32File, output: &mut [u8]) -> Result<usize, Fat32Error> {
-        if file.size == 0 {
-            return Ok(0);
-        }
         if output.len() < file.size as usize {
             return Err(Fat32Error::BufferTooSmall);
         }
+        self.read_file_entry_range(file, 0, output)
+    }
+
+    fn read_file_entry_range(
+        &mut self,
+        file: Fat32File,
+        offset: u64,
+        output: &mut [u8],
+    ) -> Result<usize, Fat32Error> {
+        if file.size == 0 {
+            return Ok(0);
+        }
+        if offset >= u64::from(file.size) || output.is_empty() {
+            return Ok(0);
+        }
         let mut cluster = file.first_cluster;
-        let mut remaining = file.size as usize;
-        let mut written = 0;
+        let cluster_bytes = u64::from(self.sectors_per_cluster) * SECTOR_SIZE as u64;
+        let mut skip_clusters = offset / cluster_bytes;
+        let mut cluster_offset = (offset % cluster_bytes) as usize;
         let mut visited = 0u32;
+        while skip_clusters > 0 {
+            if visited >= self.cluster_count {
+                return Err(Fat32Error::CorruptChain);
+            }
+            cluster = self.next_cluster(cluster)?;
+            visited += 1;
+            skip_clusters -= 1;
+        }
+        let file_remaining = usize::try_from(u64::from(file.size) - offset)
+            .map_err(|_| Fat32Error::BufferTooSmall)?;
+        let mut remaining = output.len().min(file_remaining);
+        let mut written = 0;
         while remaining > 0 {
             self.validate_cluster(cluster)?;
             if visited >= self.cluster_count {
                 return Err(Fat32Error::CorruptChain);
             }
             visited += 1;
-            for sector_index in 0..self.sectors_per_cluster {
+            let first_sector = cluster_offset / SECTOR_SIZE;
+            for sector_index in first_sector..self.sectors_per_cluster as usize {
                 if remaining == 0 {
                     break;
                 }
@@ -181,11 +226,18 @@ impl<D: BlockDevice> Fat32Volume<D> {
                         &mut sector,
                     )
                     .map_err(|_| Fat32Error::Device)?;
-                let used = remaining.min(SECTOR_SIZE);
-                output[written..written + used].copy_from_slice(&sector[..used]);
+                let sector_offset = if sector_index == first_sector {
+                    cluster_offset % SECTOR_SIZE
+                } else {
+                    0
+                };
+                let used = remaining.min(SECTOR_SIZE - sector_offset);
+                output[written..written + used]
+                    .copy_from_slice(&sector[sector_offset..sector_offset + used]);
                 written += used;
                 remaining -= used;
             }
+            cluster_offset = 0;
             if remaining > 0 {
                 cluster = self.next_cluster(cluster)?;
             }
@@ -306,6 +358,21 @@ impl<D: BlockDevice> crate::vfs::ReadOnlyMountBackend for Fat32Volume<D> {
             _ => crate::vfs::VfsError::InvalidPath,
         })
     }
+
+    fn read_file_range(
+        &mut self,
+        path: &str,
+        offset: u64,
+        output: &mut [u8],
+    ) -> Result<usize, crate::vfs::VfsError> {
+        self.read_path_range(path, offset, output)
+            .map_err(|error| match error {
+                Fat32Error::NotFound => crate::vfs::VfsError::NotFound,
+                Fat32Error::BufferTooSmall => crate::vfs::VfsError::BufferTooSmall,
+                Fat32Error::InvalidName => crate::vfs::VfsError::InvalidPath,
+                _ => crate::vfs::VfsError::InvalidPath,
+            })
+    }
 }
 
 fn encode_short_name(name: &str) -> Result<[u8; 11], Fat32Error> {
@@ -357,9 +424,9 @@ mod tests {
             &mut self,
             lba: u64,
             out: &mut [u8; SECTOR_SIZE],
-        ) -> Result<(), crate::hermione::FsError> {
+        ) -> Result<(), crate::block::BlockError> {
             if lba >= self.count {
-                return Err(crate::hermione::FsError::Device);
+                return Err(crate::block::BlockError::Device);
             }
             *out = self.sectors.get(&lba).copied().unwrap_or([0; SECTOR_SIZE]);
             Ok(())
@@ -368,14 +435,14 @@ mod tests {
             &mut self,
             lba: u64,
             data: &[u8; SECTOR_SIZE],
-        ) -> Result<(), crate::hermione::FsError> {
+        ) -> Result<(), crate::block::BlockError> {
             if lba >= self.count {
-                return Err(crate::hermione::FsError::Device);
+                return Err(crate::block::BlockError::Device);
             }
             self.sectors.insert(lba, *data);
             Ok(())
         }
-        fn flush(&mut self) -> Result<(), crate::hermione::FsError> {
+        fn flush(&mut self) -> Result<(), crate::block::BlockError> {
             Ok(())
         }
     }

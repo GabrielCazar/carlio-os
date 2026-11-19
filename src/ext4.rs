@@ -3,7 +3,7 @@
 //! Suporta lookup linear de diretórios e extents armazenados no inode. Não
 //! recupera journal nem interpreta recursos avançados; volumes com recursos
 //! incompatíveis devem continuar sendo montados somente em outro sistema.
-use crate::hermione::{BlockDevice, SECTOR_SIZE};
+use crate::block::{BlockDevice, SECTOR_SIZE};
 
 const MAX_BLOCK_SIZE: usize = 4096;
 const EXT4_MAGIC: u16 = 0xef53;
@@ -113,6 +113,26 @@ impl<D: BlockDevice> Ext4Volume<D> {
     }
 
     pub fn read_path(&mut self, path: &str, output: &mut [u8]) -> Result<usize, Ext4Error> {
+        let inode = self.resolve_file(path)?;
+        if inode.size > output.len() as u64 {
+            return Err(Ext4Error::BufferTooSmall);
+        }
+        self.read_inode_range(&inode, 0, output)
+    }
+
+    /// Reads a file range directly from extents, without allocating a buffer
+    /// proportional to the file's total size.
+    pub fn read_path_range(
+        &mut self,
+        path: &str,
+        offset: u64,
+        output: &mut [u8],
+    ) -> Result<usize, Ext4Error> {
+        let inode = self.resolve_file(path)?;
+        self.read_inode_range(&inode, offset, output)
+    }
+
+    fn resolve_file(&mut self, path: &str) -> Result<Inode, Ext4Error> {
         let mut inode_number = 2u32;
         let mut components = path.split('/').filter(|part| !part.is_empty());
         let mut component = components.next().ok_or(Ext4Error::InvalidPath)?;
@@ -134,20 +154,37 @@ impl<D: BlockDevice> Ext4Volume<D> {
         if inode.mode & 0xf000 != 0x8000 {
             return Err(Ext4Error::NotFound);
         }
-        if inode.size > output.len() as u64 {
-            return Err(Ext4Error::BufferTooSmall);
+        Ok(inode)
+    }
+
+    fn read_inode_range(
+        &mut self,
+        inode: &Inode,
+        offset: u64,
+        output: &mut [u8],
+    ) -> Result<usize, Ext4Error> {
+        if offset >= inode.size || output.is_empty() {
+            return Ok(0);
         }
+        let available =
+            usize::try_from(inode.size - offset).map_err(|_| Ext4Error::BufferTooSmall)?;
+        let count = output.len().min(available);
+        let block_size = self.block_size as u64;
+        let mut logical =
+            u32::try_from(offset / block_size).map_err(|_| Ext4Error::CorruptMetadata)?;
+        let mut block_offset = (offset % block_size) as usize;
         let mut written = 0usize;
-        let mut logical = 0u32;
-        while written < inode.size as usize {
+        while written < count {
             let physical = self
-                .extent_block(&inode, logical)?
+                .extent_block(inode, logical)?
                 .ok_or(Ext4Error::CorruptMetadata)?;
             let mut block = [0u8; MAX_BLOCK_SIZE];
             self.read_block(physical, &mut block[..self.block_size])?;
-            let used = (inode.size as usize - written).min(self.block_size);
-            output[written..written + used].copy_from_slice(&block[..used]);
+            let used = (count - written).min(self.block_size - block_offset);
+            output[written..written + used]
+                .copy_from_slice(&block[block_offset..block_offset + used]);
             written += used;
+            block_offset = 0;
             logical = logical.checked_add(1).ok_or(Ext4Error::CorruptMetadata)?;
         }
         Ok(written)
@@ -309,6 +346,22 @@ impl<D: BlockDevice> crate::vfs::ReadOnlyMountBackend for Ext4Volume<D> {
             _ => crate::vfs::VfsError::InvalidPath,
         })
     }
+
+    fn read_file_range(
+        &mut self,
+        path: &str,
+        offset: u64,
+        output: &mut [u8],
+    ) -> Result<usize, crate::vfs::VfsError> {
+        self.read_path_range(path, offset, output)
+            .map_err(|error| match error {
+                Ext4Error::NotFound => crate::vfs::VfsError::NotFound,
+                Ext4Error::IsDirectory => crate::vfs::VfsError::IsDirectory,
+                Ext4Error::BufferTooSmall => crate::vfs::VfsError::BufferTooSmall,
+                Ext4Error::InvalidPath => crate::vfs::VfsError::InvalidPath,
+                _ => crate::vfs::VfsError::InvalidPath,
+            })
+    }
 }
 
 fn u16le(bytes: &[u8], offset: usize) -> u16 {
@@ -332,21 +385,21 @@ mod tests {
             &mut self,
             lba: u64,
             out: &mut [u8; SECTOR_SIZE],
-        ) -> Result<(), crate::hermione::FsError> {
+        ) -> Result<(), crate::block::BlockError> {
             *out = *self
                 .0
                 .get(lba as usize)
-                .ok_or(crate::hermione::FsError::Device)?;
+                .ok_or(crate::block::BlockError::Device)?;
             Ok(())
         }
         fn write_sector(
             &mut self,
             _: u64,
             _: &[u8; SECTOR_SIZE],
-        ) -> Result<(), crate::hermione::FsError> {
-            Err(crate::hermione::FsError::Device)
+        ) -> Result<(), crate::block::BlockError> {
+            Err(crate::block::BlockError::Device)
         }
-        fn flush(&mut self) -> Result<(), crate::hermione::FsError> {
+        fn flush(&mut self) -> Result<(), crate::block::BlockError> {
             Ok(())
         }
     }

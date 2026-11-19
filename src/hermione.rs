@@ -3,7 +3,7 @@
 //! Formato experimental sem cifra. Dados possuem duas cópias checksumadas e a
 //! publicação da nova geração usa um journal redo de um setor.
 
-pub const SECTOR_SIZE: usize = 512;
+pub use crate::block::{BlockDevice, SECTOR_SIZE};
 const MAGIC: &[u8; 8] = b"HERMFS03";
 const DIRECTORY_MAGIC: &[u8; 8] = b"HERM-DIR";
 const VERSION: u32 = 3;
@@ -18,13 +18,6 @@ pub const MAX_FILES: usize = ENTRY_COUNT;
 /// O maior volume que endereça LBAs de 0 a 2^32-1 (2 TiB em setores de 512 B).
 pub const MAX_VOLUME_SECTORS: u64 = u32::MAX as u64 + 1;
 
-pub trait BlockDevice {
-    fn sector_count(&self) -> u64;
-    fn read_sector(&mut self, lba: u64, out: &mut [u8; SECTOR_SIZE]) -> Result<(), FsError>;
-    fn write_sector(&mut self, lba: u64, data: &[u8; SECTOR_SIZE]) -> Result<(), FsError>;
-    fn flush(&mut self) -> Result<(), FsError>;
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FsError {
     Device,
@@ -38,6 +31,12 @@ pub enum FsError {
     BufferTooSmall,
     FileTooLarge,
     ChecksumMismatch,
+}
+
+impl From<crate::block::BlockError> for FsError {
+    fn from(_: crate::block::BlockError) -> Self {
+        Self::Device
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -246,7 +245,7 @@ impl<D: BlockDevice> HermioneVolume<D> {
                 .read_sector(entry.start as u64 + n as u64, &mut sector)
             {
                 output[..entry.size as usize].fill(0);
-                return Err(error);
+                return Err(FsError::from(error));
             }
             let used = core::cmp::min(remaining, SECTOR_SIZE);
             output[offset..offset + used].copy_from_slice(&sector[..used]);
@@ -632,27 +631,41 @@ mod tests {
         fn sector_count(&self) -> u64 {
             self.reported_sectors
         }
-        fn read_sector(&mut self, lba: u64, out: &mut [u8; SECTOR_SIZE]) -> Result<(), FsError> {
-            *out = *self.sectors.get(lba as usize).ok_or(FsError::Device)?;
+        fn read_sector(
+            &mut self,
+            lba: u64,
+            out: &mut [u8; SECTOR_SIZE],
+        ) -> Result<(), crate::block::BlockError> {
+            *out = *self
+                .sectors
+                .get(lba as usize)
+                .ok_or(crate::block::BlockError::Device)?;
             Ok(())
         }
-        fn write_sector(&mut self, lba: u64, data: &[u8; SECTOR_SIZE]) -> Result<(), FsError> {
+        fn write_sector(
+            &mut self,
+            lba: u64,
+            data: &[u8; SECTOR_SIZE],
+        ) -> Result<(), crate::block::BlockError> {
             let index = self.writes;
             self.writes += 1;
-            let target = self.sectors.get_mut(lba as usize).ok_or(FsError::Device)?;
+            let target = self
+                .sectors
+                .get_mut(lba as usize)
+                .ok_or(crate::block::BlockError::Device)?;
             if self.tear_write_at == Some(index) {
                 target[..SECTOR_SIZE / 32].copy_from_slice(&data[..SECTOR_SIZE / 32]);
-                return Err(FsError::Device);
+                return Err(crate::block::BlockError::Device);
             }
             *target = *data;
             Ok(())
         }
-        fn flush(&mut self) -> Result<(), FsError> {
+        fn flush(&mut self) -> Result<(), crate::block::BlockError> {
             let index = self.flushes;
             self.flushes += 1;
             self.flush_after_write.push(self.writes);
             if self.fail_flush_at == Some(index) {
-                return Err(FsError::Device);
+                return Err(crate::block::BlockError::Device);
             }
             Ok(())
         }

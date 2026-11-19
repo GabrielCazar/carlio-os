@@ -1,0 +1,34 @@
+[2J[H+----------------------------------------------------+
+| carlIO OS | Criado por João G.R.Santos             |
+| Sistema operacional experimental x86_64            |
++----------------------------------------------------+
+Núcleo Rust · inicialização serial
+
+Framebuffer Limine: RGB ativo; renderização de pixels validada.
+IDT: exceções 0-31 registradas; IRQs externos permanecem desativados.
+Ring 3: GDT, TSS, RSP0 e seletores de usuário configurados; CPL continua 0.
+Aviso: terminal de diagnóstico em ring 0; não é uma fronteira de segurança.
+Mapa de memória Limine: regiões usáveis=2, RAM usável MiB=499; HHDM e bases físico/virtual do kernel disponíveis.
+Allocator físico: frames livres até 32 GiB=127930, sem RAM acima de 4 GiB; teste usa frame baixo; alocação, escrita, leitura e liberação passaram.
+LAPIC xAPIC ativo no BSP; vetor de shootdown remoto 0xF1 instalado.
+SMP Limine: CPUs detectadas=4, APs iniciadas=3, aguardadas=3; APs aguardam despacho de tarefa, scheduler ainda desativado.
+SMP trabalho: CPUs AP=3, tarefas concluídas=3, resultados válidos=3; despacho de prova concluído.
+Heap kernel: regiões dinâmicas, alinhamento, escrita/leitura, expansão e liberação passaram.
+Inventário PCI (somente leitura):
+PCI 00:01.0 1234:1111 vídeo
+PCI 00:02.0 8086:10d3 rede (Intel 82574L/QEMU)
+NIC Intel 82574L: filas DMA TX/RX ativas, MAC=525400123456; envio/recepcao polling disponiveis.
+DHCP IPv4: concessao recebida 10.0.2.15
+PCI 00:1f.2 8086:2922 SATA/AHCI (QEMU: reconhecido; driver AHCI experimental)
+AHCI indisponível: dispositivo nao encontrado.
+Controladores relevantes encontrados: 3
+Hermione rootfs: verificando volume de sistema.
+Hermione rootfs: AHCI sem dispositivo; mantendo VFS somente em RAM.
+Runtime de processos: preparando tarefas CPL3.
+Runtime: tarefas com CR3 independentes despachadas.
+write ok
+ABI Linux: probe CPL3 aguardando byte de entrada serial.
+LAPIC: ACKs obtidos=2, esperados=3.
+LAPIC: falha fatal no shootdown remoto: ACK remoto expirou.
+
+--- mensagens do QEMU ---

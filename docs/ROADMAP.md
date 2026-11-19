@@ -59,8 +59,8 @@ positivos, negativos e de falha; modelos host e detecção PCI não bastam.
 | Processos / scheduler | ELF64 de prova, CR3/RSP0 isolados, preempção, saída/fault/reaper; `destroy(id)` remove Ready/Blocked; APIs internas `clone_thread`/`join_current`; manifesto `ProcessResourceBundle` associado ao `Process`; sobreposição CPL3 pontual em dois APs e reaper com 3 ACKs globais comprovados em BIOS/UEFI local e NAS/KVM BIOS | Ownership direto dos objetos VM ainda fica no registro fixo do backend; uma alteração local não validada troca os 3 slots nomeados por pool estático de 64 VMs. Stress sustentado concorrente de scheduler, VM e allocator continua sem prova; faltam integração `clone`, pilha user própria, futex/POSIX join e estabilidade ABI/VM ([relatório](../reports/fase-2-memoria-execucao.md), [BIOS bundle local](../reports/logs/fase2-process-bundle-qemu-bios-20261119-022753.log), [UEFI bundle local](../reports/logs/fase2-process-bundle-qemu-uefi-20261119-022753.log), [BIOS NAS bundle](../reports/logs/fase2-process-bundle-nas-20261119-022823-qemu-kvm-bios.log), [UEFI NAS bundle](../reports/logs/fase2-process-bundle-nas-20261119-022823-qemu-kvm-uefi.log)) |
 | Módulos do kernel (LKMs) | Parser ET_REL host com relocations x86_64, extração de exports da `.symtab`, registro persistente host, lookup kernel/módulos e contabilidade host de dependências; `SmpPageTableManager::protect` com shootdown testado em host ([log fase 2](../reports/fase-2-memoria-execucao.md)) | Ciclo runtime ainda não ligado; backend x86_64 para alocação/mapeamento/invocação, bloqueio de novas chamadas, rollback transacional e quiescência SMP; gates QEMU/NAS que carreguem objetos ET_REL positivos, negativos e de falha |
 | Memória | Bitmap até 32 GiB, VM x86-64, folhas user owned, heap expansível e shootdown xAPIC com ACK | Pressão/concorrência geral de VM sob carga; swap permanece desligado |
-| Drivers / E/S | PCI read-only, framebuffer Limine, adaptador BlockDevice AHCI e Ethernet Intel QEMU; QEMU validou Hermione em disco descartável | Validação física de AHCI e demais dispositivos (RTL8111/I219, EHCI/xHCI, iGPU), timeout/remoção em hardware |
-| VFS | Políticas POSIX host, mounts roteáveis e backends de leitura para Hermione/FAT32/ext4; fixture CPL3 valida `openat/read/close`, leitura serial e negação de arquivo `0600` com `EACCES` em BIOS/UEFI local e NAS/KVM | Descoberta de partições e montagem no boot; syscalls ainda não consultam backends mounted; suporte a arquivos maiores que 16 KiB, nomes longos FAT, recursos ext4 completos, escrita nos mounts e enforcement geral de inode/processo |
+| Drivers / E/S | PCI read-only, framebuffer Limine, adaptador BlockDevice AHCI e Ethernet Intel QEMU; prioridade de filesystem em ext4/FAT32 | Validação física de AHCI e demais dispositivos (RTL8111/I219, EHCI/xHCI, iGPU), timeout/remoção em hardware |
+| VFS | Políticas POSIX host, mounts roteáveis, backends somente leitura ext4/FAT32 e descoberta MBR/GPT no boot; Hermione arquivado | Montagem automática no namespace; syscalls ainda não consultam backends mounted; suporte a arquivos maiores que 16 KiB, nomes longos FAT, recursos ext4 completos, escrita nos mounts e enforcement geral de inode/processo |
 | Rede | Intel 82574L QEMU TX/RX polling e DHCPv4 DORA; tabela de sockets bound para bind/listen | TCP/IP de ponta a ponta, `accept/connect/send/recv`, drivers físicos, rota, DNS e serviços |
 | Syscalls (SCI) | Entrada x86-64 `SYSCALL`; CPL3 valida identidade/grupos, `getpid`/`gettid`, `clock_gettime`/`clock_getres` monotônicos, `brk` positivo, `mmap/munmap`, VFS inline, serial e rejeições de ponteiros/permissões; `mprotect` parcial foi conectado, validação suspensa | NAS UEFI smoke aberto: a prova de duas CR3 não observou preempção de timer e o probe de page tables falhou ([relatório](../reports/fase-4-aplicacoes-linux.md), [log](../reports/logs/fase4-linux-abi-timers-nas-20261119-021821-qemu-kvm-uefi.log)). Ainda faltam `CLOCK_REALTIME`, `execve` transacional integrado, carregamento do interpretador/dependências ELF dinâmicas, relocations/glibc, GNU version tables, TLS, sinais, futex, chamadas completas de threads, mapeamento de arquivo, mounts no VFS e compatibilidade geral glibc/systemd |
 | pegasusDS / servidor de diretório | Contrato ABI v1 congelado como documento; crate local `libcarlio` define interface Rust segura sem transporte de syscall | ABI implementada, capacidades, sandbox, hooks LSM, keyring, AF_UNIX/SCM_RIGHTS, IPv6/TCP/epoll, canais opt-in, verified boot e workload QEMU/NAS; não executar servidor de rede |
@@ -261,20 +261,23 @@ partições e VFS; portanto, a ISO não faz mounts reais durante a inicializaç�
 
 ### 3 — Bloco, filesystems e recuperação
 
+**Prioridade de produto:** ext4 é o filesystem principal para rootfs e volumes
+Linux; FAT32 é central para a partição EFI e mídia removível/intercâmbio. Ambos
+começam com montagem somente leitura e são integrados ao VFS antes de habilitar
+escrita. Hermione está arquivado: conservar código e evidências existentes,
+sem ampliar formato, driver, rootfs ou critérios de aceite para esse filesystem.
+
 **Meta de capacidade:** endereçar discos de até 2 TiB (2^32 setores de 512
 bytes) sem truncar LBA, contagem de setores, offsets ou tamanhos em bytes.
 Aceite inclui leitura/escrita verificadas no início, perto da fronteira de 2 TiB
-e no último LBA em dispositivo/imagem esparsa descartável. O limite de volume
-Hermione atual (`u32::MAX` setores) fica aquém de 2 TiB por um setor e precisa
-ser corrigido ou formalmente substituído por particionamento/capacidade maior.
+e no último LBA em dispositivo/imagem esparsa descartável.
 
 Definir `BlockDevice` uniforme, cache/flush, timeout, cancelamento e tratamento
-de remoção/erro. Exercitar falhas e cortes de energia em QEMU. Para
-interoperabilidade, implementar FAT32 e ext4 primeiro em leitura; adicionar
-escrita apenas depois de validar metadados e recuperação. Evoluir Hermione como
-formato próprio opcional (não ZFS): árvore de diretórios, alocação, journal ou
-protocolo transacional equivalente, snapshots, scrub e reparo somente a partir
-de redundância comprovada. SQLite é posterior a filesystem e allocator.
+de remoção/erro. Exercitar falhas e cortes de energia em QEMU. Priorizar a
+montagem FAT32/ext4 em leitura, ligá-las ao namespace e às syscalls; adicionar
+escrita apenas depois de validar metadados e recuperação. Hermione permanece
+arquivado como formato experimental e não é dependência para rootfs, montagem ou
+aceite desta fase. SQLite é posterior a filesystem e allocator.
 
 Separar integridade de confidencialidade: CRC/checksum detecta erro acidental;
 criptografia exige fonte de entropia, KDF, cifra autenticada, tratamento de
@@ -282,18 +285,24 @@ chaves e testes de bloqueio/limpeza. Redundância, scrub persistente e reparo
 validado são gates separados. Montagem normal só depois de identificar com
 segurança mídia do sistema versus dados.
 
-**Aceite:** montagem somente leitura FAT32/ext4 contra imagens conhecidas;
-escrita e remontagem após teste de falha; journal/recuperação em cortes
-repetidos; timeout e remoção durante I/O sem corrupção silenciosa; Hermione
-recupera apenas cópia validada. Criptografia não será chamada de protegida antes
-de testes de senha correta/incorreta, corrupção autenticada e limpeza de chave.
+**Aceite:** montagem somente leitura FAT32/ext4 contra imagens conhecidas e
+acesso a arquivos pelo VFS/syscalls; escrita e remontagem após teste de falha;
+timeout e remoção durante I/O sem corrupção silenciosa. Criptografia não será
+chamada de protegida antes de testes de senha correta/incorreta, corrupção
+autenticada e limpeza de chave.
 
-**Estado conhecido:** Hermione v3 em mídia descartável passou testes host e
+**Histórico arquivado:** Hermione v3 em mídia descartável passou testes host e
 QEMU, incluindo gravação espelhada, replay do journal após diretório rasgado,
-checksum, reparo de uma cópia e rejeição de duas cópias corrompidas. Isso não é
-montagem do sistema, cifra, tolerância à falha do disco ou filesystem FAT32/ext4.
+checksum, reparo de uma cópia e rejeição de duas cópias corrompidas. Esse histórico
+não é aceite corrente da fase nem valida montagem, cifra ou tolerância à falha.
 
-**Incremento de mounts (2026-11-16):** VFS delega leitura ao backend tipado de
+**Estado implementado:** o contrato genérico de bloco fica em `src/block.rs`;
+os leitores ext4/FAT32 e o adaptador AHCI usam esse contrato sem depender do
+módulo Hermione. O VFS passa offsets de leitura aos backends e os leitores já
+suportam leitura por faixa. A descoberta de partições, registro de backends no
+boot e roteamento de syscalls ainda não estão conectados.
+
+**Histórico de mounts (2026-11-16):** VFS delega leitura ao backend tipado de
 mount. FAT32 lê caminhos com nomes curtos 8.3; ext4 lê arquivos regulares via
 inodes, diretórios lineares e extents no modo somente leitura. Os testes host
 passaram e a regressão de boot BIOS/UEFI passou local/NAS. O smoke boot não
@@ -314,7 +323,7 @@ no boot seguem pendentes.
 `fd 0/1/2` continuam ligados à serial. O probe CPL3 abre
 `/programas/probe`, lê um byte e fecha o descritor. Host (140 testes), boots
 BIOS/UEFI local e NAS/KVM e o smoke AHCI com mídia QEMU descartável passaram.
-Isso ainda não conecta descritores aos backends montados Hermione/FAT32/ext4,
+Isso ainda não conecta descritores aos backends montados FAT32/ext4,
 não implementa `O_CREAT` e não valida leitura positiva da serial em CPL3.
 
 Hermione/`herm-fs` já tem contrato de bloco, backend AHCI experimental em QEMU,
@@ -332,7 +341,7 @@ Atualização de capacidade: o formato e `herm-fs` agora aceitam exatamente
 um setor além. Isso fecha apenas a faixa endereçável no backend de imagem; não
 prova AHCI físico nem interoperabilidade.
 
-**Revalidação em imagem descartável (2026-11-16):** `storage-test` local TCG e
+**Histórico de protótipo arquivado (2026-11-16):** `storage-test` local TCG e
 NAS/KVM passou IDENTIFY, WRITE/READ, erro ATA, Hermione formatar/remontar/scrub
 em raw temporário de 16 MiB. Ver logs [local](../reports/logs/fase2-final-storage-qemu-local-20261116.log),
 [NAS/KVM](../reports/logs/fase2-final-20261116-nas-20261116-192713-filesystem-qemu-kvm.log)
@@ -386,9 +395,9 @@ persistência, auditoria durável ou autorização geral. Consulte o [relatório
 logs da prova](../reports/fase-3-seguranca.md#correcao--negacao-posix-em-syscall-cpl3--2026-11-16).
 
 **Incremento de namespace (2026-11-16):** VFS cria a hierarquia FHS e mantém
-mounts para Hermione, FAT32, ext4, proc e dev, com validação de paths, mount
+mounts para FAT32, ext4, proc e dev, com validação de paths, mount
 root-only, opções, seleção específica e delegação de leitura a backends para
-Hermione/FAT32/ext4. A delegação ainda é uma API host sem descoberta de partição
+FAT32/ext4. A delegação ainda é uma API sem descoberta de partição
 ou dispositivo no boot; os leitores FAT32/ext4 são parciais e somente leitura.
 ABI Linux `SYSCALL`/dispatcher já está ligada ao contexto de processo para a
 fatia implementada. Pacotes Arch seguem em
@@ -444,7 +453,7 @@ VMA por processo agora integra `mmap/munmap/brk` ao ownership das folhas e às
 page tables; a prova CPL3 aloca, grava e libera uma página anônima. Mapeamentos
 de arquivo/compartilhados e cobertura CPL3 para `brk` seguem pendentes, e os
 snapshots ainda não estão montados no VFS. Os modelos host também verificam duas tabelas de página isoladas com a mesma
-VA e a persistência do volume Hermione após fechar/remontar a imagem. A entrada
+VA e, historicamente, persistência de snapshot Hermione em imagem descartável. A entrada
 MSR/LSTAR já despacha `SYSCALL` em processos CPL3; `getpid`, `exit`,
 `getuid/euid/gid/egid`, `getgroups`, `write` para serial e recusa de destino
 inválido em `read` passaram probe BIOS/UEFI local e NAS/KVM. O smoke envia um
@@ -471,10 +480,9 @@ x86_64 de seis campos de 65 bytes e validação de ponteiro de saída. Isso é
 compatibilidade básica para ferramentas que consultam a identidade do sistema;
 não habilita pacman, instalação da base Arch ou Plasma. O loader também aplica
 `R_X86_64_RELATIVE` a static PIE, um planejador host ALPM resolve dependências
-nomeadas/versionadas em ordem topológica e o snapshot VFS pode ser carregado e
-persistido em `rootfs.img` num volume Hermione preexistente; a criação e
-remontagem foram verificadas em QEMU com imagem AHCI descartável. O NAS não
-ofereceu AHCI utilizável no teste. Isso não é instalação: ainda faltam linker e
+nomeadas/versionadas em ordem topológica. O antigo snapshot VFS em Hermione foi
+removido do boot corrente; rootfs ext4/FAT32 e mounts de volumes ainda não foram
+integrados. Isso não é instalação: ainda faltam linker e
 relocations dinâmicas, `execve` genérico,
 extração/transações ALPM, libc e validação de binários reais; o resolvedor não
 cobre toda a semântica libalpm (`vercmp`, `provides`, conflitos).
@@ -483,9 +491,9 @@ dispositivos gráficos/input, compositor e DBus. Plasma/SDDM não está instalá
 nem executável nesta etapa.
 
 Histórico: dispatcher host-testável cobre `read` com retorno parcial, EOF e
-erros. A camada kernel fornece entrada serial em `fd 0`; rootfs Hermione é
-opcional e requer mídia dedicada já formatada. Outros backends de mounts seguem
-desconectados das syscalls Linux.
+erros. A camada kernel fornece entrada serial em `fd 0`; o VFS corrente mantém
+alterações em RAM. Backends mounted ext4/FAT32 ainda não estão conectados às
+syscalls Linux.
 
 ### 6 — Interface, desktop e agentes
 

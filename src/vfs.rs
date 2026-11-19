@@ -28,6 +28,21 @@ pub enum FilesystemType {
 pub trait ReadOnlyMountBackend {
     fn filesystem_type(&self) -> FilesystemType;
     fn read_file(&mut self, path: &str, output: &mut [u8]) -> Result<usize, VfsError>;
+
+    /// Reads a byte range without buffering the entire file in the kernel.
+    /// Backends should override this for filesystems used by process I/O.
+    fn read_file_range(
+        &mut self,
+        path: &str,
+        offset: u64,
+        output: &mut [u8],
+    ) -> Result<usize, VfsError> {
+        if offset == 0 {
+            self.read_file(path, output)
+        } else {
+            Err(VfsError::NotFound)
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -569,6 +584,19 @@ impl<const N: usize> Vfs<N> {
         backend: &mut B,
         output: &mut [u8],
     ) -> Result<usize, VfsError> {
+        self.read_mounted_file_range(path, context, backend, 0, output)
+    }
+
+    /// Reads a byte range from the backend selected by the most specific mount.
+    /// The backend remains responsible for filesystem metadata validation.
+    pub fn read_mounted_file_range<B: ReadOnlyMountBackend>(
+        &self,
+        path: &str,
+        context: AccessContext<'_>,
+        backend: &mut B,
+        offset: u64,
+        output: &mut [u8],
+    ) -> Result<usize, VfsError> {
         let mount = self.mount_for(path).ok_or(VfsError::NotMounted)?;
         if mount.filesystem != backend.filesystem_type() {
             return Err(VfsError::InvalidMountPath);
@@ -585,7 +613,7 @@ impl<const N: usize> Vfs<N> {
         } else {
             &path[mount.path.len()..]
         };
-        backend.read_file(relative, output)
+        backend.read_file_range(relative, offset, output)
     }
 
     pub fn create_dir(

@@ -1,5 +1,6 @@
+use carlio_os::block::BlockError;
 use carlio_os::hermione::{
-    BlockDevice, FileInfo, FsError, HermioneVolume, ScrubReport, MAX_VOLUME_SECTORS, SECTOR_SIZE,
+    BlockDevice, FileInfo, HermioneVolume, ScrubReport, MAX_VOLUME_SECTORS, SECTOR_SIZE,
 };
 use std::{
     env,
@@ -36,26 +37,26 @@ impl BlockDevice for ImageDevice {
     fn sector_count(&self) -> u64 {
         self.sectors
     }
-    fn read_sector(&mut self, lba: u64, out: &mut [u8; SECTOR_SIZE]) -> Result<(), FsError> {
+    fn read_sector(&mut self, lba: u64, out: &mut [u8; SECTOR_SIZE]) -> Result<(), BlockError> {
         if lba >= self.sectors {
-            return Err(FsError::Device);
+            return Err(BlockError::Device);
         }
         self.file
             .seek(SeekFrom::Start(lba * SECTOR_SIZE as u64))
-            .map_err(|_| FsError::Device)?;
-        self.file.read_exact(out).map_err(|_| FsError::Device)
+            .map_err(|_| BlockError::Device)?;
+        self.file.read_exact(out).map_err(|_| BlockError::Device)
     }
-    fn write_sector(&mut self, lba: u64, data: &[u8; SECTOR_SIZE]) -> Result<(), FsError> {
+    fn write_sector(&mut self, lba: u64, data: &[u8; SECTOR_SIZE]) -> Result<(), BlockError> {
         if lba >= self.sectors {
-            return Err(FsError::Device);
+            return Err(BlockError::Device);
         }
         self.file
             .seek(SeekFrom::Start(lba * SECTOR_SIZE as u64))
-            .map_err(|_| FsError::Device)?;
-        self.file.write_all(data).map_err(|_| FsError::Device)
+            .map_err(|_| BlockError::Device)?;
+        self.file.write_all(data).map_err(|_| BlockError::Device)
     }
-    fn flush(&mut self) -> Result<(), FsError> {
-        self.file.sync_all().map_err(|_| FsError::Device)
+    fn flush(&mut self) -> Result<(), BlockError> {
+        self.file.sync_all().map_err(|_| BlockError::Device)
     }
 }
 
@@ -273,7 +274,7 @@ mod tests {
         assert_eq!(readback[0], 0x5a);
         assert_eq!(
             image.read_sector(sectors, &mut readback),
-            Err(FsError::Device)
+            Err(BlockError::Device)
         );
         drop(image);
         fs::remove_file(path).unwrap();
