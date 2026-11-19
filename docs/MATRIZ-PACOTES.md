@@ -22,6 +22,11 @@ nenhum executável vindo de pacote foi validado no CarlioOS. Os leitores de
 `dpkg` ou instaladores. A entrada Linux `SYSCALL` já passa `getpid` e `exit` na
 prova CPL3; isso não satisfaz a ABI de uma aplicação real.
 
+Para Arch, há um perfil de pacotes e um construtor host de rootfs em
+[`userland/arch/`](../userland/arch/). Seu resultado não é contabilizado como
+instalação no kernel, execução de payload, isolamento ou rollback; essas
+operações permanecem pendentes nesta matriz.
+
 ## Matriz de arquitetura e pré-requisitos
 
 | Formato | Gerenciador/origem | Conteúdo e estado local | Pré-requisitos CarlioOS antes do suporte útil |
