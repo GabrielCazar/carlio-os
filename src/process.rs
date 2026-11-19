@@ -1556,12 +1556,14 @@ mod tests {
         let workers: std::vec::Vec<_> = (0..CPUS)
             .map(|cpu| {
                 let scheduler = Arc::clone(&scheduler);
+                let cpu_ids = ids[cpu];
                 std::thread::spawn(move || {
                     let frame = 0xffff_8000_0000_1000 + (cpu as u64) * 0x10;
-                    assert!(scheduler.schedule_local(cpu).unwrap().is_some());
+                    let first = scheduler.schedule_local(cpu).unwrap().unwrap();
+                    assert!(cpu_ids.contains(&first.id));
                     for _ in 0..ROUNDS {
                         let next = scheduler.preempt_frame_local(cpu, frame).unwrap();
-                        assert!(next.is_some());
+                        assert!(next.is_some_and(|process| cpu_ids.contains(&process.id)));
                     }
                 })
             })
@@ -1570,14 +1572,20 @@ mod tests {
             worker.join().unwrap();
         }
 
+        let mut running_by_cpu = [0usize; CPUS];
         for (cpu, cpu_ids) in ids.iter().enumerate() {
             for id in cpu_ids {
-                assert!(matches!(
-                    scheduler.process(*id).unwrap().state,
-                    ProcessState::Running { cpu: owner } if owner == cpu
-                ));
+                match scheduler.process(*id).unwrap().state {
+                    ProcessState::Running { cpu: owner } => {
+                        assert_eq!(owner, cpu);
+                        running_by_cpu[owner] += 1;
+                    }
+                    ProcessState::Ready => {}
+                    state => panic!("estado inesperado após preempção: {state:?}"),
+                }
             }
         }
+        assert!(running_by_cpu.iter().all(|count| *count == 1));
     }
 
     #[test]

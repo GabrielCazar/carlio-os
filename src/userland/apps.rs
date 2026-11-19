@@ -147,6 +147,8 @@ mod tests {
         vfs.set_owner("/programas", root, 0, 3000).unwrap();
         vfs.create_file("/programas", "editor.elf", root, 0o0710)
             .unwrap();
+        vfs.set_owner("/programas/editor.elf", root, 0, 3000)
+            .unwrap();
         assert_eq!(
             vfs.check_access_as(
                 "/programas/editor.elf",

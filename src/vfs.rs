@@ -1455,6 +1455,8 @@ mod tests {
         let mut fs = Vfs::<12>::new();
         fs.create_dir("/", "compartilhado", ROOT, 0o2770).unwrap();
         fs.set_owner("/compartilhado", ROOT, 0, 1000).unwrap();
+        // `chown` remove setgid conforme POSIX; restaure após transferir grupo.
+        fs.set_mode("/compartilhado", ROOT, 0o2770).unwrap();
         let staff_ctx = AccessContext::new(staff, &[], 0);
         fs.create_file_as("/compartilhado", "relatorio", staff_ctx, 0o666)
             .unwrap();

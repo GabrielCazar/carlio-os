@@ -179,6 +179,16 @@ impl<A: PageTableAccess, const PAGES: usize> OwnedAddressSpace<A, PAGES> {
         self.space.root()
     }
 
+    /// Número de folhas user owned neste espaço de endereços.
+    pub const fn owned_user_pages(&self) -> usize {
+        self.frame_count
+    }
+
+    /// Tabelas privadas alcançáveis pela metade user, incluindo a raiz.
+    pub fn owned_user_page_table_pages(&self) -> Result<usize, FrameError> {
+        self.space.tables.user_page_table_pages()
+    }
+
     /// Aloca, zera e mapeia uma página de usuário. Em falha de mapeamento o
     /// frame recém-alocado é devolvido imediatamente ao backend.
     pub fn map_zeroed(&mut self, virtual_address: u64, flags: u64) -> Result<u64, FrameError> {
@@ -238,6 +248,10 @@ impl<A: PageTableAccess, const PAGES: usize> OwnedAddressSpace<A, PAGES> {
             return Err(FrameError::NotMapped);
         }
         self.space.protect_user(virtual_address, flags)
+    }
+
+    pub fn protect_user(&mut self, virtual_address: u64, flags: u64) -> Result<(), FrameError> {
+        self.protect(virtual_address, flags)
     }
 
     /// Desmapeia e devolve o frame de dados ao allocator.
@@ -323,17 +337,6 @@ impl<A: PageTableAccess, const MAPPINGS: usize> AddressSpace<A, MAPPINGS> {
 
     pub const fn root(&self) -> u64 {
         self.root
-    }
-
-    /// Número de folhas user owned neste address space. O valor permite
-    /// contabilização isolada por processo sem consultar tabelas compartilhadas.
-    pub const fn owned_user_pages(&self) -> usize {
-        self.frame_count
-    }
-
-    /// Tabelas de página privadas alcançáveis na metade user, incluindo a raiz.
-    pub fn owned_user_page_table_pages(&self) -> Result<usize, FrameError> {
-        self.space.tables.user_page_table_pages()
     }
 
     pub fn map_user(
