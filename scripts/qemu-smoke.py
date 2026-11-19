@@ -22,6 +22,8 @@ def main() -> int:
     parser.add_argument("--cpus", type=int, default=4, help="CPUs virtuais para o teste SMP")
     parser.add_argument("--memory", default="512M", help="RAM guest QEMU (ex.: 5G, 32G)")
     parser.add_argument("--herm-image", type=Path, help="imagem HermFS descartável anexada ao AHCI")
+    parser.add_argument("--disk-image", type=Path,
+                        help="imagem de disco anexada ao AHCI; escrita fica em snapshot temporário")
     parser.add_argument("--expect-rootfs", choices=("initialized", "mounted"),
                         help="exige mensagem positiva de inicialização ou remontagem do rootfs")
     parser.add_argument("--qemu-debug-log", type=Path,
@@ -29,6 +31,8 @@ def main() -> int:
     args = parser.parse_args()
     if not 1 <= args.cpus <= 64:
         parser.error("--cpus deve estar entre 1 e 64")
+    if args.herm_image and args.disk_image:
+        parser.error("use apenas um entre --herm-image e --disk-image")
     if args.expect_rootfs and not args.herm_image:
         parser.error("--expect-rootfs exige --herm-image")
 
@@ -68,6 +72,11 @@ def main() -> int:
         if not image_path.is_file():
             parser.error(f"imagem Hermione ausente: {image_path}")
         command.extend(("-drive", f"if=ide,format=raw,file={image_path}"))
+    if args.disk_image:
+        image_path = args.disk_image.resolve()
+        if not image_path.is_file():
+            parser.error(f"imagem de disco ausente: {image_path}")
+        command.extend(("-drive", f"if=ide,format=qcow2,file={image_path},snapshot=on"))
     if args.qemu_debug_log:
         args.qemu_debug_log.parent.mkdir(parents=True, exist_ok=True)
         command.extend(("-d", "int", "-D", str(args.qemu_debug_log.resolve())))

@@ -1,0 +1,58 @@
+[2J[H+----------------------------------------------------+
+| carlIO OS | Criado por João G.R.Santos             |
+| Sistema operacional experimental x86_64            |
++----------------------------------------------------+
+Núcleo Rust · BOOT LOG
+Progresso: [--------------------]   0%
+
+[s[6;1H[2KProgresso: [#-------------------]  5%  kernel carregado[uFramebuffer Limine: RGB ativo; renderização de pixels validada.
+[s[6;1H[2KProgresso: [##------------------] 12%  vídeo/console[uIDT: exceções 0-31 registradas; IRQs externos permanecem desativados.
+Ring 3: GDT, TSS, RSP0 e seletores de usuário configurados; CPL continua 0.
+Aviso: terminal de diagnóstico em ring 0; não é uma fronteira de segurança.
+Mapa de memória Limine: regiões usáveis=3, RAM usável MiB=501; HHDM e bases físico/virtual do kernel disponíveis.
+Allocator físico: frames livres até 32 GiB=128391, sem RAM acima de 4 GiB; teste usa frame baixo; alocação, escrita, leitura e liberação passaram.
+[s[6;1H[2KProgresso: [#####---------------] 25%  memória física e HHDM[uLAPIC xAPIC ativo no BSP; vetor de shootdown remoto 0xF1 instalado.
+SMP Limine: CPUs detectadas=4, APs iniciadas=3, aguardadas=3; APs aguardam despacho de tarefa, scheduler ainda desativado.
+SMP trabalho: CPUs AP=3, tarefas concluídas=3, resultados válidos=3; despacho de prova concluído.
+[s[6;1H[2KProgresso: [#########-----------] 45%  inicialização SMP[uHeap kernel: regiões dinâmicas, alinhamento, escrita/leitura, expansão e liberação passaram.
+[s[6;1H[2KProgresso: [###########---------] 58%  heap do kernel[uInventário PCI (somente leitura):
+PCI 00:00.0 8086:29c0 classe=bridge
+PCI 00:01.0 1234:1111 classe=vídeo vídeo
+PCI 00:02.0 8086:10d3 classe=rede rede (Intel 82574L/QEMU)
+NIC Intel 82574L: filas DMA TX/RX ativas, MAC=525400123456; envio/recepcao polling disponiveis.
+DHCP IPv4: concessao recebida 10.0.2.15
+PCI 00:1f.0 8086:2918 classe=bridge
+PCI 00:1f.2 8086:2922 classe=armazenamento SATA/AHCI (QEMU: reconhecido; driver AHCI experimental)
+AHCI: dispositivo identificado em leitura, setores=83886080. Adaptador BlockDevice pronto para rootfs.
+Storage: descoberta de partições falhou: tabela inválida
+PCI 00:1f.3 8086:2930 classe=barramento serial
+Funções PCI presentes detectadas: 6
+[s[6;1H[2KProgresso: [##############------] 70%  detecção de hardware[uVFS: nenhum rootfs ext4/FAT32 montável; namespace FHS em RAM.
+[s[6;1H[2KProgresso: [################----] 82%  VFS e rootfs[uRuntime de processos: preparando tarefas CPL3.
+Runtime: tarefas com CR3 independentes despachadas.
+
+=== CAPTURA DE EXCECAO CPU ===w
+Vertiort: e14  (o #kPF
+ pageA BfaIul t L)i
+nuCx:� pr�obdei gCoP Ld3e  aegruraor:d a0nxd0o0 0b0y0t0e0 0d0e0 0e0n0tr0a0d0a 
+sCePrUi ailnd.ex=1
+ exception-frame=0xffffffff80667a40 kernel-rsp=0xffffffff80667ae0
+RIP: 0xffffffff8000e2af  CS: 0x0000000000000008  RFLAGS: 0x0000000000010046
+RAX=0xffffffff800ccad0 RBX=0x0000000000000000 RCX=0x0000000000000000 RDX=0x0000000000000000
+RSI=0xffffffff806614e0 RDI=0xffffffff800cd0f8 RBP=0x0000000000000000
+R8=0x0000000000000000 R9=0x0000000000000000 R10=0x000ffffffffff000 R11=0x0000000000000001
+R12=0x0000000000000000 R13=0xffffffff80667f60 R14=0x0000000000000009 R15=0x0000000000000002
+CR2 (endereço do page fault): 0x0000000000000000
+Sistema interrompido; diagnóstico serial somente leitura.
+LAPIC: ACKs obtidos=2, esperados=3.
+LAPIC: falha fatal no shootdown remoto: ACK remoto expirou.
+
+=== WATCHDOG: SEM PROGRESSO ===
+RIP: 0xffffffff8001b868  CS: 0x0000000000000008  RFLAGS: 0x0000000000000296
+RAX=0x0000000000000097 RBX=0x0000000000000000 RCX=0xffffffff8065cb01 RDX=0xffff800000000000
+RSI=0x0000000000000000 RDI=0x0000400000000000 RBP=0xffff800000112000
+R8=0x0000000000000006 R9=0x0000000000000001 R10=0x000ffffffffff000 R11=0x0000000000000001
+R12=0xffffffffffffff07 R13=0x0000000000000020 R14=0x0000000000111000 R15=0xffff800000111000
+Sistema interrompido; diagnóstico serial somente leitura.
+
+--- mensagens do QEMU ---

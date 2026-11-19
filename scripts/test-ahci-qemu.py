@@ -20,10 +20,16 @@ def main() -> int:
                         help="acelerador do QEMU (KVM para NAS; TCG como padrão local)")
     parser.add_argument("--without-disk", action="store_true",
                         help="verifica ausência de dispositivo e não envia comandos de escrita")
+    parser.add_argument("--disk-image", type=Path,
+                        help="anexa uma QCOW2 existente em snapshot temporário descartável")
     args = parser.parse_args()
+    if args.without_disk and args.disk_image:
+        parser.error("--without-disk não pode ser combinado com --disk-image")
 
     disk = None
-    if not args.without_disk:
+    if args.disk_image and not args.disk_image.is_file():
+        parser.error(f"imagem de disco ausente: {args.disk_image}")
+    if not args.without_disk and not args.disk_image:
         # Respeita TMPDIR para permitir confinar imagens descartáveis ao sandbox da execução.
         disk = tempfile.NamedTemporaryFile(prefix="carlio-ahci-disposable-", suffix=".img", delete=False)
         disk.truncate(16 * 1024 * 1024)
@@ -35,8 +41,11 @@ def main() -> int:
         "-boot", "d", "-serial", "stdio", "-monitor", "none", "-display", "none",
         "-no-reboot", "-no-shutdown",
     ]
-    if disk:
-        drive = f"file={disk.name},format=raw,if=ide,index=0"
+    if args.disk_image:
+        drive = f"file={args.disk_image.resolve()},format=qcow2,if=ide,index=0,snapshot=on"
+        qemu[7:7] = ["-drive", drive]
+    elif disk:
+        drive = f"file={disk.name},format=raw,if=ide,index=0,snapshot=on"
         qemu[7:7] = ["-drive", drive]
     process = subprocess.Popen(qemu, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, bufsize=0)

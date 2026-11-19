@@ -56,12 +56,12 @@ positivos, negativos e de falha; modelos host e detecção PCI não bastam.
 
 | Subsistema | Implementado e validado | Gate que continua aberto |
 | --- | --- | --- |
-| Processos / scheduler | ELF64 de prova, CR3/RSP0 isolados, preempção, saída/fault/reaper; `destroy(id)` remove Ready/Blocked; APIs internas `clone_thread`/`join_current`; manifesto `ProcessResourceBundle` associado ao `Process`; sobreposição CPL3 pontual em dois APs e reaper com 3 ACKs globais comprovados em BIOS/UEFI local e NAS/KVM BIOS | Ownership direto dos objetos VM ainda fica no registro fixo do backend; uma alteração local não validada troca os 3 slots nomeados por pool estático de 64 VMs. Stress sustentado concorrente de scheduler, VM e allocator continua sem prova; faltam integração `clone`, pilha user própria, futex/POSIX join e estabilidade ABI/VM ([relatório](../reports/fase-2-memoria-execucao.md), [BIOS bundle local](../reports/logs/fase2-process-bundle-qemu-bios-20261119-022753.log), [UEFI bundle local](../reports/logs/fase2-process-bundle-qemu-uefi-20261119-022753.log), [BIOS NAS bundle](../reports/logs/fase2-process-bundle-nas-20261119-022823-qemu-kvm-bios.log), [UEFI NAS bundle](../reports/logs/fase2-process-bundle-nas-20261119-022823-qemu-kvm-uefi.log)) |
+| Processos / scheduler | Filas por CPU, roubo, TSS/stacks RSP0/IST e timer LAPIC por CPU; `ProcessResourceBundle` associa Process, VM, CR3 e stack via token; fault CPL3 registra vetor, código e endereço. Registros históricos: boot 4 CPUs, 25 ACKs TLB e sobreposição CPL3 em dois APs | Revalidação QEMU mais recente falhou no probe CPL3 (falha de afinidade/VM com 1 CPU; #PF com 4 CPUs). Ownership, contabilidade, rollback e stress aguardam build e gates; objetos VM continuam no backend. Resultados históricos não fecham o gate atual ([relatório](../reports/fase-2-memoria-execucao.md)) |
 | Módulos do kernel (LKMs) | Parser ET_REL host com relocations x86_64, extração de exports da `.symtab`, registro persistente host, lookup kernel/módulos e contabilidade host de dependências; `SmpPageTableManager::protect` com shootdown testado em host ([log fase 2](../reports/fase-2-memoria-execucao.md)) | Ciclo runtime ainda não ligado; backend x86_64 para alocação/mapeamento/invocação, bloqueio de novas chamadas, rollback transacional e quiescência SMP; gates QEMU/NAS que carreguem objetos ET_REL positivos, negativos e de falha |
-| Memória | Bitmap até 32 GiB, VM x86-64, folhas user owned, heap expansível e shootdown xAPIC com ACK | Pressão/concorrência geral de VM sob carga; swap permanece desligado |
+| Memória | Bitmap até 32 GiB, VM x86-64, folhas user owned, heap expansível e shootdown xAPIC com ACK | Allocator geral, memória contabilizada por processo e stress SMP sustentado pendentes; swap permanece desligado |
 | Drivers / E/S | PCI read-only, framebuffer Limine, adaptador BlockDevice AHCI e Ethernet Intel QEMU; prioridade de filesystem em ext4/FAT32 | Validação física de AHCI e demais dispositivos (RTL8111/I219, EHCI/xHCI, iGPU), timeout/remoção em hardware |
 | VFS | Rootfs ext4 prioritário/FAT32 alternativo detectado em MBR/GPT e montado no boot; leitura, stat/access, ELF loader por mount, `execve` transacional limitado e copy-up/escrita em overlay RAM; Hermione arquivado | Escrita persistente, whiteouts/rename/unlink, limites atuais de 16 KiB e 40 nós, nomes longos FAT, recursos ext4 completos, validação QEMU/NAS do execve e enforcement integral de inode/processo |
-| Rede | Intel 82574L QEMU TX/RX polling e DHCPv4 DORA; tabela de sockets bound para bind/listen | TCP/IP de ponta a ponta, `accept/connect/send/recv`, drivers físicos, rota, DNS e serviços |
+| Rede | NICs alvo identificadas; prova limitada do Intel 82574L em QEMU | Drivers físicos, pilha TCP/IP integrada, DNS e serviços de servidor pendentes; rede de servidor não está disponível |
 | Syscalls (SCI) | Entrada x86-64 `SYSCALL`; CPL3 valida identidade/grupos, `getpid`/`gettid`, `clock_gettime`/`clock_getres` monotônicos, `brk` positivo, `mmap/munmap`, `execve` transacional limitado, VFS e serial; `mprotect` parcial foi conectado, validação suspensa | NAS UEFI smoke aberto: a prova de duas CR3 não observou preempção de timer e o probe de page tables falhou ([relatório](../reports/fase-4-aplicacoes-linux.md), [log](../reports/logs/fase4-linux-abi-timers-nas-20261119-021821-qemu-kvm-uefi.log)). Ainda faltam gates de `execve`, `CLOCK_REALTIME`, dependências ELF completas, relocations/glibc, GNU version tables, TLS, sinais, futex, chamadas completas de threads, mapeamento de arquivo, mounts no VFS e compatibilidade geral glibc/systemd |
 | pegasusDS / servidor de diretório | Contrato ABI v1 congelado como documento; crate local `libcarlio` define interface Rust segura sem transporte de syscall | ABI implementada, capacidades, sandbox, hooks LSM, keyring, AF_UNIX/SCM_RIGHTS, IPv6/TCP/epoll, canais opt-in, verified boot e workload QEMU/NAS; não executar servidor de rede |
 | Interrupções | IDT/exceções, PIT/watchdog, timer LAPIC e IPI de TLB com ACK | IRQs de teclado, USB, rede e disco ligados a drivers; tratamento/recovery físico |
@@ -198,24 +198,30 @@ quando necessário), envia EOI e publica ACK; timeout para o kernel de forma
 fail-closed. O caminho arquitetural de `PageTableAccess` agora usa esse backend
 no boot. A prova QEMU de quatro CPUs completou 18 shootdowns remotos durante a
 prova de VM/runtime. Um teste host faz quatro workers executar 128 ciclos de
-map/lookup/unmap e verifica 1024 pedidos pelo contrato. O scheduler de processos
-de produção continua BSP-only: APs carregam GDT/IDT e atendem shootdown, além da
-tarefa curta de prova; ainda faltam filas/contextos por CPU e timer local para
-escalonar processos nos APs. O runtime ainda usa tabela/pilhas de capacidade
-fixa e fixtures ELF.
-Swap só entra após memória virtual estável e camada de bloco confiável; medir
-desempenho e permitir desligá-lo. Swap não substitui RAM e não deve conter
-segredos sem proteção apropriada.
+map/lookup/unmap e verifica 1024 pedidos pelo contrato. A implementação atual
+tem filas por CPU, roubo, TSS/stacks RSP0/IST e timer LAPIC por CPU; a prova
+histórica registrou boot com 4 CPUs, 25 ACKs de TLB e CPL3 sobreposto em dois
+APs. A revalidação atual do probe CPL3 falha, e stress de scheduler/VM/allocator
+segue pendente. Objetos VM ficam no backend e a tabela/pilhas têm capacidade
+fixa.
+
+**Swap e persistência são metas, não capacidades habilitadas.** Dependem de VM
+e bloco confiáveis. Antes de integrar swap, fechar gates de ownership e
+contabilidade de frames por processo, rollback de falhas, concorrência e stress
+SMP; provar page fault/page-in/page-out, pinning e recuperação sem corromper o
+processo. No bloco, validar limites de LBA, erros de I/O, timeout, flush/barrier,
+remoção e falha parcial em imagens descartáveis. Testes de falha e recuperação
+devem passar antes de habilitar qualquer swap. Swap deve ser desligável, não
+substitui RAM e não deve receber dados sensíveis sem proteção criptográfica.
 
 `src/sync.rs` agora tem `IrqSpinLock<T>`, que salva/desativa IRQs locais e
 restaura o estado após liberar o lock; scheduler, pool de pilhas e heap usam
 essa primitiva. Testes host verificam exclusão mútua, mas não validam a
 instrução `cli/sti` sob IRQ real. O boot inicia APs e executa uma tarefa
-limitada de prova em cada AP. `src/process.rs` mantém scheduler de capacidade
-fixa; o BSP roda criação, despacho, troca por timer, CR3/RSP0, fault isolado e
-reaping. O backend xAPIC de TLB shootdown foi validado com ACK de todos os APs;
-o scheduler de processos segue fora deles e o restante do ciclo VM/allocator
-ainda requer locks e coordenação SMP sob carga.
+limitada de prova em cada AP. O scheduler tem filas por CPU e roubo, TSS/stacks
+RSP0/IST e timer LAPIC por CPU; resultados históricos confirmaram execução
+CPL3 sobreposta em dois APs. O reaper e o backend xAPIC têm prova pontual de
+ACKs, mas o stress SMP sustentado de scheduler/VM/allocator continua aberto.
 
 **Aceite para fechar a fase:** alocação/liberação sem sobreposição em toda RAM
 até 32 GiB; mapeamentos protegidos; execução ELF originada do VFS; processos

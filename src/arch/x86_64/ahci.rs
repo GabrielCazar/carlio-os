@@ -96,11 +96,10 @@ impl carlio_os::block::BlockDevice for AhciBlockDevice {
         out: &mut [u8; carlio_os::hermione::SECTOR_SIZE],
     ) -> Result<(), carlio_os::block::BlockError> {
         if lba >= self.sectors {
-            return Err(carlio_os::block::BlockError::Device);
+            return Err(carlio_os::block::BlockError::OutOfRange);
         }
         let _guard = BLOCK_IO_LOCK.lock();
-        command(&self.map, 0x25, lba, false, false, true)
-            .map_err(|_| carlio_os::block::BlockError::Device)?;
+        command(&self.map, 0x25, lba, false, false, true).map_err(map_block_error)?;
         let source = unsafe { core::ptr::addr_of!(DMA.sector).cast::<u8>() };
         for (index, byte) in out.iter_mut().enumerate() {
             *byte = unsafe { ptr::read_volatile(source.add(index)) };
@@ -114,7 +113,7 @@ impl carlio_os::block::BlockDevice for AhciBlockDevice {
         data: &[u8; carlio_os::hermione::SECTOR_SIZE],
     ) -> Result<(), carlio_os::block::BlockError> {
         if lba >= self.sectors {
-            return Err(carlio_os::block::BlockError::Device);
+            return Err(carlio_os::block::BlockError::OutOfRange);
         }
         let _guard = BLOCK_IO_LOCK.lock();
         let target = unsafe { core::ptr::addr_of_mut!(DMA.sector).cast::<u8>() };
@@ -122,14 +121,20 @@ impl carlio_os::block::BlockDevice for AhciBlockDevice {
             unsafe { ptr::write_volatile(target.add(index), *byte) };
         }
         compiler_fence(Ordering::SeqCst);
-        command(&self.map, 0x35, lba, true, false, true)
-            .map_err(|_| carlio_os::block::BlockError::Device)
+        command(&self.map, 0x35, lba, true, false, true).map_err(map_block_error)
     }
 
     fn flush(&mut self) -> Result<(), carlio_os::block::BlockError> {
         let _guard = BLOCK_IO_LOCK.lock();
-        command(&self.map, 0xea, 0, false, false, false)
-            .map_err(|_| carlio_os::block::BlockError::Device)
+        command(&self.map, 0xea, 0, false, false, false).map_err(map_block_error)
+    }
+}
+
+fn map_block_error(error: KernelError) -> carlio_os::block::BlockError {
+    match error {
+        KernelError::IoTimeout => carlio_os::block::BlockError::Timeout,
+        KernelError::DeviceNotFound => carlio_os::block::BlockError::Removed,
+        _ => carlio_os::block::BlockError::Device,
     }
 }
 
