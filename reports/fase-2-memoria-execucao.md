@@ -1,5 +1,50 @@
 # Relatório — Fase 2: memória e execução
 
+### Correção — espera por sobreposição CPL3 e ACK global do reaper — 2026-11-19
+
+Sintoma e causa: a espera da prova SMP usava dois loops de até 100 milhões de
+iterações sem prazo ligado ao PIT, e `quiesce_process_probe_aps` cancelava o
+reaper imediatamente quando observava qualquer AP ainda em CPL3. A prova agora
+espera por ticks finitos, solicita uma época de quiescência e só conclui quando
+cada AP online confirma CR3 kernel, stack de idle e ACK. `ReapBarrier` é
+host-testável; o caso negativo confirma que um ACK ausente, atrasado ou de época
+incorreta impede a liberação. O critério de sucesso CPL3 deixou de exigir um
+fault que é executado separadamente depois do reaper. O smoke agora exige o
+marcador real da probe #UD isolada.
+
+Arquivos desta etapa: `src/process.rs`, `src/main.rs`,
+`scripts/qemu-smoke.py`, `progress/index.html`, este relatório e estado de
+processos no roadmap/arquitetura. `cargo fmt --check`,
+`cargo test --all-targets` (183 testes), Clippy e build
+`x86_64-unknown-none` passaram ([host](logs/fase2-process-probes-final-host-20261119-020243.txt),
+[formato](logs/fase2-process-probes-final-fmt-20261119.txt),
+[Clippy](logs/fase2-process-probes-final-clippy-20261119.txt),
+[kernel](logs/fase2-process-probes-final-kernel-20261119.txt)).
+`CARLIO_TEST_PHASE=fase2-process-probes-final scripts/test-local-iso.sh`
+passou BIOS e UEFI TCG; ambos confirmaram sobreposição CPL3 em dois APs, 3 ACKs
+globais do reaper, fault #UD isolado, mmap/munmap e 25 ACKs TLB ([BIOS](logs/fase2-process-probes-final-qemu-bios-20261119-020243.log),
+[UEFI](logs/fase2-process-probes-final-qemu-uefi-20261119-020243.log)).
+
+`CARLIO_TEST_SSH_CONFIG=/home/gabriel/.ssh/config
+CARLIO_TEST_PHASE=fase2-process-probes-final CARLIO_TEST_QEMU_MEMORY=5G
+scripts/test-nas.sh` passou 183 testes host, `herm-fs status` e BIOS/UEFI KVM
+com 4 CPUs e 5 GiB; os logs seriais mostram os mesmos 3 ACKs e 25 ACKs TLB.
+O script confinou a execução a `/tmp/carlioos-test-20261119-020333` e removeu
+seus temporários ([resumo](logs/fase2-process-probes-final-nas-20261119-020333.txt),
+[BIOS](logs/fase2-process-probes-final-nas-20261119-020333-qemu-kvm-bios.log),
+[UEFI](logs/fase2-process-probes-final-nas-20261119-020333-qemu-kvm-uefi.log)).
+Nenhum dispositivo físico foi acessado.
+
+**A fase continua aberta.** A sobreposição simultânea pontual e a barreira de
+reaper estão validadas, mas isso não conclui stress SMP sustentado. Permanecem
+pendentes: bundle de recursos pertencente a `Process` (as fixtures ainda usam
+VMs em slots externos), memória e alocação gerais por processo, stress
+concorrente de scheduler/VM/allocator e o gate final da fase. Não habilitar swap
+nem mudar o estado para concluído. Próximo gate: integrar ownership do bundle em
+`Process`, adicionar probes adversos de memória por processo e stress SMP
+repetido; anexar os logs host/QEMU/NAS em `reports/logs/` e só então revisar o
+fechamento.
+
 ### Correção — leitura serial concorrente e revalidação BIOS/UEFI/NAS — 2026-11-19
 
 Sintoma e causa: leitores concorrentes consultavam o mesmo registrador de

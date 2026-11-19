@@ -3,6 +3,7 @@
 //! frame de interrupção, CR3 e RSP0 escolhidos pelo escalonador.
 use crate::sync::IrqSpinLock;
 use crate::vfs::Credentials;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 /// Bytes occupied by the x86_64 return frame plus all saved general registers.
 pub const USER_INTERRUPT_FRAME_BYTES: u64 = 22 * 8;
@@ -25,6 +26,98 @@ struct KernelStackStorage<const BYTES: usize>([u8; BYTES]);
 pub struct KernelStack {
     slot: usize,
     top: u64,
+}
+
+/// Barreiria a liberação de recursos até cada CPU requerida confirmar que
+/// deixou a stack e o CR3 do processo. O backend só deve confirmar depois de
+/// validar esses dois estados arquiteturais.
+pub struct ReapBarrier<const C: usize> {
+    next_epoch: AtomicU64,
+    requested_epoch: AtomicU64,
+    acknowledgements: [AtomicU64; C],
+}
+
+impl<const C: usize> ReapBarrier<C> {
+    pub const fn new() -> Self {
+        Self {
+            next_epoch: AtomicU64::new(0),
+            requested_epoch: AtomicU64::new(0),
+            acknowledgements: [const { AtomicU64::new(0) }; C],
+        }
+    }
+
+    pub fn begin(&self) -> Option<u64> {
+        if self.requested_epoch.load(Ordering::Acquire) != 0 {
+            return None;
+        }
+        let mut current = self.next_epoch.load(Ordering::Acquire);
+        let epoch = loop {
+            let next = current.checked_add(1)?;
+            match self.next_epoch.compare_exchange_weak(
+                current,
+                next,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break next,
+                Err(observed) => current = observed,
+            }
+        };
+        self.requested_epoch
+            .compare_exchange(0, epoch, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| epoch)
+    }
+
+    pub fn requested(&self) -> Option<u64> {
+        match self.requested_epoch.load(Ordering::Acquire) {
+            0 => None,
+            epoch => Some(epoch),
+        }
+    }
+
+    pub fn acknowledge(&self, cpu: usize, epoch: u64) -> bool {
+        let Some(slot) = self.acknowledgements.get(cpu) else {
+            return false;
+        };
+        if epoch == 0 || self.requested_epoch.load(Ordering::Acquire) != epoch {
+            return false;
+        }
+        slot.store(epoch, Ordering::Release);
+        true
+    }
+
+    pub fn complete(&self, epoch: u64, required_cpus: u64) -> bool {
+        if epoch == 0 || self.requested_epoch.load(Ordering::Acquire) != epoch {
+            return false;
+        }
+        for (cpu, acknowledgement) in self.acknowledgements.iter().enumerate() {
+            let Ok(bit) = u32::try_from(cpu) else {
+                return false;
+            };
+            let Some(cpu_bit) = 1u64.checked_shl(bit) else {
+                return false;
+            };
+            if required_cpus & cpu_bit != 0 && acknowledgement.load(Ordering::Acquire) != epoch {
+                return false;
+            }
+        }
+        true
+    }
+
+    pub fn release(&self, epoch: u64) -> bool {
+        epoch != 0
+            && self
+                .requested_epoch
+                .compare_exchange(epoch, 0, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+    }
+}
+
+impl<const C: usize> Default for ReapBarrier<C> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl KernelStack {
@@ -1364,6 +1457,24 @@ fn next_ready_queue<const P: usize, const C: usize>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reaper_barrier_requires_each_cpu_ack_and_rejects_stale_epochs() {
+        let barrier = ReapBarrier::<4>::new();
+        let epoch = barrier.begin().expect("reaper epoch must start");
+
+        assert!(!barrier.complete(epoch, 0b1010));
+        assert!(!barrier.acknowledge(4, epoch));
+        assert!(!barrier.acknowledge(1, epoch + 1));
+        assert!(barrier.acknowledge(1, epoch));
+        assert!(!barrier.complete(epoch, 0b1010));
+        assert!(barrier.acknowledge(3, epoch));
+        assert!(barrier.complete(epoch, 0b1010));
+        assert!(barrier.release(epoch));
+        assert!(!barrier.acknowledge(1, epoch));
+        assert!(!barrier.complete(epoch, 0b1010));
+    }
+
     #[test]
     fn schedules_round_robin_across_cpus_without_duplicate_running() {
         let q = Scheduler::<4, 2>::new();

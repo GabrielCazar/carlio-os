@@ -13,7 +13,7 @@ use carlio_os::memory::{
 #[cfg(target_os = "none")]
 use carlio_os::pci::PciFunction;
 #[cfg(target_os = "none")]
-use carlio_os::process::{CpuContext, KernelStackPool, Scheduler};
+use carlio_os::process::{CpuContext, KernelStackPool, ReapBarrier, Scheduler};
 #[cfg(target_os = "none")]
 use carlio_os::sync::IrqSpinLock;
 #[cfg(target_os = "none")]
@@ -108,11 +108,7 @@ static PROCESS_PROBE_CR3_SWITCHES: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_os = "none")]
 static PROCESS_KERNEL_CR3: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_os = "none")]
-static PROCESS_REAP_REQUEST_EPOCH: AtomicU64 = AtomicU64::new(0);
-#[cfg(target_os = "none")]
-static PROCESS_REAP_NEXT_EPOCH: AtomicU64 = AtomicU64::new(0);
-#[cfg(target_os = "none")]
-static PROCESS_REAP_ACKS: [AtomicU64; MAX_BOOT_CPUS] = [const { AtomicU64::new(0) }; MAX_BOOT_CPUS];
+static PROCESS_REAP_BARRIER: ReapBarrier<MAX_BOOT_CPUS> = ReapBarrier::new();
 #[cfg(target_os = "none")]
 static AP_CPL3_CPU_MASK: AtomicUsize = AtomicUsize::new(0);
 #[cfg(target_os = "none")]
@@ -646,8 +642,10 @@ extern "C" fn carlio_ap_scheduler_idle(cpu: usize) -> ! {
 
 #[cfg(target_os = "none")]
 fn ap_acknowledge_process_quiescence(cpu: usize) -> bool {
-    let epoch = PROCESS_REAP_REQUEST_EPOCH.load(Ordering::Acquire);
-    if epoch == 0 || cpu >= MAX_BOOT_CPUS {
+    let Some(epoch) = PROCESS_REAP_BARRIER.requested() else {
+        return false;
+    };
+    if cpu >= MAX_BOOT_CPUS {
         return false;
     }
     let stack_top = unsafe {
@@ -673,8 +671,10 @@ fn ap_acknowledge_process_quiescence(cpu: usize) -> bool {
         return false;
     }
     AP_CPL3_IDLE_MASK.fetch_or(1usize << cpu, Ordering::AcqRel);
-    PROCESS_REAP_ACKS[cpu].store(epoch, Ordering::Release);
-    while PROCESS_REAP_REQUEST_EPOCH.load(Ordering::Acquire) == epoch {
+    if !PROCESS_REAP_BARRIER.acknowledge(cpu, epoch) {
+        return false;
+    }
+    while PROCESS_REAP_BARRIER.requested() == Some(epoch) {
         core::hint::spin_loop();
     }
     true
@@ -2478,33 +2478,35 @@ pub(crate) fn is_secondary_cpu(cpu: usize) -> bool {
 
 #[cfg(target_os = "none")]
 pub(crate) fn process_probe_result() -> u64 {
-    let mut ap_wait_spins = 0usize;
     let mut ap_probe_passed = false;
-    while ap_wait_spins < 100_000_000 {
+    let ap_mask = secondary_cpu_mask();
+    for _ in 0..200 {
         let active = AP_CPL3_CPU_MASK.load(Ordering::Acquire);
         let idle = AP_CPL3_IDLE_MASK.load(Ordering::Acquire);
         if AP_CPL3_OVERLAP_PASSED.load(Ordering::Acquire)
             && active.count_ones() >= 2
-            && idle & active == active
-            && AP_CPL3_RUNNING_MASK.load(Ordering::Acquire) & active == 0
+            && idle & ap_mask == ap_mask
+            && AP_CPL3_RUNNING_MASK.load(Ordering::Acquire) & ap_mask == 0
         {
             ap_probe_passed = true;
             break;
         }
-        ap_wait_spins += 1;
-        core::hint::spin_loop();
+        if !idt::wait_ticks(1) {
+            break;
+        }
     }
     if !ap_probe_passed {
         AP_CPL3_STOP.store(true, Ordering::Release);
         write("SMP CPL3: gate falhou; APs simultâneos ou retorno a idle ausentes.\r\n");
-        let mut drain_spins = 0usize;
-        while drain_spins < 100_000_000 {
-            let active = AP_CPL3_CPU_MASK.load(Ordering::Acquire);
-            if AP_CPL3_IDLE_MASK.load(Ordering::Acquire) & active == active {
+        for _ in 0..200 {
+            if AP_CPL3_IDLE_MASK.load(Ordering::Acquire) & ap_mask == ap_mask
+                && AP_CPL3_RUNNING_MASK.load(Ordering::Acquire) & ap_mask == 0
+            {
                 break;
             }
-            drain_spins += 1;
-            core::hint::spin_loop();
+            if !idt::wait_ticks(1) {
+                break;
+            }
         }
     }
     PROCESS_PROBE_DONE.store(true, Ordering::Release);
@@ -2573,7 +2575,6 @@ pub(crate) fn process_probe_result() -> u64 {
         write(".\r\n");
     }
     if switches > 0
-        && faults == 1
         && ap_probe_passed
         && LINUX_GETPID_PROBE_PASSED.load(Ordering::Acquire)
         && abi_probe_mask & 0x1ff == 0x1ff
@@ -2635,69 +2636,46 @@ fn quiesce_process_probe_aps() -> bool {
     let bsp_root: u64;
     // SAFETY: o BSP lê seu CR3 atual enquanto executa código e stack do kernel.
     unsafe { asm!("mov {}, cr3", out(reg) bsp_root, options(nomem, nostack, preserves_flags)) };
-    if kernel_root == 0
-        || bsp_root & 0x000f_ffff_ffff_f000 != kernel_root
-        || AP_CPL3_RUNNING_MASK.load(Ordering::Acquire) & secondary_cpu_mask() != 0
-    {
-        write("Reaper SMP: BSP/AP ainda usam contexto CPL3; liberação cancelada.\r\n");
+    if kernel_root == 0 || bsp_root & 0x000f_ffff_ffff_f000 != kernel_root {
+        write("Reaper SMP: BSP não confirmou CR3 kernel; liberação cancelada.\r\n");
         return false;
     }
-    let mut current_epoch = PROCESS_REAP_NEXT_EPOCH.load(Ordering::Acquire);
-    let epoch = loop {
-        let Some(next_epoch) = current_epoch.checked_add(1) else {
+    // APs ainda marcados em CPL3 não causam cancelamento imediato: o epoch
+    // abaixo os mantém no scheduler até cada um trocar stack/CR3 e confirmar.
+    let Some(epoch) = PROCESS_REAP_BARRIER.begin() else {
+        return false;
+    };
+    let required_aps = match u64::try_from(secondary_cpu_mask()) {
+        Ok(mask) => mask,
+        Err(_) => {
+            let _ = PROCESS_REAP_BARRIER.release(epoch);
             return false;
-        };
-        match PROCESS_REAP_NEXT_EPOCH.compare_exchange_weak(
-            current_epoch,
-            next_epoch,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        ) {
-            Ok(_) => break next_epoch,
-            Err(observed) => current_epoch = observed,
         }
     };
-    PROCESS_REAP_REQUEST_EPOCH.store(epoch, Ordering::Release);
-    let mut spins = 0usize;
-    loop {
-        let all_quiescent = AP_CPL3_RUNNING_MASK.load(Ordering::Acquire) & secondary_cpu_mask()
-            == 0
-            && BOOT_CPU_LOCALS.iter().enumerate().all(|(cpu, local)| {
-                if local.online.load(Ordering::Acquire) == 0
-                    || local.lapic_id.load(Ordering::Acquire)
-                        == SMP_BSP_LAPIC_ID.load(Ordering::Acquire)
-                {
-                    true
-                } else {
-                    PROCESS_REAP_ACKS[cpu].load(Ordering::Acquire) == epoch
-                }
-            });
+    for _ in 0..200 {
+        let all_quiescent = PROCESS_REAP_BARRIER.complete(epoch, required_aps)
+            && AP_CPL3_RUNNING_MASK.load(Ordering::Acquire) & secondary_cpu_mask() == 0;
         if all_quiescent {
-            let acknowledgements = BOOT_CPU_LOCALS
-                .iter()
-                .filter(|local| {
-                    local.online.load(Ordering::Acquire) != 0
-                        && local.lapic_id.load(Ordering::Acquire)
-                            != SMP_BSP_LAPIC_ID.load(Ordering::Acquire)
-                })
-                .count();
+            let acknowledgements = required_aps.count_ones();
             write("Reaper SMP: BSP e APs confirmaram CR3 kernel; ACKs dos APs=");
-            write_u64(acknowledgements as u64);
+            write_u64(u64::from(acknowledgements));
             write("; CPL3 ativo=0; stacks, VM e page tables liberáveis.\r\n");
             return true;
         }
-        if spins >= 100_000_000 {
-            PROCESS_REAP_REQUEST_EPOCH.store(0, Ordering::Release);
+        if !idt::wait_ticks(1) {
+            let _ = PROCESS_REAP_BARRIER.release(epoch);
             return false;
         }
-        spins += 1;
-        core::hint::spin_loop();
     }
+    let _ = PROCESS_REAP_BARRIER.release(epoch);
+    false
 }
 
 #[cfg(target_os = "none")]
 fn release_process_probe_aps() {
-    PROCESS_REAP_REQUEST_EPOCH.store(0, Ordering::Release);
+    if let Some(epoch) = PROCESS_REAP_BARRIER.requested() {
+        let _ = PROCESS_REAP_BARRIER.release(epoch);
+    }
 }
 
 #[cfg(target_os = "none")]
