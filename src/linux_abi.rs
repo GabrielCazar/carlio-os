@@ -544,6 +544,28 @@ mod tests {
                 Err(EINVAL)
             }
         }
+
+        fn clock_gettime(&mut self, clock_id: u64) -> Result<Timespec, u16> {
+            if clock_id == CLOCK_MONOTONIC {
+                Ok(Timespec {
+                    seconds: 12,
+                    nanoseconds: 340_000_000,
+                })
+            } else {
+                Err(EINVAL)
+            }
+        }
+
+        fn clock_getres(&mut self, clock_id: u64) -> Result<Timespec, u16> {
+            if clock_id == CLOCK_MONOTONIC {
+                Ok(Timespec {
+                    seconds: 0,
+                    nanoseconds: 10_000_000,
+                })
+            } else {
+                Err(EINVAL)
+            }
+        }
     }
 
     fn fake_io() -> FakeIo {
@@ -577,12 +599,80 @@ mod tests {
             SyscallOutcome::Return(42)
         );
         assert_eq!(
+            dispatch(SYS_GETTID, [0; 6], context, &mut io),
+            SyscallOutcome::Return(42)
+        );
+        assert_eq!(
             dispatch(SYS_EXIT, [0x123; 6], context, &mut io),
             SyscallOutcome::Exit { status: 0x23 }
         );
         assert_eq!(
             dispatch(SYS_EXIT_GROUP, [7; 6], context, &mut io),
             SyscallOutcome::Exit { status: 7 }
+        );
+    }
+
+    #[test]
+    fn clock_syscalls_copy_linux_timespec_and_reject_unsupported_clock_and_pointer() {
+        let mut io = fake_io();
+        assert_eq!(
+            dispatch(
+                SYS_CLOCK_GETTIME,
+                [CLOCK_MONOTONIC, 0x4000, 0, 0, 0, 0],
+                ProcessContext {
+                    process_id: 1,
+                    uid: 0,
+                    gid: 0,
+                    supplementary_groups: [0; 8],
+                    group_count: 0,
+                    program_break: 0,
+                },
+                &mut io,
+            ),
+            SyscallOutcome::Return(0)
+        );
+        assert_eq!(&io.user[..8], &12i64.to_le_bytes());
+        assert_eq!(&io.user[8..16], &340_000_000i64.to_le_bytes());
+
+        assert_eq!(
+            dispatch(
+                SYS_CLOCK_GETRES,
+                [CLOCK_MONOTONIC, 0x4010, 0, 0, 0, 0],
+                ProcessContext {
+                    process_id: 1,
+                    uid: 0,
+                    gid: 0,
+                    supplementary_groups: [0; 8],
+                    group_count: 0,
+                    program_break: 0,
+                },
+                &mut io,
+            ),
+            SyscallOutcome::Return(0)
+        );
+        assert_eq!(&io.user[0x10..0x18], &0i64.to_le_bytes());
+        assert_eq!(&io.user[0x18..0x20], &10_000_000i64.to_le_bytes());
+
+        let context = ProcessContext {
+            process_id: 1,
+            uid: 0,
+            gid: 0,
+            supplementary_groups: [0; 8],
+            group_count: 0,
+            program_break: 0,
+        };
+        assert_eq!(
+            dispatch(SYS_CLOCK_GETTIME, [CLOCK_REALTIME, 0x4000, 0, 0, 0, 0], context, &mut io),
+            SyscallOutcome::Return((-(EINVAL as i64)) as u64)
+        );
+        assert_eq!(
+            dispatch(
+                SYS_CLOCK_GETTIME,
+                [CLOCK_MONOTONIC, 0x5000, 0, 0, 0, 0],
+                context,
+                &mut io,
+            ),
+            SyscallOutcome::Return((-(EFAULT as i64)) as u64)
         );
     }
 
