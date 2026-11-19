@@ -445,6 +445,11 @@ static IRET_USER_DATA_DESC: [AtomicU64; MAX_CPU_TABLES] =
 static IRET_USER_CODE_DESC: [AtomicU64; MAX_CPU_TABLES] =
     [const { AtomicU64::new(0) }; MAX_CPU_TABLES];
 const WATCHDOG_TICKS: u64 = 500; // 5 s em PIT 100 Hz
+pub const TICK_RATE_HZ: u64 = 100;
+
+pub fn uptime_ticks() -> u64 {
+    TICKS.load(Ordering::Acquire)
+}
 
 unsafe extern "C" {
     static exception_stub_table: [usize; 32];
