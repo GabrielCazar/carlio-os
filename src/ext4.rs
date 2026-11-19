@@ -34,8 +34,11 @@ pub struct Ext4Volume<D> {
 
 #[derive(Clone, Copy)]
 struct Inode {
+    number: u32,
     mode: u16,
     flags: u32,
+    uid: u32,
+    gid: u32,
     size: u64,
     block: [u8; 60],
 }
@@ -132,22 +135,21 @@ impl<D: BlockDevice> Ext4Volume<D> {
         self.read_inode_range(&inode, offset, output)
     }
 
-    fn resolve_file(&mut self, path: &str) -> Result<Inode, Ext4Error> {
+    fn resolve_inode(&mut self, path: &str) -> Result<Inode, Ext4Error> {
         let mut inode_number = 2u32;
         let mut components = path.split('/').filter(|part| !part.is_empty());
-        let mut component = components.next().ok_or(Ext4Error::InvalidPath)?;
-        loop {
+        while let Some(component) = components.next() {
             let directory = self.read_inode(inode_number)?;
             if directory.mode & 0xf000 != 0x4000 {
                 return Err(Ext4Error::NotFound);
             }
             inode_number = self.find_directory_entry(directory, component)?;
-            match components.next() {
-                Some(next) => component = next,
-                None => break,
-            }
         }
-        let inode = self.read_inode(inode_number)?;
+        self.read_inode(inode_number)
+    }
+
+    fn resolve_file(&mut self, path: &str) -> Result<Inode, Ext4Error> {
+        let inode = self.resolve_inode(path)?;
         if inode.mode & 0xf000 == 0x4000 {
             return Err(Ext4Error::IsDirectory);
         }
@@ -228,8 +230,13 @@ impl<D: BlockDevice> Ext4Volume<D> {
             0
         };
         Ok(Inode {
+            number,
             mode: u16le(&data, inode_offset),
             flags: u32le(&data, inode_offset + 32),
+            uid: u16le(&data, inode_offset + 2) as u32
+                | ((u16le(&data, inode_offset + 120) as u32) << 16),
+            gid: u16le(&data, inode_offset + 24) as u32
+                | ((u16le(&data, inode_offset + 122) as u32) << 16),
             size: size_lo | (size_hi << 32),
             block,
         })
@@ -344,6 +351,27 @@ impl<D: BlockDevice> crate::vfs::ReadOnlyMountBackend for Ext4Volume<D> {
             Ext4Error::BufferTooSmall => crate::vfs::VfsError::BufferTooSmall,
             Ext4Error::InvalidPath => crate::vfs::VfsError::InvalidPath,
             _ => crate::vfs::VfsError::InvalidPath,
+        })
+    }
+
+    fn metadata(&mut self, path: &str) -> Result<crate::vfs::MountMetadata, crate::vfs::VfsError> {
+        let inode = self.resolve_inode(path).map_err(|error| match error {
+            Ext4Error::NotFound => crate::vfs::VfsError::NotFound,
+            Ext4Error::InvalidPath => crate::vfs::VfsError::InvalidPath,
+            _ => crate::vfs::VfsError::InvalidPath,
+        })?;
+        let kind = match inode.mode & 0xf000 {
+            0x4000 => crate::vfs::NodeKind::Directory,
+            0x8000 => crate::vfs::NodeKind::File,
+            _ => return Err(crate::vfs::VfsError::NotFound),
+        };
+        Ok(crate::vfs::MountMetadata {
+            inode: inode.number as u64,
+            kind,
+            uid: inode.uid,
+            gid: inode.gid,
+            mode: inode.mode & 0o7777,
+            size: inode.size,
         })
     }
 

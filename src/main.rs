@@ -80,10 +80,67 @@ static ELF_LOAD_SCRATCH: IrqSpinLock<[u8; carlio_os::vfs::VFS_INLINE_FILE_MAX]> 
 static ELF_INTERPRETER_SCRATCH: IrqSpinLock<[u8; carlio_os::vfs::VFS_INLINE_FILE_MAX]> =
     IrqSpinLock::new([0; carlio_os::vfs::VFS_INLINE_FILE_MAX]);
 #[cfg(target_os = "none")]
+static ROOTFS_COPY_SCRATCH: IrqSpinLock<[u8; carlio_os::vfs::VFS_INLINE_FILE_MAX]> =
+    IrqSpinLock::new([0; carlio_os::vfs::VFS_INLINE_FILE_MAX]);
+#[cfg(target_os = "none")]
 static OPEN_FILES: IrqSpinLock<carlio_os::open_files::OpenFileTable<128>> =
     IrqSpinLock::new(carlio_os::open_files::OpenFileTable::new());
 #[cfg(target_os = "none")]
 static AHCI_BLOCK_DEVICE: IrqSpinLock<Option<ahci::AhciBlockDevice>> = IrqSpinLock::new(None);
+#[cfg(target_os = "none")]
+enum BootRootfs {
+    Ext4(carlio_os::ext4::Ext4Volume<ahci::AhciBlockDevice>),
+    Fat32(carlio_os::fat32::Fat32Volume<ahci::AhciBlockDevice>),
+}
+#[cfg(target_os = "none")]
+impl carlio_os::vfs::ReadOnlyMountBackend for BootRootfs {
+    fn filesystem_type(&self) -> carlio_os::vfs::FilesystemType {
+        match self {
+            Self::Ext4(_) => carlio_os::vfs::FilesystemType::Ext4,
+            Self::Fat32(_) => carlio_os::vfs::FilesystemType::Fat32,
+        }
+    }
+    fn read_file(
+        &mut self,
+        path: &str,
+        output: &mut [u8],
+    ) -> Result<usize, carlio_os::vfs::VfsError> {
+        match self {
+            Self::Ext4(volume) => {
+                carlio_os::vfs::ReadOnlyMountBackend::read_file(volume, path, output)
+            }
+            Self::Fat32(volume) => {
+                carlio_os::vfs::ReadOnlyMountBackend::read_file(volume, path, output)
+            }
+        }
+    }
+    fn read_file_range(
+        &mut self,
+        path: &str,
+        offset: u64,
+        output: &mut [u8],
+    ) -> Result<usize, carlio_os::vfs::VfsError> {
+        match self {
+            Self::Ext4(volume) => {
+                carlio_os::vfs::ReadOnlyMountBackend::read_file_range(volume, path, offset, output)
+            }
+            Self::Fat32(volume) => {
+                carlio_os::vfs::ReadOnlyMountBackend::read_file_range(volume, path, offset, output)
+            }
+        }
+    }
+    fn metadata(
+        &mut self,
+        path: &str,
+    ) -> Result<carlio_os::vfs::MountMetadata, carlio_os::vfs::VfsError> {
+        match self {
+            Self::Ext4(volume) => carlio_os::vfs::ReadOnlyMountBackend::metadata(volume, path),
+            Self::Fat32(volume) => carlio_os::vfs::ReadOnlyMountBackend::metadata(volume, path),
+        }
+    }
+}
+#[cfg(target_os = "none")]
+static ROOTFS_BACKEND: IrqSpinLock<Option<BootRootfs>> = IrqSpinLock::new(None);
 #[cfg(target_os = "none")]
 static VFS_MUTATION_ACTIVE: AtomicBool = AtomicBool::new(false);
 
@@ -1457,6 +1514,7 @@ pub(crate) fn begin_process_switch_probe() -> Option<*mut idt::UserInterruptFram
     let mut root: u64;
     unsafe { asm!("mov {}, cr3", out(reg) root, options(nomem, nostack, preserves_flags)) };
     root &= 0x000f_ffff_ffff_f000;
+    PROCESS_KERNEL_CR3.store(root, Ordering::Release);
     // CPL3 exercises write, identity getters, getgroups, getpid and exit.
     // The write buffer shares the read-only executable page, so the kernel
     // must validate/read it without requiring user write permission.
@@ -1745,6 +1803,33 @@ fn make_process_probe_space(
     u64,
     u64,
 )> {
+    let (space, entry, stack, _) = make_process_space(
+        kernel_root,
+        stack_va,
+        1,
+        path,
+        argv,
+        env,
+        AccessContext::new(Credentials { uid: 0, gid: 0 }, &[], 0),
+    )?;
+    Some((space, entry, stack))
+}
+
+#[cfg(target_os = "none")]
+fn make_process_space(
+    kernel_root: u64,
+    stack_va: u64,
+    stack_pages: usize,
+    path: &str,
+    argv: &[&str],
+    env: &[&str],
+    context: AccessContext<'_>,
+) -> Option<(
+    OwnedAddressSpace<BootPageTableAccess, PROCESS_VM_PAGE_CAPACITY>,
+    u64,
+    u64,
+    [(u64, u64); 2],
+)> {
     let mut target = match ElfAddressSpace::<PROCESS_VM_PAGE_CAPACITY>::new(kernel_root) {
         Ok(space) => space,
         Err(_) => {
@@ -1752,19 +1837,38 @@ fn make_process_probe_space(
             return None;
         }
     };
-    let context = AccessContext::new(Credentials { uid: 0, gid: 0 }, &[], 0);
     let mut scratch = ELF_LOAD_SCRATCH.lock();
     let mut interpreter_scratch = ELF_INTERPRETER_SCRATCH.lock();
     let image = {
         let vfs = PROCESS_VFS.lock();
-        match carlio_os::elf::load_interpreted_executable_from_vfs::<64, PROCESS_VFS_CAPACITY, _>(
-            &vfs,
-            path,
-            context,
-            &mut scratch[..],
-            &mut interpreter_scratch[..],
-            &mut target,
-        ) {
+        let mut backend = ROOTFS_BACKEND.lock();
+        let loaded = match backend.as_mut() {
+            Some(backend) => carlio_os::elf::load_interpreted_executable_from_mounted::<
+                64,
+                PROCESS_VFS_CAPACITY,
+                _,
+                _,
+            >(
+                &vfs,
+                backend,
+                path,
+                context,
+                &mut scratch[..],
+                &mut interpreter_scratch[..],
+                &mut target,
+            ),
+            None => {
+                carlio_os::elf::load_interpreted_executable_from_vfs::<64, PROCESS_VFS_CAPACITY, _>(
+                    &vfs,
+                    path,
+                    context,
+                    &mut scratch[..],
+                    &mut interpreter_scratch[..],
+                    &mut target,
+                )
+            }
+        };
+        match loaded {
             Ok(image) => image,
             Err(_) => {
                 write("Runtime: ELF do VFS recusado por acesso, formato ou mapeamento.\r\n");
@@ -1773,23 +1877,27 @@ fn make_process_probe_space(
             }
         }
     };
-    if target
-        .0
-        .map_zeroed(
-            stack_va,
-            1 | PAGE_FLAG_USER | PAGE_FLAG_WRITABLE | PAGE_FLAG_NO_EXECUTE,
-        )
-        .is_err()
-    {
-        write("Runtime: falha ao mapear stack CPL3.\r\n");
-        let _ = target.0.try_destroy();
-        return None;
+    for page in 0..stack_pages {
+        let address = stack_va.checked_add((page as u64).checked_mul(4096)?)?;
+        if target
+            .0
+            .map_zeroed(
+                address,
+                1 | PAGE_FLAG_USER | PAGE_FLAG_WRITABLE | PAGE_FLAG_NO_EXECUTE,
+            )
+            .is_err()
+        {
+            write("Runtime: falha ao mapear stack CPL3.\r\n");
+            let _ = target.0.try_destroy();
+            return None;
+        }
     }
-    let stack_top = stack_va + 4096;
+    let stack_top = stack_va.checked_add((stack_pages as u64).checked_mul(4096)?)?;
     let auxv = image.auxv();
-    let stack = match carlio_os::elf::build_initial_user_stack_with_auxv(
+    let stack = match carlio_os::elf::build_initial_user_stack_with_auxv_sized(
         &mut target,
         stack_top,
+        (stack_pages as u64).checked_mul(4096)?,
         argv,
         env,
         &auxv,
@@ -1806,7 +1914,12 @@ fn make_process_probe_space(
             return None;
         }
     };
-    Some((target.0, image.entry, stack.stack_pointer))
+    Some((
+        target.0,
+        image.entry,
+        stack.stack_pointer,
+        image.image_ranges,
+    ))
 }
 
 #[cfg(target_os = "none")]
@@ -2149,7 +2262,7 @@ pub(crate) fn dispatch_linux_syscall(
     cpu: usize,
 ) -> Option<carlio_os::linux_abi::SyscallOutcome> {
     let process = PROCESS_SCHEDULER.current(cpu)?;
-    let mut io = KernelLinuxSyscallIo { process };
+    let mut io = KernelLinuxSyscallIo { process, cpu };
     let program_break = io.with_process_vm(|vm| Ok(vm.program_break())).unwrap_or(0);
     let outcome = carlio_os::linux_abi::dispatch(
         number,
@@ -2353,8 +2466,26 @@ pub(crate) fn dispatch_linux_syscall(
 }
 
 #[cfg(target_os = "none")]
+pub(crate) fn commit_exec_transition(transition: carlio_os::linux_abi::ExecTransition) {
+    // The replacement address space keeps the kernel mappings and active
+    // syscall stack. CR3 reload is the commit point before releasing old pages.
+    unsafe {
+        asm!(
+            "mov cr3, {}",
+            in(reg) transition.page_table,
+            options(nostack, preserves_flags)
+        );
+    }
+    match process_probe_vm_slot(transition.old_resource_slot) {
+        Some(storage) if destroy_process_probe_space(storage, transition.old_page_table) => {}
+        _ => write("execve: CR3 novo ativo; VM antigo preservado para retry.\r\n"),
+    }
+}
+
+#[cfg(target_os = "none")]
 struct KernelLinuxSyscallIo {
     process: carlio_os::process::Process,
+    cpu: usize,
 }
 
 #[cfg(target_os = "none")]
@@ -2545,6 +2676,97 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
             .map_err(|_| carlio_os::linux_abi::EFAULT)
     }
 
+    fn execve(
+        &mut self,
+        path: &str,
+        arguments: &[&str],
+        environment: &[&str],
+    ) -> Result<carlio_os::linux_abi::ExecTransition, u16> {
+        if self.process.is_thread() {
+            return Err(carlio_os::linux_abi::EBUSY);
+        }
+        let kernel_root = PROCESS_KERNEL_CR3.load(Ordering::Acquire);
+        if kernel_root == 0 {
+            return Err(carlio_os::linux_abi::EIO);
+        }
+        let stack_top = carlio_os::elf::USER_TOP;
+        let stack_pages = 4usize;
+        let stack_base = stack_top
+            .checked_sub((stack_pages as u64) * 4096)
+            .ok_or(carlio_os::linux_abi::E2BIG)?;
+        let context = self.process.security.access_context();
+        let (space, instruction_pointer, stack_pointer, image_ranges) = make_process_space(
+            kernel_root,
+            stack_base,
+            stack_pages,
+            path,
+            arguments,
+            environment,
+            context,
+        )
+        .ok_or(carlio_os::linux_abi::ENOEXEC)?;
+        let mut new_vm = RuntimeProcessVm::new(
+            space,
+            carlio_os::vma::USER_HEAP_BASE,
+            carlio_os::vma::USER_HEAP_BASE + 0x1000_0000,
+        );
+        for (start, length) in image_ranges {
+            if length != 0 && new_vm.reserve_existing(start, length).is_err() {
+                let _ = new_vm.try_destroy();
+                return Err(carlio_os::linux_abi::ENOMEM);
+            }
+        }
+        let stack_length = (stack_pages as u64) * 4096;
+        if new_vm
+            .reserve_existing(stack_top - stack_length, stack_length)
+            .is_err()
+        {
+            let _ = new_vm.try_destroy();
+            return Err(carlio_os::linux_abi::ENOMEM);
+        }
+        let new_page_table = new_vm.root();
+        let new_slot = match store_process_probe_vm(new_vm) {
+            Ok(slot) => slot,
+            Err(vm) => {
+                let _ = release_or_retain_unregistered_vm(vm);
+                return Err(carlio_os::linux_abi::ENOMEM);
+            }
+        };
+        let new_bundle = carlio_os::process::ProcessResourceBundle {
+            slot: new_slot,
+            page_table: new_page_table,
+            user_stack: stack_pointer,
+        };
+        let old_bundle = match PROCESS_SCHEDULER.replace_current_image(
+            self.cpu,
+            self.process.id,
+            new_bundle,
+            instruction_pointer,
+            stack_pointer,
+        ) {
+            Ok(bundle) => bundle,
+            Err(error) => {
+                let _ = destroy_process_probe_space(
+                    process_probe_vm_slot(new_slot).ok_or(carlio_os::linux_abi::ENOMEM)?,
+                    new_page_table,
+                );
+                return Err(match error {
+                    carlio_os::process::ProcessError::Busy => carlio_os::linux_abi::EBUSY,
+                    carlio_os::process::ProcessError::Full => carlio_os::linux_abi::EAGAIN,
+                    _ => carlio_os::linux_abi::EFAULT,
+                });
+            }
+        };
+        Ok(carlio_os::linux_abi::ExecTransition {
+            process_id: self.process.id,
+            old_page_table: old_bundle.page_table,
+            old_resource_slot: old_bundle.slot,
+            page_table: new_page_table,
+            instruction_pointer,
+            stack_pointer,
+        })
+    }
+
     fn read(&mut self, descriptor: u64, destination: &mut [u8]) -> Result<usize, u16> {
         if descriptor == 0 {
             write("ABI Linux: probe CPL3 aguardando byte de entrada serial.\r\n");
@@ -2572,15 +2794,20 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
         let path = file.path_str().ok_or(carlio_os::linux_abi::EIO)?;
         let mut scratch = [0u8; 256];
         let chunk = destination.len().min(scratch.len());
-        let amount = PROCESS_VFS
-            .lock()
-            .read_file_range_as(
-                path,
-                self.process.security.access_context(),
-                usize::try_from(file.offset).map_err(|_| carlio_os::linux_abi::EINVAL)?,
-                &mut scratch[..chunk],
-            )
-            .map_err(vfs_errno)?;
+        let context = self.process.security.access_context();
+        let offset = usize::try_from(file.offset).map_err(|_| carlio_os::linux_abi::EINVAL)?;
+        let inline =
+            PROCESS_VFS
+                .lock()
+                .read_file_range_as(path, context, offset, &mut scratch[..chunk]);
+        let amount = match inline {
+            Ok(amount) => amount,
+            Err(carlio_os::vfs::VfsError::NotFound) => {
+                read_rootfs_file(path, context, file.offset, &mut scratch[..chunk])
+                    .map_err(vfs_errno)?
+            }
+            Err(error) => return Err(vfs_errno(error)),
+        };
         destination[..amount].copy_from_slice(&scratch[..amount]);
         OPEN_FILES
             .lock()
@@ -2611,32 +2838,79 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
             .map_err(|_| carlio_os::linux_abi::ENFILE)?;
         let operation = (|| {
             let context = self.process.security.access_context();
-            let mut vfs = PROCESS_VFS.lock();
-            let mut changed = false;
-            if flags & 0x80 != 0 && flags & 0x40 != 0 && vfs.metadata(path, context).is_ok() {
-                return Err(carlio_os::linux_abi::EEXIST);
+            if flags & 0x200 != 0 && !writable {
+                return Err(carlio_os::linux_abi::EACCES);
             }
-            match vfs.check_access_as(path, context, access) {
-                Ok(carlio_os::vfs::NodeKind::File) => {}
-                Ok(carlio_os::vfs::NodeKind::Directory) => {
-                    return Err(carlio_os::linux_abi::EISDIR);
-                }
-                Err(carlio_os::vfs::VfsError::NotFound) if flags & 0x40 != 0 => {
-                    let (parent, name) =
-                        path.rsplit_once('/').ok_or(carlio_os::linux_abi::EINVAL)?;
-                    if name.is_empty() {
-                        return Err(carlio_os::linux_abi::EINVAL);
-                    }
-                    vfs.create_file_as(
-                        if parent.is_empty() { "/" } else { parent },
-                        name,
-                        context,
-                        create_mode,
-                    )
-                    .map_err(vfs_errno)?;
-                    changed = true;
+            let base_metadata = match rootfs_metadata(path, context) {
+                Ok(metadata) => Some(metadata),
+                Err(carlio_os::vfs::VfsError::NotFound | carlio_os::vfs::VfsError::NotMounted) => {
+                    None
                 }
                 Err(error) => return Err(vfs_errno(error)),
+            };
+            let mut vfs = PROCESS_VFS.lock();
+            let mut changed = false;
+            let overlay_metadata = match vfs.metadata(path, context) {
+                Ok(metadata) => Some(metadata),
+                Err(carlio_os::vfs::VfsError::NotFound) => None,
+                Err(error) => return Err(vfs_errno(error)),
+            };
+            if flags & 0x80 != 0
+                && flags & 0x40 != 0
+                && (overlay_metadata.is_some() || base_metadata.is_some())
+            {
+                return Err(carlio_os::linux_abi::EEXIST);
+            }
+            if let Some(metadata) = overlay_metadata {
+                if metadata.kind == carlio_os::vfs::NodeKind::Directory {
+                    return Err(carlio_os::linux_abi::EISDIR);
+                }
+                vfs.check_access_as(path, context, access)
+                    .map_err(vfs_errno)?;
+            } else if let Some(metadata) = base_metadata {
+                if metadata.kind == carlio_os::vfs::NodeKind::Directory {
+                    return Err(carlio_os::linux_abi::EISDIR);
+                }
+                let requested =
+                    (if readable { 0b100 } else { 0 }) | (if writable { 0b010 } else { 0 });
+                if !mount_permission(metadata, context, requested) {
+                    return Err(carlio_os::linux_abi::EACCES);
+                }
+                if writable {
+                    if metadata.size > carlio_os::vfs::VFS_INLINE_FILE_MAX as u64 {
+                        return Err(carlio_os::linux_abi::EFBIG);
+                    }
+                    let (parent, name) =
+                        ensure_overlay_parent(&mut vfs, path, context).map_err(vfs_errno)?;
+                    vfs.create_file_as(parent, name, context, metadata.mode)
+                        .map_err(vfs_errno)?;
+                    let mut scratch = ROOTFS_COPY_SCRATCH.lock();
+                    let mut backend = ROOTFS_BACKEND.lock();
+                    let backend = backend.as_mut().ok_or(carlio_os::linux_abi::EIO)?;
+                    let mount = vfs.mount_for(path).ok_or(carlio_os::linux_abi::EIO)?;
+                    let relative = if mount.path == "/" {
+                        path
+                    } else {
+                        &path[mount.path.len()..]
+                    };
+                    let length = carlio_os::vfs::ReadOnlyMountBackend::read_file(
+                        backend,
+                        relative,
+                        &mut scratch[..metadata.size as usize],
+                    )
+                    .map_err(vfs_errno)?;
+                    vfs.write_file_as(path, context, &scratch[..length])
+                        .map_err(vfs_errno)?;
+                    changed = true;
+                }
+            } else if flags & 0x40 != 0 {
+                let (parent, name) =
+                    ensure_overlay_parent(&mut vfs, path, context).map_err(vfs_errno)?;
+                vfs.create_file_as(parent, name, context, create_mode)
+                    .map_err(vfs_errno)?;
+                changed = true;
+            } else {
+                return Err(carlio_os::linux_abi::ENOENT);
             }
             if flags & 0x200 != 0 {
                 vfs.truncate_file_as(path, context).map_err(vfs_errno)?;
@@ -2759,7 +3033,21 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
     fn stat(&mut self, path: &str) -> Result<carlio_os::linux_abi::LinuxStat, u16> {
         let context = self.process.security.access_context();
         let vfs = PROCESS_VFS.lock();
-        let metadata = vfs.metadata(path, context).map_err(vfs_errno)?;
+        let metadata = match vfs.metadata(path, context) {
+            Ok(metadata) => carlio_os::vfs::MountMetadata {
+                inode: metadata.inode,
+                kind: metadata.kind,
+                uid: metadata.uid,
+                gid: metadata.gid,
+                mode: metadata.mode,
+                size: metadata.size,
+            },
+            Err(carlio_os::vfs::VfsError::NotFound) => {
+                drop(vfs);
+                rootfs_metadata(path, context).map_err(vfs_errno)?
+            }
+            Err(error) => return Err(vfs_errno(error)),
+        };
         let size = i64::try_from(metadata.size).map_err(|_| carlio_os::linux_abi::EOVERFLOW)?;
         let blocks = size
             .checked_add(511)
@@ -2797,29 +3085,34 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
         let mode = u8::try_from(mode).map_err(|_| carlio_os::linux_abi::EINVAL)?;
         let requested =
             carlio_os::vfs::Access::from_posix_bits(mode).ok_or(carlio_os::linux_abi::EINVAL)?;
-        PROCESS_VFS
-            .lock()
-            .check_access_as(path, self.process.security.access_context(), requested)
-            .map(|_| ())
-            .map_err(vfs_errno)
+        let context = self.process.security.access_context();
+        match PROCESS_VFS.lock().check_access_as(path, context, requested) {
+            Ok(_) => Ok(()),
+            Err(carlio_os::vfs::VfsError::NotFound) => {
+                let metadata = rootfs_metadata(path, context).map_err(vfs_errno)?;
+                if mount_permission(metadata, context, mode) {
+                    Ok(())
+                } else {
+                    Err(carlio_os::linux_abi::EACCES)
+                }
+            }
+            Err(error) => Err(vfs_errno(error)),
+        }
     }
 
     fn mkdir(&mut self, path: &str, mode: u16) -> Result<(), u16> {
         let transaction = VfsMutationGuard::acquire()?;
-        let (parent, name) = path.rsplit_once('/').ok_or(carlio_os::linux_abi::EINVAL)?;
-        if name.is_empty() {
-            return Err(carlio_os::linux_abi::EINVAL);
-        }
         let context = self.process.security.access_context();
-        PROCESS_VFS
-            .lock()
-            .create_dir_as(
-                if parent.is_empty() { "/" } else { parent },
-                name,
-                context,
-                mode,
-            )
+        match rootfs_metadata(path, context) {
+            Ok(_) => return Err(carlio_os::linux_abi::EEXIST),
+            Err(carlio_os::vfs::VfsError::NotFound | carlio_os::vfs::VfsError::NotMounted) => {}
+            Err(error) => return Err(vfs_errno(error)),
+        }
+        let mut vfs = PROCESS_VFS.lock();
+        let (parent, name) = ensure_overlay_parent(&mut vfs, path, context).map_err(vfs_errno)?;
+        vfs.create_dir_as(parent, name, context, mode)
             .map_err(vfs_errno)?;
+        drop(vfs);
         commit_vfs_mutation(&transaction)
     }
 
@@ -4007,20 +4300,175 @@ fn write_usize(value: usize) {
 fn enumerate_pci() {
     write("Inventário PCI (somente leitura):\r\n");
     let found = pci_device::enumerate(report_pci_function);
-    write("Controladores relevantes encontrados: ");
+    write("Funções PCI presentes detectadas: ");
     write_u32(found as u32);
     write("\r\n");
 }
 
 #[cfg(target_os = "none")]
 fn initialize_vfs_mounts() {
-    write("VFS: rootfs ext4/FAT32 ainda não montado; usando namespace em RAM.\r\n");
+    let root = Credentials { uid: 0, gid: 0 };
+    let mut vfs = PROCESS_VFS.lock();
+    if vfs
+        .check_access_as(
+            "/bin",
+            AccessContext::new(root, &[], 0),
+            carlio_os::vfs::Access::READ,
+        )
+        .is_err()
+    {
+        if vfs.create_fhs_layout().is_err() {
+            write("VFS: falha ao criar hierarquia FHS em RAM.\r\n");
+            return;
+        }
+    }
+    let rootfs = ROOTFS_BACKEND.lock();
+    let Some(backend) = rootfs.as_ref() else {
+        write("VFS: nenhum rootfs ext4/FAT32 montável; namespace FHS em RAM.\r\n");
+        return;
+    };
+    let filesystem = carlio_os::vfs::ReadOnlyMountBackend::filesystem_type(backend);
+    match vfs.mount(
+        "/dev/ahci-partition",
+        "/",
+        filesystem,
+        carlio_os::vfs::MountOptions {
+            read_only: true,
+            no_exec: false,
+            no_suid: false,
+        },
+        root,
+    ) {
+        Ok(()) => write("VFS: rootfs montado em / para leitura; escrita no overlay RAM.\r\n"),
+        Err(_) => write("VFS: rootfs detectado, mas o mount no namespace falhou.\r\n"),
+    }
+}
+
+#[cfg(target_os = "none")]
+fn rootfs_metadata(
+    path: &str,
+    context: AccessContext<'_>,
+) -> Result<carlio_os::vfs::MountMetadata, carlio_os::vfs::VfsError> {
+    let vfs = PROCESS_VFS.lock();
+    let mut backend = ROOTFS_BACKEND.lock();
+    let backend = backend
+        .as_mut()
+        .ok_or(carlio_os::vfs::VfsError::NotMounted)?;
+    let mount = vfs
+        .mount_for(path)
+        .ok_or(carlio_os::vfs::VfsError::NotMounted)?;
+    let relative = if path == mount.path {
+        "/"
+    } else if mount.path == "/" {
+        path
+    } else {
+        &path[mount.path.len()..]
+    };
+    let metadata = carlio_os::vfs::ReadOnlyMountBackend::metadata(backend, relative)?;
+    let _ = context;
+    Ok(metadata)
+}
+
+#[cfg(target_os = "none")]
+fn read_rootfs_file(
+    path: &str,
+    context: AccessContext<'_>,
+    offset: u64,
+    output: &mut [u8],
+) -> Result<usize, carlio_os::vfs::VfsError> {
+    let vfs = PROCESS_VFS.lock();
+    let mut backend = ROOTFS_BACKEND.lock();
+    let backend = backend
+        .as_mut()
+        .ok_or(carlio_os::vfs::VfsError::NotMounted)?;
+    let mount = vfs
+        .mount_for(path)
+        .ok_or(carlio_os::vfs::VfsError::NotMounted)?;
+    let relative = if path == mount.path {
+        "/"
+    } else if mount.path == "/" {
+        path
+    } else {
+        &path[mount.path.len()..]
+    };
+    let metadata = carlio_os::vfs::ReadOnlyMountBackend::metadata(backend, relative)?;
+    if metadata.kind != carlio_os::vfs::NodeKind::File
+        || !mount_permission(metadata, context, 0b100)
+    {
+        return Err(carlio_os::vfs::VfsError::PermissionDenied);
+    }
+    vfs.read_mounted_file_range(path, context, backend, offset, output)
+}
+
+#[cfg(target_os = "none")]
+fn mount_permission(
+    metadata: carlio_os::vfs::MountMetadata,
+    context: AccessContext<'_>,
+    requested: u8,
+) -> bool {
+    if context.credentials.uid == 0 {
+        return requested & 1 == 0 || metadata.mode & 0o111 != 0;
+    }
+    let shift = if context.credentials.uid == metadata.uid {
+        6
+    } else if context.credentials.gid == metadata.gid
+        || context.supplementary_groups.contains(&metadata.gid)
+    {
+        3
+    } else {
+        0
+    };
+    ((metadata.mode >> shift) as u8 & requested) == requested
+}
+
+#[cfg(target_os = "none")]
+fn ensure_overlay_parent<'a, const N: usize>(
+    vfs: &mut Vfs<N>,
+    path: &'a str,
+    context: AccessContext<'_>,
+) -> Result<(&'a str, &'a str), carlio_os::vfs::VfsError> {
+    let (parent, name) = path
+        .rsplit_once('/')
+        .ok_or(carlio_os::vfs::VfsError::InvalidPath)?;
+    if name.is_empty() {
+        return Err(carlio_os::vfs::VfsError::InvalidPath);
+    }
+    let parent = if parent.is_empty() { "/" } else { parent };
+    let mut prefix = [0u8; carlio_os::vfs::VFS_PATH_MAX];
+    prefix[0] = b'/';
+    let mut length = 1usize;
+    for component in parent.split('/').filter(|part| !part.is_empty()) {
+        let mut candidate_bytes = prefix;
+        let candidate_start = if length == 1 { length } else { length + 1 };
+        if candidate_start > length {
+            candidate_bytes[length] = b'/';
+        }
+        let end = candidate_start
+            .checked_add(component.len())
+            .ok_or(carlio_os::vfs::VfsError::InvalidPath)?;
+        if end >= candidate_bytes.len() {
+            return Err(carlio_os::vfs::VfsError::InvalidPath);
+        }
+        candidate_bytes[candidate_start..end].copy_from_slice(component.as_bytes());
+        let candidate = core::str::from_utf8(&candidate_bytes[..end])
+            .map_err(|_| carlio_os::vfs::VfsError::InvalidPath)?;
+        if vfs
+            .check_access_as(candidate, context, carlio_os::vfs::Access::READ)
+            .is_err()
+        {
+            let parent_prefix = core::str::from_utf8(&prefix[..length])
+                .map_err(|_| carlio_os::vfs::VfsError::InvalidPath)?;
+            vfs.create_dir_as(parent_prefix, component, context, 0o755)?;
+        }
+        prefix = candidate_bytes;
+        length = end;
+    }
+    Ok((parent, name))
 }
 
 #[cfg(target_os = "none")]
 fn discover_boot_storage() {
-    let mut device = AHCI_BLOCK_DEVICE.lock().take();
-    let Some(mut device) = device.take() else {
+    let Some(mut device) = AHCI_BLOCK_DEVICE.lock().take() else {
         write("Storage: nenhum dispositivo de bloco disponível para varredura.\r\n");
         return;
     };
@@ -4041,6 +4489,39 @@ fn discover_boot_storage() {
                 write_u64(partition.sectors);
                 write("\r\n");
             }
+            let chosen = partitions[..count]
+                .iter()
+                .flatten()
+                .find(|partition| partition.filesystem == carlio_os::partition::Filesystem::Ext4)
+                .or_else(|| {
+                    partitions[..count].iter().flatten().find(|partition| {
+                        partition.filesystem == carlio_os::partition::Filesystem::Fat32
+                    })
+                })
+                .copied();
+            if let Some(partition) = chosen {
+                let backend = match partition.filesystem {
+                    carlio_os::partition::Filesystem::Ext4 => {
+                        carlio_os::ext4::Ext4Volume::mount(device, partition.start_lba)
+                            .map(BootRootfs::Ext4)
+                            .map_err(|_| "ext4 recusado pelo leitor")
+                    }
+                    carlio_os::partition::Filesystem::Fat32 => {
+                        carlio_os::fat32::Fat32Volume::mount(device, partition.start_lba)
+                            .map(BootRootfs::Fat32)
+                            .map_err(|_| "FAT32 recusado pelo leitor")
+                    }
+                };
+                match backend {
+                    Ok(backend) => {
+                        *ROOTFS_BACKEND.lock() = Some(backend);
+                        write("Storage: partição escolhida como rootfs prioritário.\r\n");
+                    }
+                    Err(reason) => write(reason),
+                }
+            } else {
+                *AHCI_BLOCK_DEVICE.lock() = Some(device);
+            }
         }
         Err(error) => {
             write("Storage: descoberta de partições falhou: ");
@@ -4054,15 +4535,15 @@ fn discover_boot_storage() {
                 }
             }
             write("\r\n");
+            *AHCI_BLOCK_DEVICE.lock() = Some(device);
         }
     }
-    *AHCI_BLOCK_DEVICE.lock() = Some(device);
 }
 
 #[cfg(target_os = "none")]
 fn commit_vfs_mutation(_transaction: &VfsMutationGuard) -> Result<(), u16> {
-    // File mutations remain in the RAM VFS until ext4/FAT32 write semantics
-    // and crash recovery are integrated. Do not persist through archived HermFS.
+    // ext4/FAT32 mounts stay read-only; mutations currently land in the bounded
+    // RAM overlay and are not reported as durable on the device.
     Ok(())
 }
 
@@ -4078,6 +4559,8 @@ fn report_pci_function(function: PciFunction) {
     write_hex_word(function.vendor_id);
     write(":");
     write_hex_word(function.device_id);
+    write(" classe=");
+    write(function.class_name());
     if function.is_sata_ahci() {
         write(" SATA/AHCI");
         match function.ahci_model() {

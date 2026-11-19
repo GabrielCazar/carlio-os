@@ -27,6 +27,7 @@ pub const SYS_GETEUID: u64 = 107;
 pub const SYS_GETEGID: u64 = 108;
 pub const SYS_GETGROUPS: u64 = 115;
 pub const SYS_EXIT: u64 = 60;
+pub const SYS_EXECVE: u64 = 59;
 pub const SYS_EXIT_GROUP: u64 = 231;
 pub const SYS_SOCKET: u64 = 41;
 pub const SYS_BIND: u64 = 49;
@@ -54,8 +55,10 @@ pub const CLOCK_REALTIME: u64 = 0;
 pub const CLOCK_MONOTONIC: u64 = 1;
 
 pub const EBADF: u16 = 9;
+pub const E2BIG: u16 = 7;
 pub const EPERM: u16 = 1;
 pub const ENOENT: u16 = 2;
+pub const ENOEXEC: u16 = 8;
 pub const ENOTDIR: u16 = 20;
 pub const ENOTEMPTY: u16 = 39;
 pub const EFAULT: u16 = 14;
@@ -79,6 +82,8 @@ pub const EBUSY: u16 = 16;
 
 const WRITE_CHUNK_SIZE: usize = 256;
 const PATH_BUFFER_SIZE: usize = crate::vfs::VFS_PATH_MAX;
+const EXEC_VECTOR_LIMIT: usize = 8;
+const EXEC_STRING_LIMIT: usize = 256;
 const O_ACCMODE: u64 = 3;
 const O_WRONLY: u64 = 1;
 const O_RDWR: u64 = 2;
@@ -107,7 +112,18 @@ pub struct ProcessContext {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SyscallOutcome {
     Return(u64),
+    Exec(ExecTransition),
     Exit { status: u8 },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExecTransition {
+    pub process_id: u64,
+    pub old_page_table: u64,
+    pub old_resource_slot: u8,
+    pub page_table: u64,
+    pub instruction_pointer: u64,
+    pub stack_pointer: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -146,6 +162,14 @@ pub trait LinuxSyscallIo {
         Err(EBADF)
     }
     fn open(&mut self, _path: &str, _flags: u64, _mode: u64) -> Result<u64, u16> {
+        Err(ENOSYS)
+    }
+    fn execve(
+        &mut self,
+        _path: &str,
+        _arguments: &[&str],
+        _environment: &[&str],
+    ) -> Result<ExecTransition, u16> {
         Err(ENOSYS)
     }
     fn write(&mut self, descriptor: u64, bytes: &[u8]) -> Result<usize, u16>;
@@ -242,6 +266,7 @@ pub fn dispatch<I: LinuxSyscallIo>(
     io: &mut I,
 ) -> SyscallOutcome {
     match number {
+        SYS_EXECVE => execve_syscall(arguments[0], arguments[1], arguments[2], io),
         SYS_READ => read_syscall(arguments[0], arguments[1], arguments[2], io),
         SYS_OPEN => open_syscall(AT_FDCWD, arguments[0], arguments[1], arguments[2], io),
         SYS_FSTAT => fstat_syscall(arguments[0], arguments[1], io),
@@ -687,6 +712,106 @@ fn open_syscall<I: LinuxSyscallIo>(
         return errno(EBADF);
     }
     result(io.open(path, flags, mode))
+}
+
+fn execve_syscall<I: LinuxSyscallIo>(
+    path_address: u64,
+    arguments_address: u64,
+    environment_address: u64,
+    io: &mut I,
+) -> SyscallOutcome {
+    let mut path_bytes = [0u8; PATH_BUFFER_SIZE];
+    let (path, _) = match read_rooted_path(path_address, &mut path_bytes, io) {
+        Ok(value) => value,
+        Err(error) => return errno(error),
+    };
+    let mut argument_bytes = [[0u8; EXEC_STRING_LIMIT]; EXEC_VECTOR_LIMIT];
+    let mut environment_bytes = [[0u8; EXEC_STRING_LIMIT]; EXEC_VECTOR_LIMIT];
+    let mut argument_lengths = [0usize; EXEC_VECTOR_LIMIT];
+    let mut environment_lengths = [0usize; EXEC_VECTOR_LIMIT];
+    let argument_count = match read_exec_vector(
+        arguments_address,
+        &mut argument_bytes,
+        &mut argument_lengths,
+        io,
+    ) {
+        Ok(count) => count,
+        Err(error) => return errno(error),
+    };
+    let environment_count = match read_exec_vector(
+        environment_address,
+        &mut environment_bytes,
+        &mut environment_lengths,
+        io,
+    ) {
+        Ok(count) => count,
+        Err(error) => return errno(error),
+    };
+    let mut arguments = [""; EXEC_VECTOR_LIMIT];
+    for index in 0..argument_count {
+        arguments[index] =
+            match core::str::from_utf8(&argument_bytes[index][..argument_lengths[index]]) {
+                Ok(value) => value,
+                Err(_) => return errno(EINVAL),
+            };
+    }
+    let mut environment = [""; EXEC_VECTOR_LIMIT];
+    for index in 0..environment_count {
+        environment[index] =
+            match core::str::from_utf8(&environment_bytes[index][..environment_lengths[index]]) {
+                Ok(value) => value,
+                Err(_) => return errno(EINVAL),
+            };
+    }
+    match io.execve(
+        path,
+        &arguments[..argument_count],
+        &environment[..environment_count],
+    ) {
+        Ok(transition) => SyscallOutcome::Exec(transition),
+        Err(error) => errno(error),
+    }
+}
+
+fn read_exec_vector<I: LinuxSyscallIo>(
+    vector_address: u64,
+    strings: &mut [[u8; EXEC_STRING_LIMIT]; EXEC_VECTOR_LIMIT],
+    lengths: &mut [usize; EXEC_VECTOR_LIMIT],
+    io: &mut I,
+) -> Result<usize, u16> {
+    if vector_address == 0 {
+        return Ok(0);
+    }
+    for index in 0..EXEC_VECTOR_LIMIT {
+        let slot = vector_address
+            .checked_add((index * core::mem::size_of::<u64>()) as u64)
+            .ok_or(EFAULT)?;
+        let mut pointer_bytes = [0u8; 8];
+        io.copy_from_user(slot, &mut pointer_bytes)
+            .map_err(|_| EFAULT)?;
+        let pointer = u64::from_le_bytes(pointer_bytes);
+        if pointer == 0 {
+            return Ok(index);
+        }
+        lengths[index] = read_exec_string(pointer, &mut strings[index], io)?;
+    }
+    Err(E2BIG)
+}
+
+fn read_exec_string<I: LinuxSyscallIo>(
+    address: u64,
+    output: &mut [u8; EXEC_STRING_LIMIT],
+    io: &mut I,
+) -> Result<usize, u16> {
+    for index in 0..output.len() {
+        let location = address.checked_add(index as u64).ok_or(EFAULT)?;
+        io.copy_from_user(location, &mut output[index..index + 1])
+            .map_err(|_| EFAULT)?;
+        if output[index] == 0 {
+            return Ok(index);
+        }
+    }
+    Err(E2BIG)
 }
 
 /// Lê uma string C limitada e interpreta caminhos relativos sob cwd `/`, que

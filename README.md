@@ -45,7 +45,7 @@ O splash serial e o comando `sobre` apresentam “carlIO OS | Criado por João G
 | --- | --- | --- |
 | 1. Contrato e hardware mínimo | Matriz de alvo, BIOS/UEFI, diagnóstico, PCI/AHCI mínimo | QEMU local e NAS/KVM BIOS/UEFI; 159 testes host; AHCI QEMU com recovery/COMRESET em imagem descartável. Drivers e boot físico seguem pendentes |
 | 2. Memória e execução | Até 32 GiB de RAM, VM x86-64, kernel multithread/SMP, ring 3, ELF64 e processos | 32 GiB local e frames >4 GiB; KVM NAS validado a 5 GiB; ELF VFS de boot, preempção/fault/reaper BSP e shootdown xAPIC. Stress CPL3 nos APs, tabela dinâmica e ownership integral pendentes |
-| 3. Bloco e filesystems | BlockDevice; descoberta MBR/GPT ext4/FAT32 no boot; ext4 principal e FAT32 para EFI/mídia removível | Leitores somente leitura e descoberta no boot; montagem no VFS/syscalls pendente; Hermione arquivado; hardware físico pendente |
+| 3. Bloco e filesystems | BlockDevice; descoberta MBR/GPT e rootfs ext4/FAT32 no boot; ext4 principal e FAT32 para EFI/mídia removível | Rootfs montado read-only; escrita via overlay volátil VFS (16 KiB por arquivo); persistência, execve e hardware físico pendentes; Hermione arquivado |
 | 4. VFS, contas e rede | Montagem, caminhos Linux, permissões efetivas, login e serviços headless | VFS POSIX/FHS e mounts host; NIC Intel 82574L QEMU com DHCP; identidade básica na ABI. Backends montados, enforcement integrado, login seguro, TCP/IP e serviços físicos pendentes |
 | 5. ABI Linux e Arch | Runtime Linux progressivo, userland Arch e pacman/ALPM | Planejada; depende de processos e syscalls |
 | 6. Desktop e agentes | SDDM/Plasma, catálogo executável, ChatGPT/Ollama | Planejada; não é gate inicial do NAS headless |

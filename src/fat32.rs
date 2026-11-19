@@ -359,6 +359,26 @@ impl<D: BlockDevice> crate::vfs::ReadOnlyMountBackend for Fat32Volume<D> {
         })
     }
 
+    fn metadata(&mut self, path: &str) -> Result<crate::vfs::MountMetadata, crate::vfs::VfsError> {
+        let file = self.resolve_file(path).map_err(|error| match error {
+            Fat32Error::NotFound => crate::vfs::VfsError::NotFound,
+            Fat32Error::InvalidName => crate::vfs::VfsError::InvalidPath,
+            _ => crate::vfs::VfsError::InvalidPath,
+        })?;
+        Ok(crate::vfs::MountMetadata {
+            inode: u64::from(file.first_cluster),
+            kind: crate::vfs::NodeKind::File,
+            uid: 0,
+            gid: 0,
+            mode: if file.attributes & 0x01 != 0 {
+                0o444
+            } else {
+                0o666
+            },
+            size: u64::from(file.size),
+        })
+    }
+
     fn read_file_range(
         &mut self,
         path: &str,
