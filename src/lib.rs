@@ -72,6 +72,7 @@ pub mod open_files;
 pub mod pci;
 pub mod process;
 pub mod pseudo_fs;
+pub mod serial_rx;
 pub mod sync;
 pub mod syscall;
 pub mod user_memory;
