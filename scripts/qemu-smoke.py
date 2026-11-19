@@ -165,7 +165,7 @@ def main() -> int:
         "; CPL3 ativo=0; stacks, VM e page tables liberáveis.".encode(),
         "; alocação, escrita, leitura e liberação passaram.".encode(),
         "Ring 3 rotinas: ELF carregado em CPL3, scheduler e preempção entre dois CR3 passaram; pilhas recuperadas pelo reaper.".encode(),
-        ", faults isolados=1.".encode(),
+        "Ring 3: probe CPL3, retorno seguro e fault #UD isolado passaram.".encode(),
         "TLB SMP: shootdowns enviados=".encode(),
         "Heap kernel: regiões dinâmicas, alinhamento, escrita/leitura, expansão e liberação passaram.".encode(),
         f"SMP Limine: CPUs detectadas={args.cpus}, APs iniciadas={args.cpus - 1}, aguardadas={args.cpus - 1}; APs aguardam despacho de tarefa, scheduler ainda desativado.".encode(),
