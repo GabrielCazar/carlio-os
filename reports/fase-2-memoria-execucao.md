@@ -1,5 +1,56 @@
 # Relatório — Fase 2: memória e execução
 
+### Correção — leitura serial concorrente e revalidação BIOS/UEFI/NAS — 2026-11-19
+
+Sintoma e causa: leitores concorrentes consultavam o mesmo registrador de
+recepção UART. A posse passou a cobrir somente a rechecagem do status e a
+consumação do byte, enquanto cada CPU mantém polling independente com limite
+finito; isso evita que um leitor sem dados monopolize a recepção. A captura
+diagnóstica confirmou que `read(0)` consumiu o byte, copiou-o para o espaço user
+e retornou do dispatcher. A execução CPL3 ainda para depois desse retorno,
+antes dos marcadores de mmap, sobreposição/reaper e shell; a causa posterior
+continua aberta e não deve ser atribuída à UART sem nova evidência.
+
+Arquivos desta correção: `src/main.rs`, `src/serial_rx.rs`, `src/lib.rs` e este
+relatório. O gate RAII `SerialRxGate` rejeita um segundo consumidor enquanto o
+byte está sendo lido; o teste host negativo confirma a rejeição e a liberação
+após o primeiro dono sair. `cargo fmt --check`,
+`cargo clippy --all-targets -- -D warnings`, `cargo test --all-targets` (182
+testes) e `cargo check --bin carlio-kernel --target x86_64-unknown-none`
+passaram ([fmt](logs/fase2-serial-rx-gate-fmt-20261119.txt),
+[host](logs/fase2-serial-rx-gate-host-20261119.txt),
+[Clippy](logs/fase2-serial-rx-gate-clippy-20261119.txt),
+[kernel](logs/fase2-serial-rx-gate-kernel-20261119.txt),
+[ISO](logs/fase2-serial-rx-final-build-20261119.txt)). O gate completo
+`scripts/test-local-iso.sh` falhou na etapa 1/7 em BIOS; o rastreio mostra
+consumo/cópia/retorno de `read(0)` antes da parada
+([BIOS diagnóstico](logs/fase2-serial-rx-trace-qemu-bios-20261119-013217.log)).
+UEFI também inicializou e completou `read(0)`, mas parou no mesmo ponto
+posterior ([UEFI diagnóstico](logs/fase2-serial-rx-trace-qemu-uefi-20261119.log)).
+Esses são checkpoints positivos de inicialização e RX, não aprovações do smoke
+completo nem evidência para fechar os gates CPL3.
+
+NAS: a conectividade `uname -a` passou usando a configuração SSH explícita.
+`CARLIO_TEST_SSH_CONFIG=/home/gabriel/.ssh/config
+CARLIO_TEST_PHASE=fase2-serial-rx CARLIO_TEST_QEMU_MEMORY=5G
+scripts/test-nas.sh` executou 181 testes host (176 da biblioteca, 1 de
+`carlio-logs`, 4 de `herm-fs`) e `herm-fs status`, mas QEMU/KVM
+BIOS falhou na etapa 1/7 no probe CPL3; por isso o script não iniciou UEFI. O
+escopo remoto foi `/tmp/carlioos-test-20261119-013605`, removido pelo cleanup
+do script. Evidências: [conectividade](logs/fase2-serial-rx-nas-connectivity-20261119.txt),
+[resumo NAS](logs/fase2-serial-rx-nas-20261119-013605.txt) e
+[BIOS NAS](logs/fase2-serial-rx-nas-20261119-013605-qemu-kvm-bios.log). Sem
+acesso a hardware físico.
+
+Estado permanece aberto. Gates pendentes: causa da parada CPL3 pós-`read(0)`;
+probe completo BIOS/UEFI; UEFI NAS; stress simultâneo de processos nos APs e
+barreira/reaper; bundle completo de recursos pertencente a `Process`; stress
+concorrente de VM/allocator; e fechamento da fase após todos os critérios de
+§3–4. Não atualizar o estado para concluído nem declarar scheduler CPL3 SMP
+suportado. Próximo gate: localizar o bloqueio após o retorno de `read(0)`, obter
+smokes BIOS/UEFI completos locais e só então repetir os gates NAS aplicáveis,
+anexando cada log em `reports/logs/`.
+
 ### Watchdog durante execução CPL3 — 2026-11-19
 
 O watchdog tratava ausência de chamadas explícitas a `heartbeat()` como falta

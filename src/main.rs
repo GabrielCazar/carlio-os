@@ -40,6 +40,11 @@ const INPUT_LIMIT: usize = 128;
 // harness; um timeout curto mantém serial best-effort sem prender o scheduler.
 const SERIAL_POLL_LIMIT: usize = 100_000;
 #[cfg(target_os = "none")]
+const SERIAL_READ_POLL_LIMIT: usize = 250_000;
+#[cfg(target_os = "none")]
+static SERIAL_RX_OWNER: carlio_os::serial_rx::SerialRxGate =
+    carlio_os::serial_rx::SerialRxGate::new();
+#[cfg(target_os = "none")]
 const ERROR_LOG_CAPACITY: usize = 16;
 #[cfg(target_os = "none")]
 const MAX_BOOT_CPUS: usize = 64;
@@ -1165,13 +1170,30 @@ fn serial_write(byte: u8) -> bool {
 
 #[cfg(target_os = "none")]
 fn serial_read() -> Result<u8, KernelError> {
-    for iteration in 0..SERIAL_POLL_LIMIT {
-        if iteration & 0x0fff == 0 {
-            #[cfg(target_os = "none")]
-            idt::heartbeat();
-        }
+    // APs poll independently so an idle reader cannot monopolize the UART.
+    // Ownership covers only the final status recheck and RBR consume, keeping
+    // two CPUs from racing on the single receive register.
+    for iteration in 0..SERIAL_READ_POLL_LIMIT {
+        // SAFETY: COM1 was initialized during boot; this bounded poll only
+        // reads the UART line-status register.
         if unsafe { input(COM1 + 5) } & 1 != 0 {
-            return Ok(unsafe { input(COM1) });
+            let Some(_claim) = SERIAL_RX_OWNER.try_claim() else {
+                core::hint::spin_loop();
+                continue;
+            };
+            // SAFETY: SERIAL_RX_OWNER grants one CPU exclusive access to the
+            // status recheck and receive-buffer register consumption.
+            let byte = if unsafe { input(COM1 + 5) } & 1 != 0 {
+                Some(unsafe { input(COM1) })
+            } else {
+                None
+            };
+            if let Some(byte) = byte {
+                return Ok(byte);
+            }
+        }
+        if iteration & 0x0fff == 0 {
+            idt::heartbeat();
         }
         core::hint::spin_loop();
     }
