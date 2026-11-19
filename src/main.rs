@@ -1735,9 +1735,9 @@ fn install_process_probe_images(first: &[u8], second: &[u8]) -> bool {
 }
 
 #[cfg(target_os = "none")]
-fn probe_elf_image(task: &[u8]) -> [u8; 512] {
+fn probe_elf_image(task: &[u8]) -> [u8; 1024] {
     use carlio_os::elf::{ELF_HEADER_SIZE, PF_R, PF_X, PROGRAM_HEADER_SIZE, PT_LOAD};
-    let mut elf = [0u8; 512];
+    let mut elf = [0u8; 1024];
     elf[..4].copy_from_slice(b"\x7fELF");
     elf[4] = 2;
     elf[5] = 1;
@@ -1807,12 +1807,12 @@ pub(crate) fn process_runtime_fault(
 }
 
 #[cfg(target_os = "none")]
-fn linux_syscall_probe_task() -> ([u8; 512], usize) {
+fn linux_syscall_probe_task() -> ([u8; 1024], usize) {
     const CODE_VA: u64 = 0x0000_4000_0000_3000;
     const STACK_VA: u64 = CODE_VA + 4096;
     const MESSAGE: &[u8] = b"write ok\n";
     const PATH: &[u8] = b"/programas/probe\0";
-    let mut code = [0u8; 512];
+    let mut code = [0u8; 1024];
     let mut length = 0usize;
     // Pequena janela para os APs entrarem simultaneamente em CPL3. O contador
     // anterior (67 milhões) podia exceder o watchdog de 5 s sob QEMU TCG antes
@@ -1867,6 +1867,14 @@ fn linux_syscall_probe_task() -> ([u8; 512], usize) {
     append_probe_syscall(&mut code, &mut length, carlio_os::linux_abi::SYS_READ);
     append_probe_syscall(&mut code, &mut length, carlio_os::linux_abi::SYS_CLOSE);
     append_probe_syscall(&mut code, &mut length, carlio_os::linux_abi::SYS_GETPID);
+    append_probe_syscall(&mut code, &mut length, carlio_os::linux_abi::SYS_GETTID);
+    append_probe_bytes(&mut code, &mut length, &[0xbf, 1, 0, 0, 0, 0x48, 0xbe]);
+    append_probe_bytes(&mut code, &mut length, &(STACK_VA + 2064).to_le_bytes());
+    append_probe_syscall(
+        &mut code,
+        &mut length,
+        carlio_os::linux_abi::SYS_CLOCK_GETTIME,
+    );
     append_probe_bytes(&mut code, &mut length, &[0x31, 0xff, 0x48, 0xbe]);
     append_probe_bytes(
         &mut code,
@@ -1899,6 +1907,26 @@ fn linux_syscall_probe_task() -> ([u8; 512], usize) {
     append_probe_bytes(&mut code, &mut length, &[0x48, 0x89, 0xc7]); // rdi = mapping
     append_probe_bytes(&mut code, &mut length, &[0xbe, 0x00, 0x10, 0, 0]);
     append_probe_syscall(&mut code, &mut length, carlio_os::linux_abi::SYS_MUNMAP);
+    // brk cresce uma página, grava no limite novo e retorna ao break inicial.
+    append_probe_bytes(&mut code, &mut length, &[0x48, 0xbf]);
+    append_probe_bytes(
+        &mut code,
+        &mut length,
+        &(carlio_os::vma::USER_HEAP_BASE + 4096).to_le_bytes(),
+    );
+    append_probe_syscall(&mut code, &mut length, carlio_os::linux_abi::SYS_BRK);
+    append_probe_bytes(
+        &mut code,
+        &mut length,
+        &[0x48, 0x83, 0xe8, 0x01, 0xc6, 0x00, 0x42],
+    );
+    append_probe_bytes(&mut code, &mut length, &[0x48, 0xbf]);
+    append_probe_bytes(
+        &mut code,
+        &mut length,
+        &carlio_os::vma::USER_HEAP_BASE.to_le_bytes(),
+    );
+    append_probe_syscall(&mut code, &mut length, carlio_os::linux_abi::SYS_BRK);
     // An unprivileged process must receive EACCES for a root-owned 0600 file.
     append_probe_bytes(&mut code, &mut length, &[0x48, 0xbf]);
     append_probe_bytes(&mut code, &mut length, &((-100i64) as u64).to_le_bytes());
@@ -1925,14 +1953,14 @@ fn linux_syscall_probe_task() -> ([u8; 512], usize) {
 }
 
 #[cfg(target_os = "none")]
-fn append_probe_syscall(code: &mut [u8; 512], length: &mut usize, number: u64) {
+fn append_probe_syscall(code: &mut [u8; 1024], length: &mut usize, number: u64) {
     append_probe_bytes(code, length, &[0xb8]); // mov eax, imm32
     append_probe_bytes(code, length, &(number as u32).to_le_bytes());
     append_probe_bytes(code, length, &[0x0f, 0x05]);
 }
 
 #[cfg(target_os = "none")]
-fn append_probe_bytes(code: &mut [u8; 512], length: &mut usize, bytes: &[u8]) {
+fn append_probe_bytes(code: &mut [u8; 1024], length: &mut usize, bytes: &[u8]) {
     let end = *length + bytes.len();
     code[*length..end].copy_from_slice(bytes);
     *length = end;
@@ -1979,7 +2007,8 @@ pub(crate) fn dispatch_linux_syscall(
         number,
         arguments,
         carlio_os::linux_abi::ProcessContext {
-            process_id: process.id,
+            process_id: process.thread_group_id,
+            thread_id: process.id,
             uid: process.security.credentials.uid,
             gid: process.security.credentials.gid,
             supplementary_groups: process.security.supplementary_groups,
@@ -2079,9 +2108,25 @@ pub(crate) fn dispatch_linux_syscall(
         LINUX_CREDENTIAL_PROBE_MASK.fetch_or(identity_bit, Ordering::AcqRel);
     }
     if number == carlio_os::linux_abi::SYS_GETPID
-        && outcome == carlio_os::linux_abi::SyscallOutcome::Return(process.id)
+        && outcome == carlio_os::linux_abi::SyscallOutcome::Return(process.thread_group_id)
     {
         LINUX_GETPID_PROBE_PASSED.store(true, Ordering::Release);
+    }
+    match (number, outcome) {
+        (carlio_os::linux_abi::SYS_GETTID, carlio_os::linux_abi::SyscallOutcome::Return(tid))
+            if tid == process.id =>
+        {
+            LINUX_CREDENTIAL_PROBE_MASK.fetch_or(0x200, Ordering::AcqRel);
+        }
+        (
+            carlio_os::linux_abi::SYS_CLOCK_GETTIME,
+            carlio_os::linux_abi::SyscallOutcome::Return(0),
+        ) if arguments[0] == carlio_os::linux_abi::CLOCK_MONOTONIC
+            && arguments[1] == 0x0000_4000_0000_4810 =>
+        {
+            LINUX_CREDENTIAL_PROBE_MASK.fetch_or(0x400, Ordering::AcqRel);
+        }
+        _ => {}
     }
     match (number, outcome) {
         (carlio_os::linux_abi::SYS_MMAP, carlio_os::linux_abi::SyscallOutcome::Return(address))
@@ -2104,6 +2149,33 @@ pub(crate) fn dispatch_linux_syscall(
                 .unwrap_or(false) =>
         {
             LINUX_MEMORY_PROBE_MASK.fetch_or(0x2, Ordering::AcqRel);
+        }
+        (carlio_os::linux_abi::SYS_BRK, carlio_os::linux_abi::SyscallOutcome::Return(address))
+            if arguments[0] == carlio_os::vma::USER_HEAP_BASE + 4096
+                && address == arguments[0]
+                && io
+                    .with_process_vm(|vm| {
+                        vm.mapping(carlio_os::vma::USER_HEAP_BASE)
+                            .map(|mapping| mapping.flags & PAGE_FLAG_WRITABLE != 0)
+                            .map_err(|_| carlio_os::linux_abi::EFAULT)
+                    })
+                    .unwrap_or(false) =>
+        {
+            LINUX_MEMORY_PROBE_MASK.fetch_or(0x4, Ordering::AcqRel);
+        }
+        (carlio_os::linux_abi::SYS_BRK, carlio_os::linux_abi::SyscallOutcome::Return(address))
+            if arguments[0] == carlio_os::vma::USER_HEAP_BASE
+                && address == arguments[0]
+                && io
+                    .with_process_vm(|vm| {
+                        Ok(
+                            vm.mapping(carlio_os::vma::USER_HEAP_BASE)
+                                == Err(FrameError::NotMapped),
+                        )
+                    })
+                    .unwrap_or(false) =>
+        {
+            LINUX_MEMORY_PROBE_MASK.fetch_or(0x8, Ordering::AcqRel);
         }
         _ => {}
     }
@@ -2138,10 +2210,7 @@ impl KernelLinuxSyscallIo {
 
 #[cfg(target_os = "none")]
 impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
-    fn clock_gettime(
-        &mut self,
-        clock_id: u64,
-    ) -> Result<carlio_os::linux_abi::Timespec, u16> {
+    fn clock_gettime(&mut self, clock_id: u64) -> Result<carlio_os::linux_abi::Timespec, u16> {
         if clock_id != carlio_os::linux_abi::CLOCK_MONOTONIC {
             return Err(carlio_os::linux_abi::EINVAL);
         }
@@ -2160,10 +2229,7 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
         })
     }
 
-    fn clock_getres(
-        &mut self,
-        clock_id: u64,
-    ) -> Result<carlio_os::linux_abi::Timespec, u16> {
+    fn clock_getres(&mut self, clock_id: u64) -> Result<carlio_os::linux_abi::Timespec, u16> {
         if clock_id != carlio_os::linux_abi::CLOCK_MONOTONIC {
             return Err(carlio_os::linux_abi::EINVAL);
         }
@@ -2572,6 +2638,11 @@ pub(crate) fn process_probe_result() -> u64 {
         write_hex_u64(abi_probe_mask as u64);
         write(".\r\n");
     }
+    if abi_probe_mask & 0x600 == 0x600 {
+        write("ABI Linux: gettid e clock_gettime monotônico CPL3 passaram.\r\n");
+    } else {
+        write("ABI Linux: probe CPL3 de gettid/clock_gettime incompleto.\r\n");
+    }
     if abi_probe_mask & 0x20 != 0 {
         write("ABI Linux: write CPL3 validou buffer de usuário e serial.\r\n");
     } else {
@@ -2601,8 +2672,8 @@ pub(crate) fn process_probe_result() -> u64 {
         write("ABI Linux: read(0) CPL3 não recebeu entrada serial.\r\n");
     }
     let memory_probe_mask = LINUX_MEMORY_PROBE_MASK.load(Ordering::Acquire);
-    if memory_probe_mask & 0x3 == 0x3 {
-        write("ABI Linux: mmap/munmap CPL3 alocou, gravou e liberou páginas do processo.\r\n");
+    if memory_probe_mask & 0xf == 0xf {
+        write("ABI Linux: mmap/munmap/brk CPL3 alocaram, gravaram e liberaram páginas do processo.\r\n");
     } else {
         write("ABI Linux: probe CPL3 de mmap/munmap incompleto; máscara=");
         write_hex_u64(memory_probe_mask as u64);
@@ -2613,8 +2684,8 @@ pub(crate) fn process_probe_result() -> u64 {
     if switches > 0
         && ap_probe_passed
         && LINUX_GETPID_PROBE_PASSED.load(Ordering::Acquire)
-        && abi_probe_mask & 0x1ff == 0x1ff
-        && memory_probe_mask & 0x3 == 0x3
+        && abi_probe_mask & 0x7ff == 0x7ff
+        && memory_probe_mask & 0xf == 0xf
     {
         0xfff
     } else {
