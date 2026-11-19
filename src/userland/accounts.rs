@@ -261,10 +261,10 @@ impl<'a, H> AccountVerifier<'a, H> {
 }
 
 pub trait PasswordHashVerifier {
-    fn verify(&self, encoded_hash: &[u8], password: &[u8]) -> bool;
+    fn verify(&mut self, encoded_hash: &[u8], password: &[u8]) -> bool;
 }
 impl<H: PasswordHashVerifier> CredentialVerifier for AccountVerifier<'_, H> {
-    fn verify(&self, username: &str, password: &[u8]) -> Option<Credentials> {
+    fn verify(&mut self, username: &str, password: &[u8]) -> Option<Credentials> {
         let account = self.database.find(username)?;
         self.hash_verifier
             .verify(&account.hash[..account.hash_len as usize], password)
@@ -296,7 +296,7 @@ mod tests {
 
     struct TestHash;
     impl PasswordHashVerifier for TestHash {
-        fn verify(&self, hash: &[u8], password: &[u8]) -> bool {
+        fn verify(&mut self, hash: &[u8], password: &[u8]) -> bool {
             hash == b"$test$opaque" && password == b"correct"
         }
     }
@@ -310,25 +310,25 @@ mod tests {
             &mut self,
             lba: u64,
             out: &mut [u8; crate::hermione::SECTOR_SIZE],
-        ) -> Result<(), crate::hermione::FsError> {
+        ) -> Result<(), crate::block::BlockError> {
             *out = *self
                 .0
                 .get(lba as usize)
-                .ok_or(crate::hermione::FsError::Device)?;
+                .ok_or(crate::block::BlockError::Device)?;
             Ok(())
         }
         fn write_sector(
             &mut self,
             lba: u64,
             data: &[u8; crate::hermione::SECTOR_SIZE],
-        ) -> Result<(), crate::hermione::FsError> {
+        ) -> Result<(), crate::block::BlockError> {
             *self
                 .0
                 .get_mut(lba as usize)
-                .ok_or(crate::hermione::FsError::Device)? = *data;
+                .ok_or(crate::block::BlockError::Device)? = *data;
             Ok(())
         }
-        fn flush(&mut self) -> Result<(), crate::hermione::FsError> {
+        fn flush(&mut self) -> Result<(), crate::block::BlockError> {
             Ok(())
         }
     }
@@ -356,7 +356,7 @@ mod tests {
         let disk = volume.into_device();
         let mut remounted = crate::hermione::HermioneVolume::mount(disk).unwrap();
         let reopened = AccountDatabase::load(&mut remounted, "accounts.db").unwrap();
-        let login = LoginManager::new(AccountVerifier::new(&reopened, TestHash));
+        let mut login = LoginManager::new(AccountVerifier::new(&reopened, TestHash));
         assert_eq!(
             login
                 .authenticate("service", b"correct")
@@ -386,7 +386,7 @@ mod tests {
             .windows(7)
             .any(|window| window == b"correct"));
         let reopened = AccountDatabase::decode(&image[..length]).unwrap();
-        let login = LoginManager::new(AccountVerifier::new(&reopened, TestHash));
+        let mut login = LoginManager::new(AccountVerifier::new(&reopened, TestHash));
         let session = login.authenticate("alice", b"correct").unwrap();
         assert_eq!(
             session.credentials(),

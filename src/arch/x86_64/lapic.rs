@@ -163,7 +163,7 @@ pub fn invalidate_all(_root: u64, virtual_address: u64) {
         .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
         .is_err()
     {
-        core::hint::spin_loop();
+        wait_for_shootdown_progress();
     }
     unsafe { asm!("invlpg [{}]", in(reg) virtual_address, options(nostack, preserves_flags)) };
     let expected = ONLINE_APS.load(Ordering::Acquire);
@@ -178,7 +178,7 @@ pub fn invalidate_all(_root: u64, virtual_address: u64) {
     write(APIC_ICR_LOW, TLB_IPI_VECTOR as u32 | (3 << 18));
     let mut spins = 0usize;
     while REMOTE_ACKS.load(Ordering::Acquire) < expected && spins < SPIN_LIMIT {
-        core::hint::spin_loop();
+        wait_for_shootdown_progress();
         spins += 1;
     }
     if spins == SPIN_LIMIT {
@@ -191,6 +191,22 @@ pub fn invalidate_all(_root: u64, virtual_address: u64) {
     }
     SHOOTDOWN_COUNT.fetch_add(1, Ordering::Relaxed);
     SHOOTDOWN_LOCK.store(false, Ordering::Release);
+}
+
+/// A CPU may enter a page-table operation from SYSCALL with IF masked. If it
+/// spins on the shootdown lock or waits for remote ACKs with interrupts off,
+/// the CPU holding the lock can be waiting for this CPU's IPI and deadlock.
+/// Briefly enable interrupts while waiting, then restore the kernel's masked
+/// state before touching shared shootdown state again.
+#[inline(always)]
+fn wait_for_shootdown_progress() {
+    let flags: u64;
+    unsafe { asm!("pushfq", "pop {}", out(reg) flags) };
+    if flags & (1 << 9) != 0 {
+        core::hint::spin_loop();
+    } else {
+        unsafe { asm!("sti; pause; cli", options(nomem, nostack)) };
+    }
 }
 
 pub fn shootdown_count() -> usize {

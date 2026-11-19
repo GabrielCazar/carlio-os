@@ -19,10 +19,11 @@ ao dono/root. O catálogo de programas usa os grupos da sessão antes de chamar
 o loader.
 
 O scheduler agora guarda UID/GID, grupos suplementares e `umask` no contexto de
-cada processo; o banco host de contas persiste hashes opacos como arquivo
-Hermione e autentica por um verificador injetável. A ABI Linux já entra por
-`SYSCALL` e o probe executa `getpid`/`exit`. Ainda não há KDF integrado, login de
-boot, aplicação dessas credenciais em syscalls VFS gerais, ACLs nem ownership
+cada processo; o banco host de contas tem um adaptador histórico de persistência
+Hermione arquivado e autentica por um verificador injetável. Argon2id PHC agora pode
+verificar contas e derivar chaves com workspace fixo fornecido pelo chamador; os
+parâmetros de memória e tempo são limitados. A ABI Linux já entra por `SYSCALL` e o
+probe executa `getpid`/`exit`. Ainda não há login de boot, aplicação dessas credenciais em syscalls VFS gerais, ACLs nem ownership
 persistido nos filesystems. FAT32 não armazena permissões POSIX; será necessário aplicar
 opções de mount ou metadados laterais, enquanto ext4 pode fornecer metadados
 nativos quando seu driver for integrado.
@@ -62,11 +63,15 @@ O preparador ELF também aceita `PT_INTERP`: mapeia programa e interpretador
 ET_DYN no mesmo address space, entrega o controle ao entry do interpretador e
 monta `AT_PHDR`, `AT_PHENT`, `AT_PHNUM`, `AT_PAGESZ`, `AT_BASE` e `AT_ENTRY`.
 O interpretador, e não o kernel, fica responsável por dependências e
-relocations dinâmicas. Esse caminho ainda não é chamado por um syscall
-`execve`: não existe substituição transacional do processo em execução. O VFS
-do kernel limita arquivos inline a 16 KiB e ainda não oferece acesso geral a
-arquivos grandes/montados e symlinks; portanto não carrega o `ld-linux.so` real
-da userland Arch neste estado. O teste host usa executáveis sintéticos pequenos.
+relocations dinâmicas. O syscall Linux `execve` (59) agora prepara uma nova
+imagem e stack em um address space separado, atualiza o processo preservando
+PID/credenciais e só troca o CR3 de retorno após o commit. A VM antiga é
+liberada depois da troca; uma falha de teardown é registrada e pode deixar
+páginas antigas retidas. O caminho é limitado a 8 argumentos e 8 variáveis de
+ambiente, strings UTF-8 de até 256 bytes e processos sem threads irmãs. A
+leitura de ELF montado usa buffers fixos; persistência no dispositivo e
+compatibilidade geral com glibc/userland Arch continuam ausentes. Não há gate
+QEMU/NAS desta integração.
 
 ## Mounts e interoperabilidade
 
@@ -74,12 +79,12 @@ O VFS agora expõe `create_fhs_layout()` para criar os caminhos-base de uma
 userland Linux e uma tabela limitada de mounts com source, tipo de filesystem,
 opções `ro`, `noexec` e `nosuid`, unmount privilegiado e seleção do mount mais
 específico para um caminho. A validação exige diretórios existentes e caminhos
-absolutos canônicos. Os tipos reconhecidos incluem Hermione, FAT32, ext4, proc
-e dev.
+absolutos canônicos. Os tipos prioritários são FAT32 e ext4; proc e dev também
+são reconhecidos. Hermione permanece apenas para compatibilidade histórica.
 
-O VFS já delega leituras ao backend fornecido pelo chamador: Hermione, FAT32 e
-um subconjunto ext4. A instância do kernel ainda não descobre partições nem
-monta volumes no boot. Syscalls de arquivo acessam apenas arquivos inline do
+O VFS já delega leituras por faixa aos backends FAT32 e ext4, sem exigir buffer
+proporcional ao arquivo. A instância do kernel ainda não descobre partições nem
+registra os volumes no boot. Syscalls de arquivo acessam apenas arquivos inline do
 VFS, com descritores limitados por PID (`open/openat/read/write/lseek/close`);
 não alcançam ainda os backends mounted. Permanecem pendentes escrita POSIX nos
 mounts, metadados por inode e execução de opções mount. A ABI não inicia pacman

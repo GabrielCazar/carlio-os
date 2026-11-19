@@ -25,7 +25,7 @@ chamadas. Alvo: ELF x86-64, chamada `SYSCALL`, `RAX` como número/retorno e
 | `mmap` (9), `munmap` (11), `mprotect` (10) | VM por processo; valida faixa/alinhamento e ownership; W^X | Congelada | mmap/munmap anônimo comprovados anteriormente; mprotect parcial em VMA anônima, validação suspensa nesta etapa |
 | `clone` (56) | Cria processo/thread conforme flags; recursos compartilhados apenas quando pedidos | Congelada | Pendente como syscall geral |
 | `futex` (202) | Espera/notify atômicos em palavra user; timeout monotônico | Congelada | Pendente |
-| `execve` (59) | Substitui imagem apenas após validar ELF, argv/envp e preparar rollback | Congelada | Fixture ELF, syscall geral pendente |
+| `execve` (59) | Prepara address space/stack novos, troca imagem do processo e CR3 no retorno; preserva PID/credenciais | Congelada | Integrado com limites fixos; sem irmãos ativos, argv/env UTF-8 limitados, sem gate QEMU/NAS |
 | `rt_sigaction` (13), `rt_sigprocmask` (14), `rt_sigreturn` (15), `tgkill` (234) | Entrega e máscara de sinais em retorno seguro | Congelada | Pendente |
 | `getrandom` (318) | CSPRNG do kernel; flags inválidas rejeitadas; falha explícita sem entropia | Congelada | Pendente |
 | `clock_gettime` (228) | Relógios monotônico e realtime; estrutura compatível com Linux x86-64 | Congelada | CLOCK_MONOTONIC implementado em probe; CLOCK_REALTIME pendente |

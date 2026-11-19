@@ -13,7 +13,7 @@ pub enum LoginError {
 
 /// O backend deve validar credenciais sem registrar senha em texto claro.
 pub trait CredentialVerifier {
-    fn verify(&self, username: &str, password: &[u8]) -> Option<Credentials>;
+    fn verify(&mut self, username: &str, password: &[u8]) -> Option<Credentials>;
 
     /// Retorna até oito grupos suplementares; o backend deve fornecer apenas
     /// grupos atribuídos à conta após autenticação.
@@ -48,7 +48,7 @@ impl<V: CredentialVerifier> LoginManager<V> {
         Self { verifier }
     }
 
-    pub fn authenticate(&self, username: &str, password: &[u8]) -> Result<Session, LoginError> {
+    pub fn authenticate(&mut self, username: &str, password: &[u8]) -> Result<Session, LoginError> {
         if username.is_empty()
             || username.len() > 31
             || !username
@@ -81,7 +81,7 @@ mod tests {
 
     struct TestVerifier;
     impl CredentialVerifier for TestVerifier {
-        fn verify(&self, username: &str, password: &[u8]) -> Option<Credentials> {
+        fn verify(&mut self, username: &str, password: &[u8]) -> Option<Credentials> {
             (username == "alice" && password == b"correct horse").then_some(Credentials {
                 uid: 1000,
                 gid: 1000,
@@ -91,7 +91,7 @@ mod tests {
 
     #[test]
     fn creates_session_only_after_verifier_accepts_credentials() {
-        let login = LoginManager::new(TestVerifier);
+        let mut login = LoginManager::new(TestVerifier);
         let session = login.authenticate("alice", b"correct horse").unwrap();
         assert_eq!(
             session.credentials(),

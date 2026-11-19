@@ -5,6 +5,7 @@ pub mod alpm;
 pub mod apps;
 pub mod arch;
 pub mod debian;
+pub mod kdf;
 pub mod login;
 pub mod windows;
 

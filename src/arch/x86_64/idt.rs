@@ -811,6 +811,19 @@ extern "C" fn exception_dispatch(frame: *mut ExceptionFrame) -> *mut ExceptionFr
                     frame.rax = value;
                     return frame;
                 }
+                carlio_os::linux_abi::SyscallOutcome::Exec(transition) => {
+                    let user =
+                        unsafe { &mut *(frame as *mut ExceptionFrame as *mut UserInterruptFrame) };
+                    user.rip = transition.instruction_pointer;
+                    user.user_rsp = transition.stack_pointer;
+                    user.rflags = 0x202;
+                    user.rax = 0;
+                    user.rdi = 0;
+                    user.rsi = 0;
+                    user.rdx = 0;
+                    crate::commit_exec_transition(transition);
+                    return (user as *mut UserInterruptFrame).cast();
+                }
                 carlio_os::linux_abi::SyscallOutcome::Exit { status } => {
                     if let Some(next) = crate::process_probe_exit(status as u64) {
                         return next.cast();
@@ -1033,6 +1046,20 @@ extern "C" fn carlio_syscall_dispatch(raw: *const LinuxSyscallFrame) -> u64 {
     ];
     match crate::dispatch_linux_syscall(frame.number, arguments, cpu) {
         Some(carlio_os::linux_abi::SyscallOutcome::Return(value)) => value,
+        Some(carlio_os::linux_abi::SyscallOutcome::Exec(transition)) => {
+            let frame = unsafe { &mut *(raw as *mut LinuxSyscallFrame) };
+            frame.user_rip = transition.instruction_pointer;
+            frame.user_rsp = transition.stack_pointer;
+            frame.rflags = 0x202;
+            frame.rdi = 0;
+            frame.rsi = 0;
+            frame.rdx = 0;
+            frame.r8 = 0;
+            frame.r9 = 0;
+            frame.r10 = 0;
+            crate::commit_exec_transition(transition);
+            0
+        }
         Some(carlio_os::linux_abi::SyscallOutcome::Exit { status }) => {
             if let Some(next) = crate::process_probe_exit(status as u64) {
                 unsafe { enter_user_frame(next) }

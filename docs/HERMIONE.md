@@ -1,8 +1,13 @@
-# Hermione — filesystem do CarlioOS
+# Hermione — protótipo arquivado
+
+**Estado do projeto:** desenvolvimento arquivado. ext4 é o filesystem principal
+planejado e FAT32 atende EFI/mídia removível; Hermione não é o caminho de rootfs,
+persistência ou instalação do produto. O código, o CLI e os relatórios históricos
+permanecem preservados para referência, mas não recebem novos gates de produto.
 
 ## Objetivo e compatibilidade
 
-Hermione será um filesystem **escrito em Rust e inspirado nas propriedades do
+Hermione foi um filesystem experimental **escrito em Rust e inspirado nas propriedades do
 ZFS**. A meta é copy-on-write, checksums ponta a ponta, snapshots, scrubs e
 reparo com redundância. O formato em disco será próprio; não promete importar
 ou montar pools ZFS existentes. Isso preserva a implementação Rust do sistema e
@@ -55,7 +60,7 @@ descartável QEMU; isso não monta volume no boot normal.
   íntegra; não há paridade distribuída, cifra, permissões, concorrência nem
   montagem no boot normal. Use somente mídia descartável.
 
-## Próximas etapas
+## Plano antigo (arquivado)
 
 - **Journal transacional geral:** o redo de metadados v3 recupera publicação
   interrompida; ampliar operações multi-setor e validar durabilidade em

@@ -120,7 +120,9 @@ após testes positivos, negativos e de falha no QEMU local e no NAS.
 
 O loader ELF64 percorre o caminho de criação e execução do probe CPL3: segmento
 PT_LOAD, permissões finais, stack, CR3/RSP0, preempção e SYS_EXIT. A prova instala
-a fixture ELF pelo VFS e monta `argc`/`argv`/`envp`, mas não há `execve` geral.
+a fixture ELF pelo VFS e monta `argc`/`argv`/`envp`. O syscall `execve`
+limitado prepara uma VM nova, registra intervalos ELF/stack nas VMAs e troca
+CR3 após atualizar a imagem do processo; ainda não foi validado em QEMU/NAS.
 A tabela do scheduler e o pool de pilhas continuam com capacidade fixa. Um #PF
 user é isolado na prova e leva ao encerramento/reaping daquela tarefa. O heap
 first-fit valida a cadeia da arena e o payload exato; o serviço global usa
@@ -131,9 +133,10 @@ O preparador ELF agora tem caminho hostável para `PT_INTERP`: carrega programa
 e interpretador ET_DYN sem aplicar relocations de userland, inicia pelo entry
 do interpretador e prepara os campos básicos de `auxv` (`AT_PHDR`, `AT_PHENT`,
 `AT_PHNUM`, `AT_PAGESZ`, `AT_BASE`, `AT_ENTRY`). O `ld-linux` resolveria
-dependências e relocations. Esse preparador ainda não está ligado a uma syscall
-Linux `execve` nem à substituição transacional de processo; a capacidade atual
-de arquivo inline VFS (16 KiB) também não comporta o interpretador Arch real.
+dependências e relocations. Esse preparador está ligado ao `execve` limitado,
+mas ainda não oferece dependências/relocations completas de userland. A
+capacidade de arquivos inline VFS (16 KiB), os buffers fixos de montagem e a
+ausência de persistência ainda impedem a userland Arch real.
 Testes host sintéticos não validam execução de glibc ou userland Arch.
 
 O comando `logs` formata o buffer volátil em Markdown na serial. Persistência

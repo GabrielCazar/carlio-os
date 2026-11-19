@@ -38,10 +38,8 @@ pub fn enumerate(mut report: impl FnMut(PciFunction)) -> usize {
                     subclass: (class_info >> 16) as u8,
                     class: (class_info >> 24) as u8,
                 };
-                if pci.is_sata_ahci() || pci.is_video() || pci.is_network() || pci.is_usb() {
-                    found += 1;
-                    report(pci);
-                }
+                found += 1;
+                report(pci);
             }
         }
     }

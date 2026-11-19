@@ -45,7 +45,7 @@ O splash serial e o comando `sobre` apresentam “carlIO OS | Criado por João G
 | --- | --- | --- |
 | 1. Contrato e hardware mínimo | Matriz de alvo, BIOS/UEFI, diagnóstico, PCI/AHCI mínimo | QEMU local e NAS/KVM BIOS/UEFI; 159 testes host; AHCI QEMU com recovery/COMRESET em imagem descartável. Drivers e boot físico seguem pendentes |
 | 2. Memória e execução | Até 32 GiB de RAM, VM x86-64, kernel multithread/SMP, ring 3, ELF64 e processos | 32 GiB local e frames >4 GiB; KVM NAS validado a 5 GiB; ELF VFS de boot, preempção/fault/reaper BSP e shootdown xAPIC. Stress CPL3 nos APs, tabela dinâmica e ownership integral pendentes |
-| 3. Bloco e filesystems | BlockDevice, volume Hermione persistente, journal/reparo/scrub, FAT32/ext4 e swap após VM | Hermione v3 e capacidade 2 TiB em imagem descartável; FAT32 8.3 host-only. Mount no kernel, ext4, criptografia e hardware físico pendentes |
+| 3. Bloco e filesystems | BlockDevice; descoberta MBR/GPT e rootfs ext4/FAT32 no boot; ext4 principal e FAT32 para EFI/mídia removível | Rootfs montado read-only; escrita via overlay volátil VFS (16 KiB por arquivo); persistência, execve e hardware físico pendentes; Hermione arquivado |
 | 4. VFS, contas e rede | Montagem, caminhos Linux, permissões efetivas, login e serviços headless | VFS POSIX/FHS e mounts host; NIC Intel 82574L QEMU com DHCP; identidade básica na ABI. Backends montados, enforcement integrado, login seguro, TCP/IP e serviços físicos pendentes |
 | 5. ABI Linux e Arch | Runtime Linux progressivo, userland Arch e pacman/ALPM | Planejada; depende de processos e syscalls |
 | 6. Desktop e agentes | SDDM/Plasma, catálogo executável, ChatGPT/Ollama | Planejada; não é gate inicial do NAS headless |
@@ -60,10 +60,10 @@ Matrizes de formato, operações e gates de pacotes:
 [`docs/MATRIZ-PACOTES.md`](docs/MATRIZ-PACOTES.md).
 Fluxogramas, imagens, manual e configuração: [`fluxogramas/README.md`](fluxogramas/README.md).
 Procedimento e limites do [teste físico da ISO](docs/TESTE-FISICO.md).
-O projeto do filesystem Hermione está em [`docs/HERMIONE.md`](docs/HERMIONE.md).
-Seu utilitário de linha de comando é `herm-fs`, com administração de volumes
-em arquivos-imagem (`criar`, `listar`, `gravar`, `ler`, `scrub`). O formato é
-inspirado em ZFS, mas não interoperável com pools ZFS existentes.
+Hermione e `herm-fs` estão arquivados como protótipo experimental; ext4 e FAT32
+são os filesystems prioritários. Consulte o registro técnico preservado em
+[`docs/HERMIONE.md`](docs/HERMIONE.md). O código e os testes de Hermione ficam
+no repositório para referência, sem novos gates de produto.
 
 `carlio-logs` agrega capturas `.log`/`.txt` em Markdown com tabela, gráficos
 textuais e eventos relevantes; `carlio-logs ver <arquivo.md>` abre o
@@ -134,10 +134,6 @@ No Arch Linux, dependências: `rust`, `rustup`, `qemu-system-x86`, `limine` e
 ```sh
 cd carlio-os
 cargo test --all-targets
-cargo run --bin herm-fs -- --help
-cargo run --bin herm-fs -- status
-cargo run --bin herm-fs -- criar /tmp/teste-herm.img 32768
-cargo run --bin herm-fs -- listar /tmp/teste-herm.img
 cargo run --bin carlio-logs -- --help
 cargo run --bin carlio-logs -- gerar reports/logs reports/logs/painel-validacao.md
 RUSTUP_HOME=/tmp/carlio-rustup CARGO_HOME=/tmp/carlio-cargo rustup toolchain install nightly --component rust-src,rustfmt --target x86_64-unknown-none

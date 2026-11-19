@@ -1065,6 +1065,71 @@ impl<const P: usize, const C: usize> Scheduler<P, C> {
         Ok(())
     }
 
+    /// Substitui a imagem do processo corrente mantendo PID, credenciais e
+    /// identidade de thread. Só aceita processo sem irmãos ativos para que o
+    /// address space antigo possa ser retirado após a troca de CR3.
+    pub fn replace_current_image(
+        &self,
+        cpu: usize,
+        id: u64,
+        bundle: ProcessResourceBundle,
+        instruction_pointer: u64,
+        stack_pointer: u64,
+    ) -> Result<ProcessResourceBundle, ProcessError> {
+        if cpu >= C
+            || bundle.page_table == 0
+            || bundle.page_table & 0xfff != 0
+            || bundle.user_stack != stack_pointer
+            || !valid_context(CpuContext {
+                rip: instruction_pointer,
+                rsp: stack_pointer,
+                rflags: 0x202,
+                ..CpuContext::default()
+            })
+        {
+            return Err(ProcessError::NotRunnable);
+        }
+        let mut state = self.state.lock();
+        let slot = find(&state.processes, id).ok_or(ProcessError::UnknownProcess)?;
+        let process = state.processes[slot];
+        if state.current_slot[cpu] != slot
+            || process.state != (ProcessState::Running { cpu })
+            || process.id != process.thread_group_id
+            || process.resources.is_none()
+        {
+            return Err(ProcessError::NotRunnable);
+        }
+        if state.processes.iter().any(|other| {
+            other.id != id
+                && other.state != ProcessState::Vacant
+                && other.thread_group_id == process.thread_group_id
+        }) {
+            return Err(ProcessError::Busy);
+        }
+        if state.processes.iter().any(|other| {
+            other.id != id
+                && other.state != ProcessState::Vacant
+                && other
+                    .resources
+                    .is_some_and(|resources| resources.slot == bundle.slot)
+        }) {
+            return Err(ProcessError::Duplicate);
+        }
+        let old = process.resources.ok_or(ProcessError::NotRunnable)?;
+        let process = &mut state.processes[slot];
+        process.page_table = bundle.page_table;
+        process.entry = instruction_pointer;
+        process.user_stack = stack_pointer;
+        process.context = CpuContext {
+            rip: instruction_pointer,
+            rsp: stack_pointer,
+            rflags: 0x202,
+            ..CpuContext::default()
+        };
+        process.resources = Some(bundle);
+        Ok(old)
+    }
+
     /// Fixa uma tarefa pronta em uma fila de CPU sem alterar seu frame ou
     /// ownership. Tarefas em execução só podem migrar pelo caminho de preempção.
     pub fn pin_ready_to_cpu(&self, id: u64, cpu: usize) -> Result<(), ProcessError> {

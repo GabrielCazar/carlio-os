@@ -193,3 +193,28 @@ O reaper também captura frames livres antes de criar os espaços e compara a
 contagem depois de recolher os três processos. Divergência impede o probe de
 passar; o smoke espera mensagem positiva de retorno exato ao baseline. Nenhuma
 execução runtime ocorreu durante a suspensão dos gates.
+
+## Validação local — 2026-11-19
+
+- `cargo fmt --check`: passou.
+- `cargo test --all-targets`: 188 testes passaram em quatro suites.
+- `cargo clippy --all-targets -- -D warnings`: passou sem avisos.
+- `cargo build --release --bin carlio-kernel --target x86_64-unknown-none`:
+  passou com um aviso de função não usada em `src/arch/x86_64/idt.rs`.
+- O smoke QEMU BIOS iniciou o kernel, despachou tarefas CPL3 e parou após a
+  mensagem de espera por entrada serial; os timeouts de 25 s e 100 s expiraram
+  na etapa 1/7. Uma repetição estendida foi interrompida após continuar sem
+  saída posterior. Assim, probes CPL3, UEFI e as mensagens finais do smoke não
+  estão validadas nesta rodada; o script não chegou a tentar UEFI.
+- O gate NAS/KVM executou 188 testes host com sucesso e construiu a ISO, mas o
+  smoke BIOS falhou após `LAPIC: ACKs obtidos=2, esperados=3` e timeout do
+  shootdown remoto. O script não chegou ao smoke UEFI. Relatórios e log serial:
+  `reports/logs/kernel-context-switch-nas-20261119-160723.txt` e
+  `reports/logs/kernel-context-switch-nas-20261119-160723-qemu-kvm-bios.log`.
+- A ISO `build/carlio-os.iso` foi gravada em `/dev/sdb` (USB removível, Flash
+  Disk, 7,8 GB). Leitura de volta com `cmp` confirmou que os 6.227.968 bytes da
+  imagem correspondem ao conteúdo inicial do dispositivo. O USB foi escrito em
+  modo de imagem híbrida, sem montagem de partições; o smoke de boot dessa cópia
+  ainda não foi feito.
+- A correção do retorno `usize` de `read` e do avanço `u64` de `write` está
+  somente no workspace e ainda não foi commitada.

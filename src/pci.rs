@@ -13,6 +13,33 @@ pub struct PciFunction {
 }
 
 impl PciFunction {
+    /// Nome da classe PCI definida pela especificação Base Class Codes.
+    pub const fn class_name(self) -> &'static str {
+        match self.class {
+            0x01 => "armazenamento",
+            0x02 => "rede",
+            0x03 => "vídeo",
+            0x04 => "multimídia",
+            0x05 => "memória",
+            0x06 => "bridge",
+            0x07 => "comunicação",
+            0x08 => "sistema",
+            0x09 => "entrada",
+            0x0a => "dock",
+            0x0b => "processador",
+            0x0c => "barramento serial",
+            0x0d => "wireless",
+            0x0e => "inteligente",
+            0x0f => "satélite",
+            0x10 => "criptografia",
+            0x11 => "sinalização",
+            0x12 => "acelerador",
+            0x13 => "instrumentação",
+            0x40 => "coprocessador",
+            _ => "desconhecido",
+        }
+    }
+
     pub const fn is_sata_ahci(self) -> bool {
         self.class == 0x01 && self.subclass == 0x06
     }
