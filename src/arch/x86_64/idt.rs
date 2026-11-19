@@ -1082,6 +1082,20 @@ extern "C" fn exception_dispatch(frame: *mut ExceptionFrame) -> *mut ExceptionFr
     super::write(" )\r\nCódigo de erro: 0x");
     super::write_hex_u64(frame.error_code);
     super::write("\r\n");
+    if frame.vector == 14 {
+        super::write("CPU index=");
+        super::write_u32(cpu as u32);
+        super::write(" exception-frame=0x");
+        super::write_hex_u64(frame as *const ExceptionFrame as u64);
+        if frame.cs & 3 == 0 {
+            super::write(" kernel-rsp=0x");
+            super::write_hex_u64(
+                (frame as *const ExceptionFrame as u64)
+                    .saturating_add(core::mem::size_of::<ExceptionFrame>() as u64),
+            );
+        }
+        super::write("\r\n");
+    }
     report_registers(frame);
     if frame.vector == 14 {
         let cr2: u64;

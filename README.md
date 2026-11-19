@@ -44,9 +44,9 @@ O splash serial e o comando `sobre` apresentam “carlIO OS | Criado por João G
 | Fase | Entrega | Estado |
 | --- | --- | --- |
 | 1. Contrato e hardware mínimo | Matriz de alvo, BIOS/UEFI, diagnóstico, PCI/AHCI mínimo | QEMU local e NAS/KVM BIOS/UEFI; 159 testes host; AHCI QEMU com recovery/COMRESET em imagem descartável. Drivers e boot físico seguem pendentes |
-| 2. Memória e execução | Até 32 GiB de RAM, VM x86-64, kernel multithread/SMP, ring 3, ELF64 e processos | 32 GiB local e frames >4 GiB; KVM NAS validado a 5 GiB; ELF VFS de boot, preempção/fault/reaper BSP e shootdown xAPIC. Stress CPL3 nos APs, tabela dinâmica e ownership integral pendentes |
-| 3. Bloco e filesystems | BlockDevice; descoberta MBR/GPT e rootfs ext4/FAT32 no boot; ext4 principal e FAT32 para EFI/mídia removível | Rootfs montado read-only; escrita via overlay volátil VFS (16 KiB por arquivo); persistência, execve e hardware físico pendentes; Hermione arquivado |
-| 4. VFS, contas e rede | Montagem, caminhos Linux, permissões efetivas, login e serviços headless | VFS POSIX/FHS e mounts host; NIC Intel 82574L QEMU com DHCP; identidade básica na ABI. Backends montados, enforcement integrado, login seguro, TCP/IP e serviços físicos pendentes |
+| 2. Memória e execução | Até 32 GiB de RAM, VM x86-64, kernel SMP, CPL3, ELF64 e processos | Allocator cobre até 32 GiB; há prova de CPL3/CR3 e testes host. Revalidação atual do smoke QEMU falha no probe de processos: 1 CPU não aplica afinidade e 4 CPUs dá #PF de kernel; isolamento não está validado |
+| 3. Bloco e filesystems | BlockDevice; descoberta MBR/GPT e rootfs ext4/FAT32 no boot; ext4 principal e FAT32 para EFI/mídia removível | Código de leitura e mount read-only conectado; escrita é overlay volátil (máx. 16 KiB/arquivo). Persistência em disco, garantias de I/O recuperável, swap, testes de falha e validação em hardware físico pendentes; Hermione arquivado |
+| 4. VFS, contas e rede | Namespace FHS, mounts, permissões efetivas e serviços headless | Rootfs pode ser lido por VFS/syscalls e ELF loader; `execve` limitado está ligado, mas sem smoke aprovado. NICs são enumeradas e a Intel 82574L virtual tem DHCP em QEMU; drivers físicos, TCP/IP, DNS, login seguro e serviços pendentes |
 | 5. ABI Linux e Arch | Runtime Linux progressivo, userland Arch e pacman/ALPM | Planejada; depende de processos e syscalls |
 | 6. Desktop e agentes | SDDM/Plasma, catálogo executável, ChatGPT/Ollama | Planejada; não é gate inicial do NAS headless |
 | 7. ISO beta instalável | Instalador seguro, diagnóstico, recuperação, atualização e validação NAS | Planejada; entrega final após os gates anteriores |
@@ -114,11 +114,13 @@ validado descrito nos relatórios e na matriz de pacotes.
 
 ## Segurança e limites do protótipo
 
-O terminal atual executa em ring 0 e não fornece isolamento. A política de
-permissões é apenas demonstrativa. Existe um driver AHCI experimental limitado
-ao QEMU e a testes em imagem descartável. Ainda não existem volume criptografado,
-filesystem persistente, SQLite ou processos ring 3. Não use este protótipo para
-armazenar dados reais.
+O shell de diagnóstico executa em ring 0. Há execução CPL3 restrita e uma ABI
+parcial, mas a revalidação QEMU atual falha no probe de processos; o isolamento
+não deve ser considerado confiável. `openat` tem uma prova CPL3 histórica de
+negação de arquivo `0600` com `EACCES`, sem enforcement geral. Rootfs ext4/FAT32
+é somente leitura no dispositivo, com copy-up para overlay RAM limitado; ainda
+não há persistência de filesystem, swap ou volume criptografado. Não use este
+protótipo para armazenar dados reais.
 
 O armazenamento persistente deverá ser desbloqueado antes da montagem, com
 criptografia autenticada e chave apenas em memória. SQLite ficará acima do
@@ -154,6 +156,13 @@ UEFI no NAS/KVM. Resultados ficam em `reports/logs/`. Para ambientes SSH com
 configuração global inválida, o teste remoto aceita
 `CARLIO_TEST_SSH_CONFIG=/caminho/config`; o alias cabeado pode ser selecionado
 com `CARLIO_TEST_SSH_TARGET=nas-cabo`.
+
+O teste NAS anexa por padrão `/home/gabriel/vms/carlioos/carlioos-40G.qcow2`
+em modo snapshot; alterações feitas pela VM são descartadas ao final. Outro
+caminho pode ser indicado por `CARLIO_TEST_VM_DISK`. Durante o boot, o terminal
+serial mantém uma barra de progresso numa linha fixa e registra as mensagens
+de inicialização abaixo dela. O estado final indica que o shell ficou
+disponível, não que os gates de VM/CPL3 passaram.
 
 ## Compatibilidade
 

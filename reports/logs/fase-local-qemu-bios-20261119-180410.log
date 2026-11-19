@@ -1,0 +1,77 @@
+[2J[H+----------------------------------------------------+
+| carlIO OS | Criado por João G.R.Santos             |
+| Sistema operacional experimental x86_64            |
++----------------------------------------------------+
+Núcleo Rust · BOOT LOG
+[10;1H[10;24r[s[7;1H[2K[[32;1m###[90m---------------------------------------------------------------------------[0m][8;1H[2KBOOT  5%  kernel carregado[uFramebuffer Limine: RGB ativo; renderização de pixels validada.
+[s[7;1H[2K[[32;1m#########[90m---------------------------------------------------------------------[0m][8;1H[2KBOOT 12%  vídeo/console[uIDT: exceções 0-31 registradas; IRQs externos permanecem desativados.
+Ring 3: GDT, TSS, RSP0 e seletores de usuário configurados; CPL continua 0.
+Aviso: terminal de diagnóstico em ring 0; não é uma fronteira de segurança.
+Mapa de memória Limine: regiões usáveis=3, RAM usável MiB=494; HHDM e bases físico/virtual do kernel disponíveis.
+Allocator físico: frames livres até 32 GiB=126603, sem RAM acima de 4 GiB; teste usa frame baixo; alocação, escrita, leitura e liberação passaram.
+[s[7;1H[2K[[32;1m###################[90m-----------------------------------------------------------[0m][8;1H[2KBOOT 25%  memória física e HHDM[uLAPIC xAPIC ativo no BSP; vetor de shootdown remoto 0xF1 instalado.
+SMP Limine: CPUs detectadas=4, APs iniciadas=3, aguardadas=3; APs aguardam despacho de tarefa, scheduler ainda desativado.
+SMP trabalho: CPUs AP=3, tarefas concluídas=3, resultados válidos=3; despacho de prova concluído.
+[s[7;1H[2K[[32;1m###################################[90m-------------------------------------------[0m][8;1H[2KBOOT 45%  inicialização SMP[uHeap kernel: regiões dinâmicas, alinhamento, escrita/leitura, expansão e liberação passaram.
+[s[7;1H[2K[[32;1m#############################################[90m---------------------------------[0m][8;1H[2KBOOT 58%  heap do kernel[uInventário PCI (somente leitura):
+PCI 00:00.0 8086:29c0 classe=bridge
+PCI 00:01.0 1234:1111 classe=vídeo vídeo
+PCI 00:02.0 8086:10d3 classe=rede rede (Intel 82574L/QEMU)
+NIC Intel 82574L: filas DMA TX/RX ativas, MAC=525400123456; envio/recepcao polling disponiveis.
+DHCP IPv4: concessao recebida 10.0.2.15
+PCI 00:1f.0 8086:2918 classe=bridge
+PCI 00:1f.2 8086:2922 classe=armazenamento SATA/AHCI (QEMU: reconhecido; driver AHCI experimental)
+AHCI indisponível: dispositivo nao encontrado.
+PCI 00:1f.3 8086:2930 classe=barramento serial
+Funções PCI presentes detectadas: 6
+[s[7;1H[2K[[32;1m######################################################[90m------------------------[0m][8;1H[2KBOOT 70%  detecção de hardware[uVFS: nenhum rootfs ext4/FAT32 montável; namespace FHS em RAM.
+[s[7;1H[2K[[32;1m###############################################################[90m---------------[0m][8;1H[2KBOOT 82%  VFS e rootfs[u
+=== CAPTURA DE EXCECAO CPU ===
+Vetor: 14 ( #PF page fault )
+Código de erro: 0x0000000000000000
+CPU index=0 exception-frame=0xffffffff80261dc0 kernel-rsp=0xffffffff80261e60
+RIP: 0xffffffff8001d070  CS: 0x0000000000000008  RFLAGS: 0x0000000000010046
+RAX=0x0000000000000000 RBX=0x0000000000000001 RCX=0x0000000000000020 RDX=0xfffffffffffffffc
+RSI=0x0000000000000000 RDI=0x0000000000000001 RBP=0x0000400000001000
+R8=0x00000000000001ff R9=0x0000000000000001 R10=0x000ffffffffff000 R11=0x0000000000000001
+R12=0xffffffff80261f90 R13=0x000000001ff83000 R14=0x0000000000000000 R15=0x0000400000000000
+CR2 (endereço do page fault): 0x0000000000000079
+Sistema interrompido; diagnóstico serial somente leitura.
+
+=== CAPTURA DE EXCECAO CPU ===
+Vetor: 14 ( #PF page fault )
+Código de erro: 0x00000000000
+=== CAPTURA DE EXCECAO CPU ===
+Vetor: 14 ( #PF page fault )
+Código
+=== CAPTURA DE EXCECAO CPU ===
+Vetor: 14 ( #PF page fault )
+Código de erro: 0x0000000000000000
+CPU index=3 exception-frame=0xffffffff80291dc0 kernel-rsp=0xffffffff80291e60
+RIP: 0xffffffff8001d070  CS0 d0000
+CPU index=2 exception-frame=0xffffffff80281dc0 kernel-rsp=0xffffffff80281e60
+RIP: 0xffffffff8001d: 0e x0000000000000008  RFLAGS: 0x0000000000010046
+RAX=0x0000000000000003 RBX=0x0000000000000001 RCX=0x0000000000000098 RDX=0xfffffffffffffffc
+RSI=0erro: 0x0000000000000000
+CPU index=1 exception-frame=0xffffffff80271dc0 kernel-rsp=0xffffffff80271e60
+RIP: 0xffffffff8001d0070  CS: 0x0000000000000008  RFLAGS: 0x0000000070  CS: 0x0000000000000008  RFLAGS: 0x0000000000010046
+RAX=0x0000000000000001 RBX=0x0000000000000001 RCX=0x0000000000000048 RDX=0xfffffffffffffffc
+RSI=0x0000000000000001 RD0x0000000000000003 RDI=0x0000000000000001 RBP=0x0000000000000000
+R8=0x0000000000000000 R9=0x0000000000000000 R10=0x0000000000000000 R11=0x000I=0x000000000001000000000000000000041 06
+RAX=0x00000000000000
+R12=0xffffffff80291f90 R13=0x0000000000000002 R14=0x0000000000000003 R15=0x9e3779b97f4a7c15
+RBP=0x000002 RBX=0x0000000000000001 RCX=CR0000000000000
+R8=0x0000000000000000 R9=0x0000000000000000 R10=0x0000000000000000 R11=0x0000000000000000
+R12=0xffffffff80271f90 R13=0x0000000000000002 R10x000000002 00000(e070 RDX=0xffffff4ndferfe�fffffffc
+RSI=0x0000000000000002 RDI=0x0=0x0000000000000001 R15�o do page fault): 0x0000000000000079
+Sistema interrompido; diagnóstico serial somente leitura.
+000000000000001 RBP=0x0000000000000000
+R8=0x0000000000000000 R9=0x0000000000000000 R10=0x0000000000000000 R11=0x0000000000000000
+R12=0xffffffff80281f90 R13=0x0000000000000002 R14=0x0000000000000002 R=0x9e3779b97f4a7c15
+CR2 (endereço do page fault): 0x0000000000000079
+Sistema interrompido; diagnóstico serial somente leitura.
+15=0x9e3779b97f4a7c15
+CR2 (endereço do page fault): 0x0000000000000079
+Sistema interrompido; diagnóstico serial somente leitura.
+
+--- mensagens do QEMU ---

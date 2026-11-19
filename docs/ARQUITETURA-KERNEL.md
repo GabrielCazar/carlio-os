@@ -73,34 +73,49 @@ quatro níveis e valida map/unmap. `AddressSpace` cria um PML4, compartilha
 entradas do half kernel e mantém folhas user rastreadas. `ProcessVm` integra
 VMA, folhas owned e page tables para `mmap/munmap` anônimo privado, com rollback;
 o probe CPL3 aloca, escreve e libera uma página. Ownership dos frames mapeados
-por processo já existe, e a prova confina um #PF user, encerra a tarefa e
-recolhe seus recursos. `SmpPageTableManager` serializa map/unmap e o backend
-xAPIC aguarda ACKs remotos; stress concorrente de VM/allocator e política geral
-de faults continuam pendentes.
+por processo já existe em caminhos específicos, e fault CPL3 registra vetor,
+código de erro e endereço. O bundle liga `Process` à VM, CR3 e stack; o teardown
+usa o mesmo token. Isso não comprova ownership completo, contabilidade,
+rollback de todas as falhas nem stress. `SmpPageTableManager` serializa
+map/unmap e o backend xAPIC aguarda ACKs remotos; stress concorrente de
+VM/allocator e política geral de faults continuam pendentes.
 O projeto exige kernel multithread em SMP. Limine agora inicia APs em stacks
 separadas e cada uma grava seu estado inicial atômico. Cada AP processa tarefas
 limitadas via mailbox; após a prova inicial, timer LAPIC e despacho SMP podem
 escalonar processos por CPU. Há filas locais e roubo em tabela fixa de 64
 processos/CPUs, `CpuContext` validado, pool com ownership de pilhas privilegiadas
-e `IrqSpinLock` no scheduler, pool e heap. Os logs anteriores só mostravam
-preempção CPL3 em dois APs, não uma testemunha de sobreposição temporal. O
-código agora marca entrada/saída CPL3 por CPU e exige CR3 kernel confirmado por
-BSP e APs antes do reaper. A revalidação BIOS/UEFI local confirmou que
-`read(0)` recebe e copia o byte serial; as probes BIOS/UEFI locais e NAS/KVM
-agora confirmam sobreposição CPL3 em dois APs e ACK global do reaper em três
-APs, após validar CR3 kernel e stack de idle. Isso é uma prova pontual, não
-stress sustentado de scheduler/VM/allocator. A posse direta dos objetos VM e
-dimensionamento dinâmico ainda não estão implementados.
+e `IrqSpinLock` no scheduler, pool e heap. Registros históricos validaram boot
+com 4 CPUs, 25 ACKs de TLB e sobreposição CPL3 em dois APs; isso é uma prova
+pontual, não stress sustentado de scheduler/VM/allocator. Na revalidação QEMU
+mais recente com 4 CPUs, os probes CPL3 de ABI, permissões e mmap passaram, mas
+o gate global ainda falhou: o probe de page tables reportou
+`entered=1 preempted=0`, e o reaper recusou liberar enquanto o BSP não confirmou
+o CR3 kernel. Um `#PF` observado em uma execução anterior não se repetiu nesse
+log. A posse direta dos objetos VM e dimensionamento dinâmico ainda não estão
+implementados.
 
-O descritor `Process` agora carrega um manifesto `ProcessResourceBundle` com
-slot do VM gerenciado pelo backend, raiz CR3 e stack user. Syscalls e reaper
-consultam esse manifesto e validam a raiz antes de operar. Os objetos `ProcessVm`
-continuam em registro fixo do backend, portanto ownership dinâmico e
-contabilização geral por processo ainda não estão demonstrados. Há alteração
-local não validada substituindo três slots da fixture por pool estático bounded
-de 64 VMs; isso não altera o estado implementado/validado. QEMU local
-BIOS/UEFI e NAS/KVM BIOS passaram; NAS UEFI segue pendente por falha no smoke de
-preempção/page tables. Evidências no [relatório da fase 2](../reports/fase-2-memoria-execucao.md).
+Handlers de IRQ e `int 0x80` salvam o frame na pilha interrompida e executam o
+dispatcher numa pilha IRQ de 64 KiB por CPU, dividida em quatro fatias de 16
+KiB. O dispatcher retorna o frame escolhido e o stub o restaura na pilha de
+origem. IF fica desabilitado nos gates; a prova de boot dispara um vetor 32
+aninhado por software e confirma uso de uma segunda fatia. IRQs de hardware
+aninhadas permanecem mascaradas. O TLB IPI usa o mesmo caminho. Isso ainda não
+é um teste de estresse de pilha nem justifica reduzir as pilhas das threads.
+
+`stack-watermark` habilita sentinelas nas pilhas de processo e mede o maior
+consumo observado ao fim de cada syscall Linux. A captura QEMU desta revisão
+registrou 30.168 bytes de um stack de 65.536 bytes para o conjunto de probes
+executado. A varredura inclui o próprio instrumentador, portanto é um limite
+superior, e não cobre todos os caminhos de syscall nem carga sustentada. O
+build normal não habilita a varredura. A reserva de 64 KiB por processo
+permanece até haver medição sob carga representativa e stress de scheduler/VM.
+
+O descritor `Process` carrega um manifesto `ProcessResourceBundle` com token
+para VM no backend, raiz CR3 e stack user. Syscalls e reaper consultam o
+manifesto; teardown usa esse token. Os objetos `ProcessVm` continuam em
+registro fixo do backend. Ownership completo, contabilidade, rollback e stress
+aguardam build e gates; não declarar a expansão concluída até passarem.
+Evidências e limites no [relatório da fase 2](../reports/fase-2-memoria-execucao.md).
 
 Para cargas grandes de VM e arquivos, o desenho alvo precisa provisionar
 processos e memória conforme recursos disponíveis, aplicar limites e pressão de

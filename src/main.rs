@@ -50,6 +50,8 @@ const ERROR_LOG_CAPACITY: usize = 16;
 const MAX_BOOT_CPUS: usize = 64;
 #[cfg(target_os = "none")]
 const AP_STACK_SIZE: usize = 16 * 1024;
+#[cfg(target_os = "none")]
+const PROCESS_KERNEL_STACK_SIZE: usize = 64 * 1024;
 
 #[cfg(target_os = "none")]
 static mut ERROR_LOG: ErrorLog<ERROR_LOG_CAPACITY> = ErrorLog::new();
@@ -65,7 +67,10 @@ static FRAME_ALLOCATOR: IrqSpinLock<PhysicalFrameAllocator<PHYSICAL_FRAME_BITMAP
 #[cfg(target_os = "none")]
 static PROCESS_SCHEDULER: Scheduler<64, MAX_BOOT_CPUS> = Scheduler::new();
 #[cfg(target_os = "none")]
-static PROCESS_KERNEL_STACKS: KernelStackPool<64, 16_384> = KernelStackPool::new();
+// Linux syscall dispatch keeps several bounded VFS/exec buffers on-stack.
+// A 16 KiB stack overflowed during CPL3 mmap; reserve 64 KiB per process.
+static PROCESS_KERNEL_STACKS: KernelStackPool<64, PROCESS_KERNEL_STACK_SIZE> =
+    KernelStackPool::new();
 #[cfg(target_os = "none")]
 static NETWORK_SOCKETS: IrqSpinLock<carlio_os::net::SocketTable<128>> =
     IrqSpinLock::new(carlio_os::net::SocketTable::new());
@@ -89,8 +94,8 @@ static OPEN_FILES: IrqSpinLock<carlio_os::open_files::OpenFileTable<128>> =
 static AHCI_BLOCK_DEVICE: IrqSpinLock<Option<ahci::AhciBlockDevice>> = IrqSpinLock::new(None);
 #[cfg(target_os = "none")]
 enum BootRootfs {
-    Ext4(carlio_os::ext4::Ext4Volume<ahci::AhciBlockDevice>),
-    Fat32(carlio_os::fat32::Fat32Volume<ahci::AhciBlockDevice>),
+    Ext4(carlio_os::ext4::Ext4Volume<carlio_os::block::BlockRegion<ahci::AhciBlockDevice>>),
+    Fat32(carlio_os::fat32::Fat32Volume<carlio_os::block::BlockRegion<ahci::AhciBlockDevice>>),
 }
 #[cfg(target_os = "none")]
 impl carlio_os::vfs::ReadOnlyMountBackend for BootRootfs {
@@ -910,7 +915,9 @@ pub extern "C" fn _start() -> ! {
     serial_init();
     unsafe { idt::install() };
     startup_screen();
+    boot_progress(5, "kernel carregado");
     video_boot_probe();
+    boot_progress(12, "vídeo/console");
     write("IDT: exceções 0-31 registradas; IRQs externos permanecem desativados.\r\n");
     if idt::ring3_descriptors_ready() {
         write("Ring 3: GDT, TSS, RSP0 e seletores de usuário configurados; CPL continua 0.\r\n");
@@ -920,6 +927,7 @@ pub extern "C" fn _start() -> ! {
     }
     write("Aviso: terminal de diagnóstico em ring 0; não é uma fronteira de segurança.\r\n");
     report_memory_map();
+    boot_progress(25, "memória física e HHDM");
     let hhdm = unsafe { core::ptr::addr_of!(HHDM_OFFSET).read_volatile() };
     if prepare_lapic_mmio(hhdm) && unsafe { lapic::initialize(lapic::MMIO_VIRTUAL_BASE) }.is_ok() {
         write("LAPIC xAPIC ativo no BSP; vetor de shootdown remoto 0xF1 instalado.\r\n");
@@ -929,14 +937,19 @@ pub extern "C" fn _start() -> ! {
     }
     lapic::set_online_aps(AP_ONLINE_COUNT.load(Ordering::Acquire).saturating_sub(1));
     run_smp_parallel_probe();
+    boot_progress(45, "inicialização SMP");
     kernel_heap_boot_probe();
+    boot_progress(58, "heap do kernel");
     enumerate_pci();
+    boot_progress(70, "detecção de hardware");
     initialize_vfs_mounts();
+    boot_progress(82, "VFS e rootfs");
     unsafe { idt::install_timer_frame_switch(timer_process_switch) };
     if PAGE_TABLE_PROBE_PENDING.swap(false, Ordering::AcqRel) {
         let hhdm = unsafe { core::ptr::addr_of!(HHDM_OFFSET).read_volatile() };
         page_table_boot_probe(hhdm);
     }
+    boot_progress(92, "VM e processos");
     // O probe CPL3 pode retornar ao kernel com IF desabilitado. Reativar e
     // reinicializar o PIT após a prova para que o watchdog também cubra o shell.
     unsafe { idt::start_watchdog() };
@@ -944,6 +957,7 @@ pub extern "C" fn _start() -> ! {
         unsafe { lapic::start_scheduler_timer() };
     }
     AP_PROCESS_SCHEDULING.store(true, Ordering::Release);
+    boot_progress(100, "shell disponível");
     write("Watchdog PIT ativo: prazo de 5 s sem progresso.\r\n");
     write("Digite 'ajuda' para ver os comandos.\r\n\r\n");
     shell()
@@ -1204,7 +1218,42 @@ fn startup_screen() {
     write("| carlIO OS | Criado por João G.R.Santos             |\r\n");
     write("| Sistema operacional experimental x86_64            |\r\n");
     write("+----------------------------------------------------+\r\n");
-    write("Núcleo Rust · inicialização serial\r\n\r\n");
+    write("Núcleo Rust · BOOT LOG\r\n");
+    // Row 7/8 stay fixed for progress; only boot messages scroll in rows 10-24.
+    write("\x1b[10;1H\x1b[10;24r");
+}
+
+/// Atualiza uma linha reservada do terminal ANSI; os eventos continuam sendo
+/// impressos abaixo como log serial, inclusive no perfil headless do servidor.
+#[cfg(target_os = "none")]
+fn boot_progress(percent: u8, stage: &str) {
+    const BAR_WIDTH: usize = 78; // brackets plus 78 cells fill an 80-column row.
+    let percent = percent.min(100);
+    let filled = usize::from(percent) * BAR_WIDTH / 100;
+    write("\x1b[s\x1b[7;1H\x1b[2K[");
+    for index in 0..BAR_WIDTH {
+        if index == 0 {
+            write(if filled == 0 {
+                "\x1b[90m"
+            } else {
+                "\x1b[32;1m"
+            });
+        } else if index == filled {
+            write("\x1b[90m");
+        }
+        write(if index < filled { "#" } else { "-" });
+    }
+    write("\x1b[0m]\x1b[8;1H\x1b[2KBOOT ");
+    if percent < 10 {
+        write(" ");
+    }
+    write_u32(percent as u32);
+    write("%  ");
+    write(stage);
+    write("\x1b[u");
+    if percent == 100 {
+        write("\x1b[r");
+    }
 }
 
 #[cfg(target_os = "none")]
@@ -4518,17 +4567,24 @@ fn discover_boot_storage() {
                 })
                 .copied();
             if let Some(partition) = chosen {
-                let backend = match partition.filesystem {
-                    carlio_os::partition::Filesystem::Ext4 => {
-                        carlio_os::ext4::Ext4Volume::mount(device, partition.start_lba)
-                            .map(BootRootfs::Ext4)
-                            .map_err(|_| "ext4 recusado pelo leitor")
-                    }
-                    carlio_os::partition::Filesystem::Fat32 => {
-                        carlio_os::fat32::Fat32Volume::mount(device, partition.start_lba)
-                            .map(BootRootfs::Fat32)
-                            .map_err(|_| "FAT32 recusado pelo leitor")
-                    }
+                let backend = match carlio_os::block::BlockRegion::new(
+                    device,
+                    partition.start_lba,
+                    partition.sectors,
+                ) {
+                    Err(_) => Err("partição excede os limites do dispositivo"),
+                    Ok(region) => match partition.filesystem {
+                        carlio_os::partition::Filesystem::Ext4 => {
+                            carlio_os::ext4::Ext4Volume::mount(region, 0)
+                                .map(BootRootfs::Ext4)
+                                .map_err(|_| "ext4 recusado pelo leitor")
+                        }
+                        carlio_os::partition::Filesystem::Fat32 => {
+                            carlio_os::fat32::Fat32Volume::mount(region, 0)
+                                .map(BootRootfs::Fat32)
+                                .map_err(|_| "FAT32 recusado pelo leitor")
+                        }
+                    },
                 };
                 match backend {
                     Ok(backend) => {
