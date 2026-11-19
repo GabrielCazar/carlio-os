@@ -1,0 +1,12 @@
+    Blocking waiting for file lock on build directory
+    Checking carlio-os v0.1.0 (/home/gabriel/Work/carlio-os)
+warning: function `activate_process_address_space` is never used
+   --> src/arch/x86_64/idt.rs:660:15
+    |
+660 | pub unsafe fn activate_process_address_space(root: u64, kernel_stack_top: u64) -> bool {
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `carlio-os` (bin "carlio-kernel") generated 1 warning
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.58s

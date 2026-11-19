@@ -26,6 +26,12 @@ pub const SYS_EXIT_GROUP: u64 = 231;
 pub const SYS_SOCKET: u64 = 41;
 pub const SYS_BIND: u64 = 49;
 pub const SYS_LISTEN: u64 = 50;
+pub const SYS_CLOCK_GETTIME: u64 = 228;
+pub const SYS_CLOCK_GETRES: u64 = 229;
+pub const SYS_GETTID: u64 = 186;
+
+pub const CLOCK_REALTIME: u64 = 0;
+pub const CLOCK_MONOTONIC: u64 = 1;
 
 pub const EBADF: u16 = 9;
 pub const ENOENT: u16 = 2;
@@ -43,6 +49,7 @@ pub const ENFILE: u16 = 23;
 pub const EOPNOTSUPP: u16 = 95;
 pub const EROFS: u16 = 30;
 pub const EEXIST: u16 = 17;
+pub const EOVERFLOW: u16 = 75;
 
 const WRITE_CHUNK_SIZE: usize = 256;
 const PATH_BUFFER_SIZE: usize = crate::vfs::VFS_PATH_MAX;
@@ -72,6 +79,12 @@ pub struct ProcessContext {
 pub enum SyscallOutcome {
     Return(u64),
     Exit { status: u8 },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Timespec {
+    pub seconds: i64,
+    pub nanoseconds: i64,
 }
 
 /// Serviços mínimos que o backend precisa fornecer sem expor ponteiros user
@@ -124,6 +137,12 @@ pub trait LinuxSyscallIo {
     fn brk(&mut self, current: u64, _requested: u64) -> u64 {
         current
     }
+    fn clock_gettime(&mut self, _clock_id: u64) -> Result<Timespec, u16> {
+        Err(EINVAL)
+    }
+    fn clock_getres(&mut self, _clock_id: u64) -> Result<Timespec, u16> {
+        Err(EINVAL)
+    }
 }
 
 /// Despacha os números da ABI Linux x86_64. Retornos de erro seguem `-errno`
@@ -163,6 +182,9 @@ pub fn dispatch<I: LinuxSyscallIo>(
         SYS_MUNMAP => result(io.munmap(arguments[0], arguments[1]).map(|_| 0)),
         SYS_BRK => SyscallOutcome::Return(io.brk(context.program_break, arguments[0])),
         SYS_GETPID => SyscallOutcome::Return(context.process_id),
+        SYS_GETTID => SyscallOutcome::Return(context.process_id),
+        SYS_CLOCK_GETTIME => clock_syscall(arguments[0], arguments[1], false, io),
+        SYS_CLOCK_GETRES => clock_syscall(arguments[0], arguments[1], true, io),
         SYS_UNAME => uname_syscall(arguments[0], io),
         SYS_GETUID | SYS_GETEUID => SyscallOutcome::Return(context.uid as u64),
         SYS_GETGID | SYS_GETEGID => SyscallOutcome::Return(context.gid as u64),
@@ -179,6 +201,30 @@ pub fn dispatch<I: LinuxSyscallIo>(
         SYS_WRITE => write_syscall(arguments[0], arguments[1], arguments[2], io),
         _ => errno(ENOSYS),
     }
+}
+
+fn clock_syscall<I: LinuxSyscallIo>(
+    clock_id: u64,
+    address: u64,
+    resolution: bool,
+    io: &mut I,
+) -> SyscallOutcome {
+    let value = if resolution {
+        io.clock_getres(clock_id)
+    } else {
+        io.clock_gettime(clock_id)
+    };
+    let value = match value {
+        Ok(value) => value,
+        Err(error) => return errno(error),
+    };
+    if !(0..1_000_000_000).contains(&value.nanoseconds) || value.seconds < 0 {
+        return errno(EIO);
+    }
+    let mut bytes = [0u8; 16];
+    bytes[..8].copy_from_slice(&value.seconds.to_le_bytes());
+    bytes[8..].copy_from_slice(&value.nanoseconds.to_le_bytes());
+    result(io.copy_to_user(address, &bytes).map(|_| 0))
 }
 
 /// Preenche o `struct utsname` Linux x86_64 (seis campos de 65 bytes).

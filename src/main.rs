@@ -2138,6 +2138,42 @@ impl KernelLinuxSyscallIo {
 
 #[cfg(target_os = "none")]
 impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
+    fn clock_gettime(
+        &mut self,
+        clock_id: u64,
+    ) -> Result<carlio_os::linux_abi::Timespec, u16> {
+        if clock_id != carlio_os::linux_abi::CLOCK_MONOTONIC {
+            return Err(carlio_os::linux_abi::EINVAL);
+        }
+        let ticks = idt::uptime_ticks();
+        let seconds = i64::try_from(ticks / idt::TICK_RATE_HZ)
+            .map_err(|_| carlio_os::linux_abi::EOVERFLOW)?;
+        let subsecond_ticks = ticks % idt::TICK_RATE_HZ;
+        let nanoseconds = i64::try_from(subsecond_ticks)
+            .ok()
+            .and_then(|value| value.checked_mul(1_000_000_000))
+            .and_then(|value| value.checked_div(i64::try_from(idt::TICK_RATE_HZ).ok()?))
+            .ok_or(carlio_os::linux_abi::EOVERFLOW)?;
+        Ok(carlio_os::linux_abi::Timespec {
+            seconds,
+            nanoseconds,
+        })
+    }
+
+    fn clock_getres(
+        &mut self,
+        clock_id: u64,
+    ) -> Result<carlio_os::linux_abi::Timespec, u16> {
+        if clock_id != carlio_os::linux_abi::CLOCK_MONOTONIC {
+            return Err(carlio_os::linux_abi::EINVAL);
+        }
+        Ok(carlio_os::linux_abi::Timespec {
+            seconds: 0,
+            nanoseconds: i64::try_from(1_000_000_000 / idt::TICK_RATE_HZ)
+                .map_err(|_| carlio_os::linux_abi::EOVERFLOW)?,
+        })
+    }
+
     fn mmap(
         &mut self,
         address: u64,

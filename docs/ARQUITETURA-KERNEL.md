@@ -54,11 +54,16 @@ comprova controlador AHCI físico nem montagem do filesystem no boot.
 - Interfaces de driver não são uma fronteira de segurança enquanto tudo roda
   em ring 0. Isolamento de drivers/processos requer memória protegida, syscalls
   validadas e execução menos privilegiada, planejados para a fase 2.
-- Módulos carregáveis do kernel ainda não existem. Um LKM x86-64 executado em
-  ring 0 compartilha o privilégio do kernel e, portanto, pertence ao mesmo
-  domínio de confiança; isolamento user/kernel não isola módulos entre si.
-  Carregamento e remoção dependem de ABI versionada, relocations ELF64,
-  permissões W^X, referências ativas e rollback de inicialização/encerramento.
+- O linker hostável de LKMs tem parser ELF64 ET_REL, extrai exports da
+  `.symtab`, guarda-os em registro persistente host e acompanha dependências
+  retornadas pelo resolver; unload exige quiescência no contrato do backend.
+  `SmpPageTableManager::protect` altera flags supervisor e aguarda shootdown
+  remoto, com teste host de preservação do frame/NX. Ainda não existe backend
+  runtime x86-64 de alocação/mapeamento/invocação ligado ao allocator e às page
+  tables; LKMs não são carregáveis pelo kernel. Um módulo futuro roda em ring 0 e pertence
+  ao domínio de confiança do kernel. O backend exige ABI versionada,
+  relocations ELF64, W^X, bloqueio de novas chamadas, referências ativas,
+  quiescência SMP e rollback.
 
 ## Estado
 
@@ -77,10 +82,16 @@ separadas e cada uma grava seu estado inicial atômico. Cada AP processa tarefas
 limitadas via mailbox; após a prova inicial, timer LAPIC e despacho SMP podem
 escalonar processos por CPU. Há filas locais e roubo em tabela fixa de 64
 processos/CPUs, `CpuContext` validado, pool com ownership de pilhas privilegiadas
-e `IrqSpinLock` no scheduler, pool e heap. A prova CPL3, porém, continua no BSP:
-não há carga CPL3 concorrente nos APs comprovada. O reaper libera pilhas e
-espaços da fixture, mas o bundle completo de recursos ainda não pertence ao
-`Process`; não é runtime persistente nem base dimensionada dinamicamente.
+e `IrqSpinLock` no scheduler, pool e heap. Os logs anteriores só mostravam
+preempção CPL3 em dois APs, não uma testemunha de sobreposição temporal. O
+código agora marca entrada/saída CPL3 por CPU e exige CR3 kernel confirmado por
+BSP e APs antes do reaper. A revalidação BIOS/UEFI local confirmou que
+`read(0)` recebe e copia o byte serial; as probes BIOS/UEFI locais e NAS/KVM
+agora confirmam sobreposição CPL3 em dois APs e ACK global do reaper em três
+APs, após validar CR3 kernel e stack de idle. Isso é uma prova pontual, não
+stress sustentado de scheduler/VM/allocator. O bundle completo de recursos ainda não
+pertence ao `Process`; não é runtime persistente nem base dimensionada
+dinamicamente.
 
 Para cargas grandes de VM e arquivos, o desenho alvo precisa provisionar
 processos e memória conforme recursos disponíveis, aplicar limites e pressão de

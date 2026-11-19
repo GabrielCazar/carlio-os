@@ -131,6 +131,18 @@ impl<A: PageTableAccess, S: TlbShootdown> SmpPageTableManager<A, S> {
         Ok(physical)
     }
 
+    /// Altera permissões e aguarda o shootdown SMP antes de retornar. O frame
+    /// permanece sob ownership do chamador durante toda a operação.
+    pub fn protect(&self, virtual_address: u64, flags: u64) -> Result<(), FrameError> {
+        let root = {
+            let mut tables = self.tables.lock();
+            tables.protect(virtual_address, flags)?;
+            tables.root()
+        };
+        self.shootdown.invalidate_all(root, virtual_address);
+        Ok(())
+    }
+
     pub fn mapping(&self, virtual_address: u64) -> Result<PageMapping, FrameError> {
         self.tables.lock().mapping(virtual_address)
     }
@@ -413,6 +425,35 @@ impl<A: PageTableAccess> PageTableManager<A> {
             return Err(FrameError::InvalidVirtualAddress);
         }
         self.map_inner(virtual_address, physical, flags | ENTRY_USER, true)
+    }
+
+    /// Substitui as permissões de uma folha supervisor sem alterar seu frame.
+    pub fn protect(&mut self, virtual_address: u64, flags: u64) -> Result<(), FrameError> {
+        if flags & !ENTRY_ALLOWED_FLAGS != 0
+            || flags & ENTRY_PRESENT == 0
+            || flags & ENTRY_USER != 0
+        {
+            return Err(FrameError::InvalidPageFlags);
+        }
+        let indices = page_indices(virtual_address)?;
+        let mut table = self.root;
+        for index in indices.iter().take(3) {
+            let entry = self.access.read_entry(table, *index)?;
+            if entry & ENTRY_PRESENT == 0 {
+                return Err(FrameError::NotMapped);
+            }
+            if entry & ENTRY_HUGE != 0 {
+                return Err(FrameError::HugePageConflict);
+            }
+            table = entry & ENTRY_ADDRESS_MASK;
+        }
+        let leaf_index = indices[3];
+        let entry = self.access.read_entry(table, leaf_index)?;
+        if entry & ENTRY_PRESENT == 0 {
+            return Err(FrameError::NotMapped);
+        }
+        self.access
+            .write_entry(table, leaf_index, (entry & ENTRY_ADDRESS_MASK) | flags)
     }
 
     fn map_inner(
@@ -982,6 +1023,27 @@ mod tests {
             worker.join().unwrap();
         }
         assert_eq!(vm.shootdown.0.load(Ordering::Relaxed), 4 * 128 * 2);
+    }
+
+    #[test]
+    fn smp_protection_waits_for_shootdown_and_preserves_frame() {
+        use std::sync::atomic::Ordering;
+
+        let vm = SmpPageTableManager::new(
+            FakePageTables::new(),
+            0x10_0000,
+            CountingShootdown(std::sync::atomic::AtomicUsize::new(0)),
+        )
+        .unwrap();
+        let va = 0xffff_c100_0000_0000;
+        let pa = 0x9000_0000;
+        vm.map(va, pa, PAGE_FLAG_WRITABLE | 1).unwrap();
+        vm.protect(va, PAGE_FLAG_NO_EXECUTE | 1).unwrap();
+        let mapping = vm.mapping(va).unwrap();
+        assert_eq!(mapping.physical, pa);
+        assert_eq!(mapping.flags & PAGE_FLAG_WRITABLE, 0);
+        assert_ne!(mapping.flags & PAGE_FLAG_NO_EXECUTE, 0);
+        assert_eq!(vm.shootdown.0.load(Ordering::Relaxed), 2);
     }
 
     #[test]

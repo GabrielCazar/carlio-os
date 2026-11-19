@@ -1,0 +1,203 @@
+   Compiling carlio-os v0.1.0 (/home/gabriel/Work/carlio-os)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.35s
+     Running unittests src/lib.rs (target/debug/build/carlio-os/6e43105b026db393/out/carlio_os-6e43105b026db393)
+
+running 172 tests
+test dynamic_linker::tests::dependency_queue_is_bounded_and_deduplicated ... ok
+test dynamic_linker::tests::applies_relative_and_symbol_plt_relocations ... ok
+test dynamic_linker::tests::symbol_lookup_honors_versions_strength_and_hidden_bit ... ok
+test elf::tests::applies_local_relative_relocations_in_static_pie ... ok
+test elf::tests::builds_initial_stack_with_argc_argv_envp_and_terminators ... ok
+test elf::tests::builds_initial_stack_with_terminated_auxv_pairs ... ok
+test elf::tests::dynamic_metadata_reads_pt_interp_and_rejects_unsafe_paths ... ok
+test elf::tests::dynamic_metadata_rejects_u64_needed_offset_overflow ... ok
+test elf::tests::dynamic_metadata_reads_needed_names_from_mapped_string_table ... ok
+test elf::tests::loads_static_pie_et_dyn_with_checked_load_bias ... ok
+test elf::tests::maps_zeroed_segment_and_applies_final_permissions ... ok
+test elf::tests::rejects_interpreters_and_malformed_dynamic_segments ... ok
+test elf::tests::loads_elf_from_vfs_after_execute_and_read_checks ... ok
+test elf::tests::parses_executable_load_segment ... ok
+test elf::tests::rejects_initial_stack_overflow_and_embedded_nul ... ok
+test elf::tests::rejects_truncated_file_payload ... ok
+test elf::tests::rejects_writable_executable_segment ... ok
+test errors::tests::keeps_recent_errors_and_counts_overwrites ... ok
+test elf::tests::vfs_elf_loader_rejects_non_executable_files_before_loading ... ok
+test elf::tests::vfs_exec_loads_pt_interp_and_builds_linux_auxv ... ok
+test ext4::tests::mounts_ext4_and_reads_a_file_through_inode_and_extent_metadata ... ok
+test ext4::tests::rejects_invalid_superblocks_and_too_small_output ... ok
+test fat32::tests::mounts_partition_and_reads_root_83_file_without_writes ... ok
+test fat32::tests::reads_files_in_subdirectories_by_short_name ... ok
+test fat32::tests::rejects_bad_geometry_and_out_of_partition_reads ... ok
+test heap::tests::heap_set_rejects_overlapping_and_excess_regions ... ok
+test heap::tests::heap_set_expands_into_new_regions_and_routes_deallocation ... ok
+test heap::tests::honors_size_and_large_alignment_then_reuses_coalesced_space ... ok
+test heap::tests::rejects_foreign_and_double_free ... ok
+test heap::tests::rejects_too_small_region_and_exhausts_cleanly ... ok
+test hermione::tests::failed_mirror_write_keeps_previous_directory_generation ... ok
+test hermione::tests::flushes_new_data_before_publishing_directory ... ok
+test hermione::tests::failed_replace_keeps_old_file_visible_after_mount ... ok
+test hermione::tests::detects_data_corruption_and_frees_deleted_extent ... ok
+test hermione::tests::format_write_read_and_mount_persist ... ok
+test hermione::tests::mount_rejects_invalid_duplicate_names_and_oversized_extents ... ok
+test hermione::tests::mount_rejects_corrupt_superblock_and_directory ... ok
+test hermione::tests::journal_redoes_commit_when_directory_write_is_torn ... ok
+test hermione::tests::rejects_bad_names_missing_files_and_small_buffers ... ok
+test hermione::tests::scrub_repairs_a_bad_copy_only_from_the_verified_mirror ... ok
+test kernel_module::tests::accepts_bounded_empty_et_rel_and_unloads ... ok
+test kernel_module::tests::export_table_resolves_only_validated_sorted_exports ... ok
+test hermione::tests::supports_exact_two_tib_sector_count_without_u32_truncation ... ok
+test kernel_module::tests::module_exports_reject_duplicate_symbol_names_per_module ... ok
+test kernel_module::tests::rejects_non_elf_and_truncated_section_table ... ok
+test kernel_module::tests::undefined_global_and_weak_symbols_follow_elf_resolution_rules ... ok
+test linux_abi::tests::credential_syscalls_return_the_calling_process_identity ... ok
+test linux_abi::tests::dispatches_linux_getpid_exit_and_exit_group ... ok
+test linux_abi::tests::getgroups_copies_only_supplementary_gids_and_checks_capacity ... ok
+test linux_abi::tests::linux_socket_bind_and_listen_dispatch_validate_sockaddr_in ... ok
+test linux_abi::tests::openat_copies_a_bounded_absolute_path_from_user_memory ... ok
+test linux_abi::tests::read_copies_descriptor_bytes_to_user_and_rejects_bad_pointer ... ok
+test linux_abi::tests::read_rejects_partial_invalid_buffer_before_consuming_input ... ok
+test linux_abi::tests::uname_writes_linux_x86_64_utsname_and_rejects_invalid_user_memory ... ok
+test linux_abi::tests::unknown_linux_syscall_returns_enosys ... ok
+test linux_abi::tests::write_copies_user_bytes_and_returns_linux_byte_count ... ok
+test linux_abi::tests::write_reports_ebadf_efault_and_partial_progress ... ok
+test log_report::tests::failure_marker_overrides_success_and_markdown_escapes_cells ... ok
+test log_report::tests::generator_builds_a_markdown_table_and_text_chart ... ok
+test hermione::tests::vfs_root_snapshot_survives_herm_fs_remount ... ok
+test log_report::tests::summarizes_host_and_qemu_markers ... ok
+test log_report::tests::generator_recovers_from_invalid_utf8_in_serial_capture ... ok
+test memory::tests::address_space_forces_inherited_kernel_half_to_supervisor ... ok
+test memory::tests::frame_allocator_allocates_and_reuses_aligned_frames ... ok
+test memory::tests::frame_allocator_rejects_invalid_and_double_frees ... ok
+test memory::tests::address_space_copies_kernel_half_and_owns_only_user_page_tables ... ok
+test memory::tests::hhdm_translation_rejects_overflow ... ok
+test memory::tests::mapping_reports_effective_user_permissions_from_every_level ... ok
+test memory::tests::owned_address_space_reclaims_user_frames_and_page_tables ... ok
+test memory::tests::host_model_isolates_processes_mapping_the_same_user_address ... ok
+test memory::tests::page_table_map_unmap_validates_and_reclaims_empty_tables ... ok
+test memory::tests::page_table_rejects_bad_addresses_flags_and_huge_conflicts ... ok
+test memory::tests::physical_allocator_deduplicates_regions_and_clips_capacity ... ok
+test memory::tests::physical_allocator_can_request_a_high_frame_without_consuming_low_memory ... ok
+test hermione::tests::interrupted_replace_at_each_write_and_flush_keeps_a_valid_generation ... ok
+test memory::tests::physical_allocator_rejects_reserved_invalid_and_double_frees ... ok
+test memory::tests::physical_allocator_lock_prevents_duplicate_frames_under_contention ... ok
+test memory::tests::physical_allocator_uses_only_usable_aligned_frames ... ok
+test memory::tests::translates_kernel_addresses_with_checked_arithmetic ... ok
+test memory::tests::user_mapping_promotes_existing_path_and_unmap_preserves_unowned_tables ... ok
+test memory::tests::user_mapping_rejects_kernel_half_and_legacy_map_rejects_user_flag ... ok
+test memory::tests::user_mapping_sets_user_access_on_path_and_keeps_kernel_leaf_supervisor ... ok
+test net::tests::parses_ethernet_arp_and_ipv4_udp ... ok
+test net::tests::parses_dhcp_options_and_rejects_duplicate_or_truncated_values ... ok
+test net::tests::rejects_bad_lengths_checksums_and_fragments ... ok
+test net::tests::socket_table_binds_ports_with_process_and_protocol_isolation ... ok
+test open_files::tests::descriptors_are_bounded_and_isolated_by_process ... ok
+test pci::tests::classifies_supported_intel_integrated_graphics_ids ... ok
+test pci::tests::identifies_known_ahci_ids_and_rejects_other_modes ... ok
+test pci::tests::classifies_target_driver_families ... ok
+test pci::tests::identifies_server_and_development_ethernet_without_claiming_driver_support ... ok
+test process::tests::blocked_process_wakes_back_into_ready_queue ... ok
+test process::tests::clone_thread_rejects_foreign_parent_and_returns_reserved_stack ... ok
+test process::tests::cpu_local_queues_distribute_work_and_allow_idle_cpu_stealing ... ok
+test process::tests::destroy_rejects_unknown_and_already_exited_tasks ... ok
+test process::tests::clone_thread_shares_group_and_join_blocks_then_collects_exit_status ... ok
+test process::tests::destroy_removes_ready_and_blocked_tasks_but_refuses_running_task ... ok
+test process::tests::exit_removes_process_from_future_dispatch ... ok
+test process::tests::failed_generic_cleanup_restores_exited_state_for_retry ... ok
+test process::tests::generic_reaper_runs_cleanup_outside_scheduler_lock_and_reuses_slot ... ok
+test process::tests::join_rejects_wait_cycles_in_a_thread_group ... ok
+test process::tests::kernel_stack_is_exclusive_transferred_and_reclaimed_by_reaper ... ok
+test process::tests::local_frame_preemption_keeps_process_on_its_cpu ... ok
+test process::tests::preemption_saves_full_context_before_round_robin_dispatch ... ok
+test process::tests::process_identity_and_groups_are_attached_to_the_scheduled_process ... ok
+test process::tests::ready_process_can_be_pinned_to_an_explicit_cpu_queue ... ok
+test process::tests::reaper_refuses_live_processes_on_two_cpus_then_reclaims_after_exit ... ok
+test process::tests::refuses_contexts_outside_user_range_or_with_privileged_flags ... ok
+test process::tests::rejects_bad_cpu_and_full_table ... ok
+test memory::tests::physical_allocator_reaches_above_four_gib_and_clips_at_32_gib ... ok
+test process::tests::schedules_round_robin_across_cpus_without_duplicate_running ... ok
+test process::tests::user_fault_isolated_and_resources_can_be_reaped_with_retry ... ok
+test pseudo_fs::tests::exposes_proc_and_sys_snapshots_and_supports_offsets ... ok
+test pseudo_fs::tests::rejects_unknown_paths_and_bounds_cpu_output ... ok
+test storage::tests::rejects_out_of_range_and_missing_snapshots ... ok
+test storage::tests::scrub_detects_corruption ... ok
+test storage::tests::writes_are_copy_on_write_and_snapshot_restores_old_root ... ok
+test sync::tests::irq_lock_releases_inner_lock_before_restoring_interrupt_state ... ok
+test sync::tests::irq_lock_serializes_host_threads ... ok
+test sync::tests::serializes_mutations_across_host_threads ... ok
+test sync::tests::try_lock_reports_contention_and_releases_on_drop ... ok
+test syscall::tests::dispatches_version_and_read_only_process_information ... ok
+test syscall::tests::rejects_unknown_numbers_with_enosys ... ok
+test tests::guest_cannot_change_system_state ... ok
+test tests::herm_fs_cli_points_to_hermione_module ... ok
+test tests::parses_supported_commands_and_whitespace ... ok
+test tests::rejects_unknown_and_empty_commands ... ok
+test user_memory::tests::accepts_valid_read_and_write_ranges ... ok
+test user_memory::tests::checks_every_page_and_permissions ... ok
+test user_memory::tests::rejects_overflow_and_kernel_addresses ... ok
+test userland::accounts::tests::account_database_persists_through_hermione_remount ... ok
+test userland::accounts::tests::account_database_rejects_plaintext_duplicate_and_corruption ... ok
+test userland::accounts::tests::account_records_roundtrip_and_authenticate_without_plaintext_storage ... ok
+test userland::alpm::tests::rejects_missing_versions_cycles_and_malformed_constraints ... ok
+test userland::alpm::tests::resolves_dependencies_in_install_order_and_deduplicates ... ok
+test userland::apps::tests::catalog_checks_vfs_execute_permission_before_dispatch ... ok
+test userland::arch::tests::parses_arch_metadata_and_dependency_lists ... ok
+test userland::arch::tests::rejects_missing_duplicate_and_foreign_architecture ... ok
+test userland::debian::tests::parses_ubuntu_amd64_control_fields ... ok
+test userland::debian::tests::rejects_unknown_architecture_and_missing_fields ... ok
+test userland::login::tests::creates_session_only_after_verifier_accepts_credentials ... ok
+test userland::windows::tests::parses_bounded_amd64_pe32_plus_image ... ok
+test userland::windows::tests::rejects_bad_signatures_machine_and_section_capacity ... ok
+test userland::windows::tests::rejects_non_executable_entry_and_truncated_raw_section ... ok
+test vfs::tests::creates_fhs_paths_for_linux_userlands ... ok
+test vfs::tests::creates_modular_system_layout_and_checks_owner_group_other_bits ... ok
+test process::tests::scales_fixed_metadata_queue_to_ten_thousand_processes ... ok
+test vfs::tests::file_reads_and_writes_enforce_permissions_and_capacity ... ok
+test vfs::tests::mount_paths_must_be_canonical_existing_directories ... ok
+test vfs::tests::mounted_reads_are_routed_to_the_typed_backend ... ok
+test vfs::tests::mounts_require_root_and_longest_path_wins ... ok
+test vfs::tests::only_root_can_change_owner_and_metadata_preserves_special_mode_bits ... ok
+test vfs::tests::ranged_io_preserves_offsets_checks_access_and_truncates ... ok
+test vfs::tests::rejects_duplicate_names_and_non_owner_mode_changes ... ok
+test vfs::tests::root_can_bypass_read_write_but_not_missing_execute_bit ... ok
+test vfs::tests::search_permission_is_required_for_dot_and_parent_components ... ok
+test vfs::tests::supplementary_groups_umask_and_setgid_follow_unix_rules ... ok
+test vfs::tests::unlink_checks_parent_permissions_sticky_bit_and_reuses_slot ... ok
+test vfs::tests::vfs_snapshot_round_trips_nested_files_and_rejects_corruption ... ok
+test video::tests::framebuffer_rejects_invalid_layouts_and_clips_rectangles ... ok
+test video::tests::framebuffer_validates_pitch_and_writes_rgb_pixels ... ok
+test video::tests::vga_console_writes_ascii_and_scrolls ... ok
+test vma::tests::brk_grows_shrinks_and_refuses_mmap_collision ... ok
+test vma::tests::mmap_is_aligned_and_first_fit_reuses_unmapped_hole ... ok
+test vma::tests::mmap_rejects_writable_executable_and_overflow ... ok
+test vma::tests::munmap_splits_regions_and_rejects_non_mmap_holes ... ok
+test vma::tests::process_vm_brk_owns_pages_and_respects_vma_collisions ... ok
+test vma::tests::process_vm_linux_mapping_flags_are_checked_before_allocating ... ok
+test vma::tests::process_vm_maps_and_unmaps_owned_user_pages_with_vma_state ... ok
+test vfs::tests::large_file_ranges_and_snapshot_round_trip ... ok
+test process::tests::dynamically_reuses_process_slots_after_exit_and_reap ... ok
+test memory::tests::concurrent_vm_edits_are_serialized_and_request_remote_invalidations ... ok
+
+test result: ok. 172 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s
+
+     Running unittests src/main.rs (target/debug/build/carlio-os/30eb4cdd1ee9cb66/out/carlio_kernel-30eb4cdd1ee9cb66)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/carlio-logs.rs (target/debug/build/carlio-os/ef53627e09edc6dd/out/carlio_logs-ef53627e09edc6dd)
+
+running 1 test
+test tests::help_documents_generator_and_native_viewer ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/herm-fs.rs (target/debug/build/carlio-os/f18568be1c7475fc/out/herm_fs-f18568be1c7475fc)
+
+running 4 tests
+test existing_tests::help_documents_image_commands_and_safe_creation ... ok
+test existing_tests::status_describes_block_contract_and_version ... ok
+test tests::sparse_two_tib_image_accepts_last_lba_and_rejects_past_end ... ok
+test existing_tests::file_backed_volume_survives_close_and_reopen ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
