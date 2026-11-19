@@ -266,6 +266,19 @@ pub struct Process {
     pub state: ProcessState,
     /// Identidade POSIX immutable para autorizar VFS/syscalls por processo.
     pub security: ProcessSecurityContext,
+    /// Descritor dos recursos de execução pertencentes ao processo. O backend
+    /// associa o token ao VM e ao teardown antes de publicar a tarefa.
+    pub resources: Option<ProcessResourceBundle>,
+}
+
+/// Manifesto copiado do bundle de recursos do processo. `slot` indexa o
+/// registro de VM do backend; raiz e pilha permitem validar que o registro
+/// corresponde à identidade despachada pelo scheduler.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProcessResourceBundle {
+    pub slot: u8,
+    pub page_table: u64,
+    pub user_stack: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -363,6 +376,7 @@ impl Process {
         interrupt_frame: 0,
         state: ProcessState::Vacant,
         security: ProcessSecurityContext::ROOT,
+        resources: None,
     };
 }
 
@@ -782,6 +796,7 @@ impl<const P: usize, const C: usize> Scheduler<P, C> {
             interrupt_frame,
             state: ProcessState::Ready,
             security,
+            resources: None,
         };
         let cpu = least_loaded_queue(&mut s).ok_or(ProcessError::InvalidCpu)?;
         push_slot(&mut s, slot, cpu)?;
@@ -1014,6 +1029,35 @@ impl<const P: usize, const C: usize> Scheduler<P, C> {
     pub fn process(&self, id: u64) -> Option<Process> {
         let s = self.state.lock();
         find(&s.processes, id).map(|i| s.processes[i])
+    }
+
+    /// Associa ao processo o token do bundle mantido pelo backend de memória.
+    /// A associação é permitida somente enquanto a tarefa ainda está pronta,
+    /// antes de qualquer CPU poder despachá-la.
+    pub fn attach_resource_bundle(
+        &self,
+        id: u64,
+        bundle: ProcessResourceBundle,
+    ) -> Result<(), ProcessError> {
+        if bundle.page_table == 0
+            || bundle.page_table & 0xfff != 0
+            || bundle.user_stack == 0
+            || bundle.slot >= 3
+        {
+            return Err(ProcessError::NotRunnable);
+        }
+        let mut state = self.state.lock();
+        let slot = find(&state.processes, id).ok_or(ProcessError::UnknownProcess)?;
+        let process = &mut state.processes[slot];
+        if process.state != ProcessState::Ready
+            || process.resources.is_some()
+            || process.page_table != bundle.page_table
+            || process.user_stack != bundle.user_stack
+        {
+            return Err(ProcessError::NotRunnable);
+        }
+        process.resources = Some(bundle);
+        Ok(())
     }
 
     /// Fixa uma tarefa pronta em uma fila de CPU sem alterar seu frame ou
@@ -1965,6 +2009,37 @@ mod tests {
         scheduler.reap(id, &pool).unwrap();
         assert_eq!(scheduler.process(id), None);
         assert!(pool.allocate().is_some());
+    }
+
+    #[test]
+    fn process_resource_bundle_is_validated_and_frozen_at_dispatch() {
+        let scheduler = Scheduler::<2, 1>::new();
+        let id = scheduler.create(0x1000, 0x400000, 0x800000).unwrap();
+        let invalid = ProcessResourceBundle {
+            slot: 3,
+            page_table: 0x1000,
+            user_stack: 0x800000,
+        };
+        assert_eq!(
+            scheduler.attach_resource_bundle(id, invalid),
+            Err(ProcessError::NotRunnable)
+        );
+        let bundle = ProcessResourceBundle {
+            slot: 1,
+            page_table: 0x1000,
+            user_stack: 0x800000,
+        };
+        scheduler.attach_resource_bundle(id, bundle).unwrap();
+        assert_eq!(scheduler.process(id).unwrap().resources, Some(bundle));
+        assert_eq!(
+            scheduler.attach_resource_bundle(id, bundle),
+            Err(ProcessError::NotRunnable)
+        );
+        scheduler.schedule(0).unwrap();
+        assert_eq!(
+            scheduler.attach_resource_bundle(id, bundle),
+            Err(ProcessError::NotRunnable)
+        );
     }
 
     #[test]
