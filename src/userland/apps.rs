@@ -112,7 +112,7 @@ mod tests {
 
     struct Verifier;
     impl CredentialVerifier for Verifier {
-        fn verify(&self, _: &str, _: &[u8]) -> Option<Credentials> {
+        fn verify(&mut self, _: &str, _: &[u8]) -> Option<Credentials> {
             Some(Credentials {
                 uid: 1000,
                 gid: 1000,
@@ -138,9 +138,8 @@ mod tests {
 
     #[test]
     fn catalog_checks_vfs_execute_permission_before_dispatch() {
-        let session = LoginManager::new(Verifier)
-            .authenticate("alice", b"x")
-            .unwrap();
+        let mut login = LoginManager::new(Verifier);
+        let session = login.authenticate("alice", b"x").unwrap();
         let root = Credentials { uid: 0, gid: 0 };
         let mut vfs = Vfs::<8>::new();
         vfs.create_dir("/", "programas", root, 0o2755).unwrap();

@@ -55,6 +55,7 @@ pub const fn allowed(principal: Principal, capability: Capability) -> bool {
 
 pub mod storage;
 pub use storage as herm_fs;
+pub mod block;
 pub mod dynamic_linker;
 pub mod elf;
 pub mod errors;
@@ -69,6 +70,7 @@ pub mod log_report;
 pub mod memory;
 pub mod net;
 pub mod open_files;
+pub mod partition;
 pub mod pci;
 pub mod process;
 pub mod pseudo_fs;

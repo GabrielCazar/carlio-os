@@ -37,5 +37,6 @@ codegen-units = 1
 opt-level = "s"
 
 [dependencies]
+argon2 = { version = "0.5.3", default-features = false, features = ["password-hash"] }
 embedded-graphics = { version = "0.8.1", default-features = false, optional = true }
 

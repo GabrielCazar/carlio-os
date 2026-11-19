@@ -85,7 +85,7 @@ pub fn block_device() -> Result<AhciBlockDevice, KernelError> {
     })
 }
 
-impl carlio_os::hermione::BlockDevice for AhciBlockDevice {
+impl carlio_os::block::BlockDevice for AhciBlockDevice {
     fn sector_count(&self) -> u64 {
         self.sectors
     }
@@ -94,13 +94,13 @@ impl carlio_os::hermione::BlockDevice for AhciBlockDevice {
         &mut self,
         lba: u64,
         out: &mut [u8; carlio_os::hermione::SECTOR_SIZE],
-    ) -> Result<(), carlio_os::hermione::FsError> {
+    ) -> Result<(), carlio_os::block::BlockError> {
         if lba >= self.sectors {
-            return Err(carlio_os::hermione::FsError::Device);
+            return Err(carlio_os::block::BlockError::Device);
         }
         let _guard = BLOCK_IO_LOCK.lock();
         command(&self.map, 0x25, lba, false, false, true)
-            .map_err(|_| carlio_os::hermione::FsError::Device)?;
+            .map_err(|_| carlio_os::block::BlockError::Device)?;
         let source = unsafe { core::ptr::addr_of!(DMA.sector).cast::<u8>() };
         for (index, byte) in out.iter_mut().enumerate() {
             *byte = unsafe { ptr::read_volatile(source.add(index)) };
@@ -112,9 +112,9 @@ impl carlio_os::hermione::BlockDevice for AhciBlockDevice {
         &mut self,
         lba: u64,
         data: &[u8; carlio_os::hermione::SECTOR_SIZE],
-    ) -> Result<(), carlio_os::hermione::FsError> {
+    ) -> Result<(), carlio_os::block::BlockError> {
         if lba >= self.sectors {
-            return Err(carlio_os::hermione::FsError::Device);
+            return Err(carlio_os::block::BlockError::Device);
         }
         let _guard = BLOCK_IO_LOCK.lock();
         let target = unsafe { core::ptr::addr_of_mut!(DMA.sector).cast::<u8>() };
@@ -123,13 +123,13 @@ impl carlio_os::hermione::BlockDevice for AhciBlockDevice {
         }
         compiler_fence(Ordering::SeqCst);
         command(&self.map, 0x35, lba, true, false, true)
-            .map_err(|_| carlio_os::hermione::FsError::Device)
+            .map_err(|_| carlio_os::block::BlockError::Device)
     }
 
-    fn flush(&mut self) -> Result<(), carlio_os::hermione::FsError> {
+    fn flush(&mut self) -> Result<(), carlio_os::block::BlockError> {
         let _guard = BLOCK_IO_LOCK.lock();
         command(&self.map, 0xea, 0, false, false, false)
-            .map_err(|_| carlio_os::hermione::FsError::Device)
+            .map_err(|_| carlio_os::block::BlockError::Device)
     }
 }
 

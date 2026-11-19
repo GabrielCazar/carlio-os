@@ -74,8 +74,6 @@ const PROCESS_VFS_CAPACITY: usize = 40;
 #[cfg(target_os = "none")]
 static PROCESS_VFS: IrqSpinLock<Vfs<PROCESS_VFS_CAPACITY>> = IrqSpinLock::new(Vfs::new());
 #[cfg(target_os = "none")]
-static ROOTFS_VFS_STAGING: IrqSpinLock<Vfs<PROCESS_VFS_CAPACITY>> = IrqSpinLock::new(Vfs::new());
-#[cfg(target_os = "none")]
 static ELF_LOAD_SCRATCH: IrqSpinLock<[u8; carlio_os::vfs::VFS_INLINE_FILE_MAX]> =
     IrqSpinLock::new([0; carlio_os::vfs::VFS_INLINE_FILE_MAX]);
 #[cfg(target_os = "none")]
@@ -87,25 +85,15 @@ static OPEN_FILES: IrqSpinLock<carlio_os::open_files::OpenFileTable<128>> =
 #[cfg(target_os = "none")]
 static AHCI_BLOCK_DEVICE: IrqSpinLock<Option<ahci::AhciBlockDevice>> = IrqSpinLock::new(None);
 #[cfg(target_os = "none")]
-static PERSISTENT_ROOTFS: IrqSpinLock<
-    Option<carlio_os::hermione::HermioneVolume<ahci::AhciBlockDevice>>,
-> = IrqSpinLock::new(None);
-#[cfg(target_os = "none")]
-static ROOTFS_TRANSACTION_ACTIVE: AtomicBool = AtomicBool::new(false);
-#[cfg(target_os = "none")]
-const ROOTFS_SNAPSHOT_CAPACITY: usize =
-    20 + PROCESS_VFS_CAPACITY * (18 + 31 + carlio_os::vfs::VFS_INLINE_FILE_MAX);
-#[cfg(target_os = "none")]
-static ROOTFS_SNAPSHOT: IrqSpinLock<[u8; ROOTFS_SNAPSHOT_CAPACITY]> =
-    IrqSpinLock::new([0; ROOTFS_SNAPSHOT_CAPACITY]);
+static VFS_MUTATION_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 #[cfg(target_os = "none")]
-struct RootfsTransactionGuard;
+struct VfsMutationGuard;
 
 #[cfg(target_os = "none")]
-impl RootfsTransactionGuard {
+impl VfsMutationGuard {
     fn acquire() -> Result<Self, u16> {
-        ROOTFS_TRANSACTION_ACTIVE
+        VFS_MUTATION_ACTIVE
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .map(|_| Self)
             .map_err(|_| carlio_os::linux_abi::EAGAIN)
@@ -113,9 +101,9 @@ impl RootfsTransactionGuard {
 }
 
 #[cfg(target_os = "none")]
-impl Drop for RootfsTransactionGuard {
+impl Drop for VfsMutationGuard {
     fn drop(&mut self) {
-        ROOTFS_TRANSACTION_ACTIVE.store(false, Ordering::Release);
+        VFS_MUTATION_ACTIVE.store(false, Ordering::Release);
     }
 }
 #[cfg(target_os = "none")]
@@ -886,7 +874,7 @@ pub extern "C" fn _start() -> ! {
     run_smp_parallel_probe();
     kernel_heap_boot_probe();
     enumerate_pci();
-    initialize_persistent_rootfs();
+    initialize_vfs_mounts();
     unsafe { idt::install_timer_frame_switch(timer_process_switch) };
     if PAGE_TABLE_PROBE_PENDING.swap(false, Ordering::AcqRel) {
         let hhdm = unsafe { core::ptr::addr_of!(HHDM_OFFSET).read_volatile() };
@@ -1500,7 +1488,7 @@ pub(crate) fn begin_process_switch_probe() -> Option<*mut idt::UserInterruptFram
         &["CARLIO_PROBE=1"],
     ) else {
         write("Runtime: falha ao criar espaço virtual B.\r\n");
-        if release_or_retain_unregistered_vm(space_a) {
+        if release_or_retain_unregistered_space(space_a) {
             PROCESS_PROBE_BASELINE_SET.store(false, Ordering::Release);
         }
         PROCESS_PROBE_STARTED.store(false, Ordering::Release);
@@ -1514,8 +1502,8 @@ pub(crate) fn begin_process_switch_probe() -> Option<*mut idt::UserInterruptFram
         &["CARLIO_PROBE=1"],
     ) else {
         write("Runtime: falha ao criar espaço virtual C.\r\n");
-        let released_a = release_or_retain_unregistered_vm(space_a);
-        let released_b = release_or_retain_unregistered_vm(space_b);
+        let released_a = release_or_retain_unregistered_space(space_a);
+        let released_b = release_or_retain_unregistered_space(space_b);
         if released_a && released_b {
             PROCESS_PROBE_BASELINE_SET.store(false, Ordering::Release);
         }
@@ -1607,7 +1595,7 @@ pub(crate) fn begin_process_switch_probe() -> Option<*mut idt::UserInterruptFram
         &[],
         0o022,
     );
-    let Ok(user_probe_security) = user_probe_security else {
+    let Some(user_probe_security) = user_probe_security else {
         let _ = abort_unstarted_process_probe([0; 3], [root_a, root_b, root_c]);
         PROCESS_PROBE_STARTED.store(false, Ordering::Release);
         return None;
@@ -2438,6 +2426,31 @@ fn release_or_retain_unregistered_vm(space: RuntimeProcessVm) -> bool {
 }
 
 #[cfg(target_os = "none")]
+fn release_or_retain_unregistered_space(
+    space: OwnedAddressSpace<BootPageTableAccess, PROCESS_VM_PAGE_CAPACITY>,
+) -> bool {
+    match space.try_destroy() {
+        Ok(_access) => true,
+        Err((space, _error)) => {
+            write("Runtime: teardown pré-dispatch falhou; espaço mantido para retry.\r\n");
+            let vm = RuntimeProcessVm::new(
+                space,
+                carlio_os::vma::USER_HEAP_BASE,
+                carlio_os::vma::USER_HEAP_BASE + 0x1000_0000,
+            );
+            match store_process_probe_vm(vm) {
+                Ok(_slot) => false,
+                Err(vm) => {
+                    write("Runtime: pool sem slot para preservar espaço não liberado.\r\n");
+                    core::mem::forget(vm);
+                    false
+                }
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "none")]
 fn process_probe_vm_memory(slot: u8) -> Option<carlio_os::vma::ProcessMemoryUsage> {
     let storage = process_probe_vm_slot(slot)?;
     let guard = storage.lock();
@@ -2573,11 +2586,11 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
             .lock()
             .set_offset(self.process.id, descriptor, file.offset + amount as u64)
             .map_err(|_| carlio_os::linux_abi::EBADF)?;
-        Ok(amount)
+        Ok(usize::try_from(amount).map_err(|_| carlio_os::linux_abi::EOVERFLOW)?)
     }
 
     fn open(&mut self, path: &str, flags: u64, mode: u64) -> Result<u64, u16> {
-        let _transaction = RootfsTransactionGuard::acquire()?;
+        let _transaction = VfsMutationGuard::acquire()?;
         let create_mode = if flags & 0x40 != 0 {
             u16::try_from(mode).map_err(|_| carlio_os::linux_abi::EINVAL)?
         } else {
@@ -2640,7 +2653,7 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
             };
             drop(vfs);
             if changed {
-                persist_linux_rootfs(&_transaction)?;
+                commit_vfs_mutation(&_transaction)?;
             }
             let mut files = OPEN_FILES.lock();
             if initial_offset != 0 {
@@ -2668,7 +2681,7 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
             return Ok(bytes.len());
         }
         let descriptor = u32::try_from(descriptor).map_err(|_| carlio_os::linux_abi::EBADF)?;
-        let _transaction = RootfsTransactionGuard::acquire()?;
+        let _transaction = VfsMutationGuard::acquire()?;
         let file = OPEN_FILES
             .lock()
             .get(self.process.id, descriptor)
@@ -2697,10 +2710,10 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
             )
             .map_err(vfs_errno)?;
         drop(vfs);
-        persist_linux_rootfs(&_transaction)?;
-        let amount = u64::try_from(amount).map_err(|_| carlio_os::linux_abi::EOVERFLOW)?;
+        commit_vfs_mutation(&_transaction)?;
+        let amount_u64 = u64::try_from(amount).map_err(|_| carlio_os::linux_abi::EOVERFLOW)?;
         let next_offset = offset
-            .checked_add(amount)
+            .checked_add(amount_u64)
             .ok_or(carlio_os::linux_abi::EOVERFLOW)?;
         OPEN_FILES
             .lock()
@@ -2729,8 +2742,8 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
             .lock()
             .get(self.process.id, descriptor)
             .map_err(|_| carlio_os::linux_abi::EBADF)?;
-        let transaction = RootfsTransactionGuard::acquire()?;
-        persist_linux_rootfs(&transaction)
+        let transaction = VfsMutationGuard::acquire()?;
+        commit_vfs_mutation(&transaction)
     }
 
     fn fstat(&mut self, descriptor: u64) -> Result<carlio_os::linux_abi::LinuxStat, u16> {
@@ -2792,7 +2805,7 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
     }
 
     fn mkdir(&mut self, path: &str, mode: u16) -> Result<(), u16> {
-        let transaction = RootfsTransactionGuard::acquire()?;
+        let transaction = VfsMutationGuard::acquire()?;
         let (parent, name) = path.rsplit_once('/').ok_or(carlio_os::linux_abi::EINVAL)?;
         if name.is_empty() {
             return Err(carlio_os::linux_abi::EINVAL);
@@ -2807,7 +2820,7 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
                 mode,
             )
             .map_err(vfs_errno)?;
-        persist_linux_rootfs(&transaction)
+        commit_vfs_mutation(&transaction)
     }
 
     fn umask(&mut self, mask: u16) -> Result<u16, u16> {
@@ -2817,12 +2830,12 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
     }
 
     fn chmod(&mut self, path: &str, mode: u16) -> Result<(), u16> {
-        let transaction = RootfsTransactionGuard::acquire()?;
+        let transaction = VfsMutationGuard::acquire()?;
         PROCESS_VFS
             .lock()
             .set_mode_as(path, self.process.security.access_context(), mode)
             .map_err(vfs_errno)?;
-        persist_linux_rootfs(&transaction)
+        commit_vfs_mutation(&transaction)
     }
 
     fn fchmod(&mut self, descriptor: u64, mode: u16) -> Result<(), u16> {
@@ -2839,7 +2852,7 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
         if self.process.security.credentials.uid != 0 {
             return Err(carlio_os::linux_abi::EPERM);
         }
-        let transaction = RootfsTransactionGuard::acquire()?;
+        let transaction = VfsMutationGuard::acquire()?;
         let context = self.process.security.access_context();
         let mut vfs = PROCESS_VFS.lock();
         let metadata = vfs.metadata(path, context).map_err(vfs_errno)?;
@@ -2851,7 +2864,7 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
         )
         .map_err(vfs_errno)?;
         drop(vfs);
-        persist_linux_rootfs(&transaction)
+        commit_vfs_mutation(&transaction)
     }
 
     fn fchown(&mut self, descriptor: u64, uid: Option<u32>, gid: Option<u32>) -> Result<(), u16> {
@@ -2865,7 +2878,7 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
     }
 
     fn unlink(&mut self, path: &str) -> Result<(), u16> {
-        let transaction = RootfsTransactionGuard::acquire()?;
+        let transaction = VfsMutationGuard::acquire()?;
         if OPEN_FILES.lock().is_path_open(path) {
             return Err(carlio_os::linux_abi::EBUSY);
         }
@@ -2873,16 +2886,16 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
             .lock()
             .remove_file_as(path, self.process.security.access_context())
             .map_err(vfs_errno)?;
-        persist_linux_rootfs(&transaction)
+        commit_vfs_mutation(&transaction)
     }
 
     fn rmdir(&mut self, path: &str) -> Result<(), u16> {
-        let transaction = RootfsTransactionGuard::acquire()?;
+        let transaction = VfsMutationGuard::acquire()?;
         PROCESS_VFS
             .lock()
             .remove_dir_as(path, self.process.security.access_context())
             .map_err(vfs_errno)?;
-        persist_linux_rootfs(&transaction)
+        commit_vfs_mutation(&transaction)
     }
 
     fn seek(&mut self, descriptor: u64, offset: i64, whence: u64) -> Result<u64, u16> {
@@ -4000,108 +4013,57 @@ fn enumerate_pci() {
 }
 
 #[cfg(target_os = "none")]
-fn initialize_persistent_rootfs() {
-    write("Hermione rootfs: verificando volume de sistema.\r\n");
-    let Some(device) = AHCI_BLOCK_DEVICE.lock().take() else {
-        write("Hermione rootfs: AHCI sem dispositivo; mantendo VFS somente em RAM.\r\n");
-        return;
-    };
-    let mut volume = match carlio_os::hermione::HermioneVolume::mount(device) {
-        Ok(volume) => volume,
-        Err(_) => {
-            write("Hermione rootfs: volume ausente ou inválido; disco preservado, sem formatação automática.\r\n");
-            return;
-        }
-    };
-    write("Hermione rootfs: volume montado; lendo snapshot.\r\n");
-    let mut directory = [None; carlio_os::hermione::MAX_FILES];
-    if volume.list(&mut directory).is_err() {
-        write("Hermione rootfs: falha ao validar diretório do volume.\r\n");
-        return;
-    }
-    write("Hermione rootfs: diretório validado.\r\n");
-    let snapshot_pointer = {
-        let mut snapshot = ROOTFS_SNAPSHOT.lock();
-        snapshot.as_mut_ptr()
-    };
-    // SAFETY: rootfs initialization runs before the scheduler exposes CPL3 and
-    // is the only snapshot-buffer user until it returns.
-    let snapshot =
-        unsafe { core::slice::from_raw_parts_mut(snapshot_pointer, ROOTFS_SNAPSHOT_CAPACITY) };
-    match volume.read_file_with_progress("rootfs.img", &mut snapshot[..], |stage| {
-        write("Hermione rootfs: fase de leitura ");
-        write_u32(stage as u32);
-        write(".\r\n");
-    }) {
-        Ok(length) => {
-            let mut staging = ROOTFS_VFS_STAGING.lock();
-            match staging.restore_snapshot(&snapshot[..length]) {
-                Ok(()) => {
-                    core::mem::swap(&mut *PROCESS_VFS.lock(), &mut *staging);
-                    write("Hermione rootfs persistente montado para syscalls Linux.\r\n");
-                }
-                Err(_) => {
-                    write("Hermione rootfs: snapshot corrompido; não foi substituído.\r\n");
-                    return;
-                }
-            }
-        }
-        Err(carlio_os::hermione::FsError::FileNotFound) => {
-            let mut vfs = PROCESS_VFS.lock();
-            if vfs.create_fhs_layout().is_err()
-                || vfs
-                    .create_dir("/", "programas", Credentials { uid: 0, gid: 0 }, 0o755)
-                    .is_err()
-            {
-                write("Hermione rootfs: falha ao preparar a árvore inicial.\r\n");
-                return;
-            }
-            let length = match vfs.encode_snapshot(snapshot) {
-                Ok(length) => length,
-                Err(_) => {
-                    write("Hermione rootfs: árvore inicial excede o limite de snapshot.\r\n");
-                    return;
-                }
-            };
-            drop(vfs);
-            if volume
-                .write_file("rootfs.img", &snapshot[..length])
-                .is_err()
-            {
-                write("Hermione rootfs: não foi possível gravar o snapshot inicial.\r\n");
-                return;
-            }
-            write("Hermione rootfs inicial persistido; limite atual por arquivo: 16 KiB.\r\n");
-        }
-        Err(_) => {
-            write("Hermione rootfs: erro de leitura; mídia preservada.\r\n");
-            return;
-        }
-    }
-    *PERSISTENT_ROOTFS.lock() = Some(volume);
+fn initialize_vfs_mounts() {
+    write("VFS: rootfs ext4/FAT32 ainda não montado; usando namespace em RAM.\r\n");
 }
 
 #[cfg(target_os = "none")]
-fn persist_linux_rootfs(_transaction: &RootfsTransactionGuard) -> Result<(), u16> {
-    let (snapshot_pointer, length) = {
-        let mut snapshot = ROOTFS_SNAPSHOT.lock();
-        let length = PROCESS_VFS
-            .lock()
-            .encode_snapshot(&mut snapshot[..])
-            .map_err(|_| carlio_os::linux_abi::EIO)?;
-        (snapshot.as_mut_ptr(), length)
+fn discover_boot_storage() {
+    let mut device = AHCI_BLOCK_DEVICE.lock().take();
+    let Some(mut device) = device.take() else {
+        write("Storage: nenhum dispositivo de bloco disponível para varredura.\r\n");
+        return;
     };
-    // SAFETY: a transação atômica exclusiva impede outro escritor deste buffer
-    // até o retorno; a inicialização do rootfs termina antes de syscalls CPL3.
-    let snapshot = unsafe { core::slice::from_raw_parts(snapshot_pointer, length) };
-    let Some(mut volume) = PERSISTENT_ROOTFS.lock().take() else {
-        return Ok(());
-    };
-    let result = volume
-        .write_file("rootfs.img", snapshot)
-        .map_err(|_| carlio_os::linux_abi::EIO);
-    *PERSISTENT_ROOTFS.lock() = Some(volume);
-    result
+    match carlio_os::partition::discover(&mut device) {
+        Ok((partitions, count)) => {
+            write("Storage: partições ext4/FAT32 detectadas: ");
+            write_u32(count as u32);
+            write("\r\n");
+            for partition in partitions[..count].iter().flatten() {
+                write("  ");
+                match partition.filesystem {
+                    carlio_os::partition::Filesystem::Ext4 => write("ext4"),
+                    carlio_os::partition::Filesystem::Fat32 => write("FAT32"),
+                }
+                write(" LBA=");
+                write_u64(partition.start_lba);
+                write(" setores=");
+                write_u64(partition.sectors);
+                write("\r\n");
+            }
+        }
+        Err(error) => {
+            write("Storage: descoberta de partições falhou: ");
+            match error {
+                carlio_os::partition::DiscoveryError::Device => {
+                    write("erro de leitura do dispositivo")
+                }
+                carlio_os::partition::DiscoveryError::InvalidTable => write("tabela inválida"),
+                carlio_os::partition::DiscoveryError::UnsupportedTable => {
+                    write("formato GPT/partição não suportado")
+                }
+            }
+            write("\r\n");
+        }
+    }
+    *AHCI_BLOCK_DEVICE.lock() = Some(device);
+}
+
+#[cfg(target_os = "none")]
+fn commit_vfs_mutation(_transaction: &VfsMutationGuard) -> Result<(), u16> {
+    // File mutations remain in the RAM VFS until ext4/FAT32 write semantics
+    // and crash recovery are integrated. Do not persist through archived HermFS.
+    Ok(())
 }
 
 #[cfg(target_os = "none")]
@@ -4188,6 +4150,7 @@ fn report_pci_function(function: PciFunction) {
                         Ok(device) => {
                             *AHCI_BLOCK_DEVICE.lock() = Some(device);
                             write(". Adaptador BlockDevice pronto para rootfs.\r\n");
+                            discover_boot_storage();
                         }
                         Err(error) => {
                             write(". Adaptador indisponivel: ");
