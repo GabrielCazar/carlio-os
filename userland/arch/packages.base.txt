@@ -1,5 +1,5 @@
 # Subconjunto inicial da userland Arch para validar FHS e os pacotes base.
-# Deliberadamente não inclui kernel Linux, systemd, desktop ou pacotes AUR.
+# Perfil direto sem kernel Linux, desktop ou AUR. Dependências vêm do snapshot Arch.
 filesystem
 glibc
 bash

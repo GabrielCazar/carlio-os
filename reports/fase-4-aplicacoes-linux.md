@@ -1,5 +1,63 @@
 # Relatório — Fase 4: aplicações e pacotes Linux
 
+### Correção — ABI VFS, PT_INTERP e bootstrap de userlands — 2026-11-24
+
+O painel ainda apontava lacunas de validação em `stat`, mutações e `fsync`,
+e tratava o interpretador ELF como ausente. O limite de leitura de ELF em
+`src/main.rs` também reutilizava os 16 KiB do VFS inline. O limite do
+executável e do interpretador montados passou para 512 KiB por arquivo,
+mantendo o limite de páginas por processo. A tentativa de usar heap para
+esses buffers expandiu o heap e alterou o baseline de frames do teste de
+processos. A versão validada reutiliza os buffers estáticos do loader.
+
+- [x] Um ELF de 32 KiB vindo de ext4 testa `mkdir`, `openat`, `write`,
+  `fchmod`, `fsync`, `fstat`, `newfstatat`, `close`, `unlink` e `rmdir`.
+  Verifica tamanho e modo retornados e os erros `EFAULT`, `EBADF` e
+  `ENOENT`. A imagem usa overlay em RAM. [BIOS local](logs/fase5-abi/local-bios.log),
+  [UEFI local](logs/fase5-abi/local-uefi.log), [BIOS NAS/KVM](logs/fase5-abi/nas-bios.log)
+  e [UEFI NAS/KVM](logs/fase5-abi/nas-uefi.log).
+- [x] Na variante PIE, um interpretador de teste de 256 KiB lê `AT_BASE`
+  e `AT_ENTRY`, transfere controle ao ELF principal e exige que o teste
+  VFS complete. [BIOS local](logs/fase5-abi/local-interp-bios.log),
+  [UEFI local](logs/fase5-abi/local-interp-uefi.log), [BIOS NAS/KVM](logs/fase5-abi/nas-interp-bios.log)
+  e [UEFI NAS/KVM](logs/fase5-abi/nas-interp-uefi.log).
+- [x] Arch de 2026/11/23 com 110 pacotes e zsh 5.9.2, executado em chroot
+  sob o Linux do host. A preparação usou um checkout isolado de `origin/main`
+  e cache de pacotes de uma tentativa anterior, com assinaturas de pacotes
+  obrigatórias. A instalação puxou systemd como dependência transitiva e
+  relatou falha em um hook de initcpio. O construtor verifica os pacotes
+  instalados e publica o manifesto. A verificação elimina o falso sucesso
+  observado quando `pacstrap -N` retornou zero após timeout de download.
+  [Bootstrap](logs/fase5-abi/arch-bootstrap.log) e
+  [retorno zero sem instalação recusado](logs/fase5-abi/arch-bootstrap-falha.log).
+- [x] Ubuntu Base 24.04.5 amd64 verificada por assinatura do manifesto e
+  SHA-256, extraída no host e testada com `dpkg-query` e `/usr/bin/true`
+  em chroot no Linux do host. O manifesto modificado foi recusado.
+  [Bootstrap](logs/fase5-abi/ubuntu-bootstrap.log) e [provas host](logs/fase5-abi/ubuntu-host.log).
+
+No teste exploratório em BIOS local, `execve` carregou o `true` do Ubuntu e
+chegou ao `ld-linux`. A tarefa foi encerrada com `#UD` em CPL3 no endereço
+`0x7000000201e3` (`movq %rcx,%xmm1`), com `CR4.OSFXSR` desativado. A
+execução de SSE exige habilitação e preservação do estado por tarefa no
+scheduler. Esse teste identifica a primeira falha observada na glibc.
+[Serial](logs/fase5-abi/ubuntu-carlio-exploratorio-bios.log) e
+[registradores e desassemblagem](logs/fase5-abi/ubuntu-carlio-fault.txt).
+
+Reprodução das provas CPL3:
+
+```sh
+CARLIO_DISK_EXEC_TEST=1 scripts/build-iso.sh
+scripts/test-disk-exec-qemu.sh build/carlio-os.iso /tmp/carlioos-vfs-bios.log
+CARLIO_TEST_EXEC_INTERP=1 scripts/test-disk-exec-qemu.sh build/carlio-os.iso /tmp/carlioos-interp-bios.log
+```
+
+Passar `--firmware /usr/share/edk2/x64/OVMF_CODE.4m.fd` para UEFI e
+`--accel kvm` no NAS. As imagens de disco são descartáveis. Hardware
+físico segue pendente. A execução de glibc e da base das distribuições
+no CarlioOS segue aberta. O zsh do snapshot tem 971.816 bytes, acima da
+janela atual de leitura de ELF, e o dispatcher ainda usa apenas `mmap`
+anônimo. Instalação e rollback de pacotes no alvo continuam pendentes.
+
 ## ABI Linux: IDs de thread, relógio monotônico e `brk` CPL3 — 2026-11-19
 
 O dispatcher Linux agora separa `getpid` (PID do grupo) de `gettid` (ID da

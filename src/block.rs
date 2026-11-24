@@ -75,6 +75,19 @@ impl<D: BlockDevice> BlockDevice for BlockRegion<D> {
     }
 }
 
+pub(crate) fn crc32(bytes: &[u8]) -> u32 {
+    !crc32_update(!0, bytes)
+}
+pub(crate) fn crc32_update(mut crc: u32, bytes: &[u8]) -> u32 {
+    for byte in bytes {
+        crc ^= *byte as u32;
+        for _ in 0..8 {
+            crc = (crc >> 1) ^ (0xedb8_8320 & 0u32.wrapping_sub(crc & 1));
+        }
+    }
+    crc
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

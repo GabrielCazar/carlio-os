@@ -21,20 +21,20 @@ criada exclusivamente em `/tmp/carlioos-arch-userland-*`; a opção de destino
 personalizado só aceita esse mesmo prefixo. O construtor chama `pacstrap -N`
 (sem fallback privilegiado), usa um keyring próprio no alvo e exige assinaturas
 de pacotes. A configuração, lista de pacotes e revisão/estado do kernel ficam
-registrados no diretório da saída.
+registrados no diretório da saída. O script confirma os pacotes no banco do
+alvo e grava `packages.installed.txt` antes de anunciar sucesso.
 
 O perfil inicial em `packages.base.txt` inclui `filesystem`, `glibc`, `bash`,
-`coreutils`, `zsh`, `pacman`, `archlinux-keyring` e `tzdata`. Não inclui
-systemd, kernel Linux, drivers Linux, AUR nem desktop; o escopo inicial é uma
-rootfs mínima para desenvolver e medir a ABI Linux do CarlioOS.
+`coreutils`, `zsh`, `pacman`, `archlinux-keyring` e `tzdata`. O perfil não solicita kernel Linux, systemd, AUR ou desktop diretamente.
+O snapshot de 2026-11-23 incluiu systemd como dependência transitiva. O escopo
+é preparar uma rootfs para medir a ABI Linux do CarlioOS.
 
 ## Estado e limites
 
 Esta ferramenta prepara arquivos de uma rootfs no host; não instala uma rootfs
 no CarlioOS. A árvore não é inicializável nem executável pelo kernel atual. A
-ABI Linux ainda não tem loader dinâmico integrado, resolução completa de
-dependências `.so`, glibc funcional, pseudo-filesystems montados ou execução
-geral de ELF. Instalação de pacotes no kernel, autenticação transacional ALPM,
+O kernel carrega `PT_INTERP` para um interpretador sintético. Bibliotecas
+compartilhadas, glibc e execução de zsh no CarlioOS continuam pendentes. Instalação de pacotes no kernel, autenticação transacional ALPM,
 sandbox de payload e rollback continuam pendentes em
 `docs/MATRIZ-PACOTES.md`.
 

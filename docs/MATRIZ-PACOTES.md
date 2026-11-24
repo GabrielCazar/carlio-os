@@ -25,7 +25,11 @@ prova CPL3; isso não satisfaz a ABI de uma aplicação real.
 Para Arch, há um perfil de pacotes e um construtor host de rootfs em
 [`userland/arch/`](../userland/arch/). Seu resultado não é contabilizado como
 instalação no kernel, execução de payload, isolamento ou rollback; essas
-operações permanecem pendentes nesta matriz.
+operações permanecem pendentes nesta matriz. No host, o snapshot de
+2026/11/23 instalou 110 pacotes Arch com assinaturas obrigatórias e zsh
+5.9.2 passou em chroot. A preparação Ubuntu Base validou a assinatura da
+imagem e recusou um manifesto alterado. A instalação por APT no CarlioOS
+permanece pendente. [Evidências](../reports/fase-4-aplicacoes-linux.md#correção--abi-vfs-pt_interp-e-bootstrap-de-userlands--2026-11-24).
 
 ## Matriz de arquitetura e pré-requisitos
 

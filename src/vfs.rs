@@ -244,6 +244,15 @@ impl<const N: usize> Vfs<N> {
         }
     }
 
+    pub const SNAPSHOT_MAX: usize = SNAPSHOT_HEADER + N * (18 + NAME_MAX + VFS_INLINE_FILE_MAX);
+
+    pub fn restore_overlay(&mut self, input: &[u8]) -> Result<(), VfsError> {
+        let mounts = self.mounts;
+        let result = self.restore_snapshot(input);
+        self.mounts = mounts;
+        result
+    }
+
     /// Serializa a árvore VFS e o conteúdo dos arquivos para persistência.
     /// Mounts são estado de runtime e não fazem parte do snapshot.
     pub fn encode_snapshot(&self, output: &mut [u8]) -> Result<usize, VfsError> {

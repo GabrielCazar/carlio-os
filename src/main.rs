@@ -79,7 +79,18 @@ const AP_STACK_SIZE: usize = 16 * 1024;
 const PROCESS_KERNEL_STACK_SIZE: usize = 128 * 1024;
 
 #[cfg(target_os = "none")]
-static mut ERROR_LOG: ErrorLog<ERROR_LOG_CAPACITY> = ErrorLog::new();
+static ERROR_LOG: IrqSpinLock<ErrorLog<ERROR_LOG_CAPACITY>> = IrqSpinLock::new(ErrorLog::new());
+#[cfg(target_os = "none")]
+static PENDING_ERRORS: IrqSpinLock<ErrorLog<ERROR_LOG_CAPACITY>> =
+    IrqSpinLock::new(ErrorLog::new());
+#[cfg(target_os = "none")]
+static PERSISTENT_ERRORS: IrqSpinLock<
+    Option<carlio_os::persistent_log::PersistentLog<ahci::AhciBlockDevice>>,
+> = IrqSpinLock::new(None);
+#[cfg(target_os = "none")]
+type KernelSwap = carlio_os::swap::SwapStore<'static, ahci::AhciBlockDevice>;
+#[cfg(target_os = "none")]
+static BOOT_SWAP: IrqSpinLock<Option<KernelSwap>> = IrqSpinLock::new(None);
 #[cfg(target_os = "none")]
 static mut HHDM_OFFSET: u64 = 0;
 #[cfg(target_os = "none")]
@@ -103,11 +114,13 @@ const PROCESS_VFS_CAPACITY: usize = 40;
 #[cfg(target_os = "none")]
 static PROCESS_VFS: IrqSpinLock<Vfs<PROCESS_VFS_CAPACITY>> = IrqSpinLock::new(Vfs::new());
 #[cfg(target_os = "none")]
-static ELF_LOAD_SCRATCH: IrqSpinLock<[u8; carlio_os::vfs::VFS_INLINE_FILE_MAX]> =
-    IrqSpinLock::new([0; carlio_os::vfs::VFS_INLINE_FILE_MAX]);
+// Mounted ELF files are independent of the inline overlay's file size.
+const EXEC_FILE_MAX: usize = 512 * 1024;
 #[cfg(target_os = "none")]
-static ELF_INTERPRETER_SCRATCH: IrqSpinLock<[u8; carlio_os::vfs::VFS_INLINE_FILE_MAX]> =
-    IrqSpinLock::new([0; carlio_os::vfs::VFS_INLINE_FILE_MAX]);
+static ELF_LOAD_SCRATCH: IrqSpinLock<[u8; EXEC_FILE_MAX]> = IrqSpinLock::new([0; EXEC_FILE_MAX]);
+#[cfg(target_os = "none")]
+static ELF_INTERPRETER_SCRATCH: IrqSpinLock<[u8; EXEC_FILE_MAX]> =
+    IrqSpinLock::new([0; EXEC_FILE_MAX]);
 #[cfg(target_os = "none")]
 static ROOTFS_COPY_SCRATCH: IrqSpinLock<[u8; carlio_os::vfs::VFS_INLINE_FILE_MAX]> =
     IrqSpinLock::new([0; carlio_os::vfs::VFS_INLINE_FILE_MAX]);
@@ -174,21 +187,61 @@ static ROOTFS_BACKEND: IrqSpinLock<Option<BootRootfs>> = IrqSpinLock::new(None);
 static VFS_MUTATION_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 #[cfg(target_os = "none")]
-struct VfsMutationGuard;
+const VFS_SNAPSHOT_MAX: usize = Vfs::<PROCESS_VFS_CAPACITY>::SNAPSHOT_MAX;
+#[cfg(target_os = "none")]
+type OverlayStore =
+    carlio_os::vfs_store::VfsStore<carlio_os::block::BlockRegion<ahci::AhciBlockDevice>>;
+#[cfg(target_os = "none")]
+static VFS_STORE: IrqSpinLock<Option<OverlayStore>> = IrqSpinLock::new(None);
+#[cfg(target_os = "none")]
+static VFS_STORE_FAILED: AtomicBool = AtomicBool::new(false);
+#[cfg(target_os = "none")]
+static VFS_BEFORE: IrqSpinLock<[u8; VFS_SNAPSHOT_MAX]> = IrqSpinLock::new([0; VFS_SNAPSHOT_MAX]);
+#[cfg(target_os = "none")]
+static VFS_AFTER: IrqSpinLock<[u8; VFS_SNAPSHOT_MAX]> = IrqSpinLock::new([0; VFS_SNAPSHOT_MAX]);
+
+#[cfg(target_os = "none")]
+struct VfsMutationGuard {
+    before: Option<usize>,
+    committed: core::cell::Cell<bool>,
+}
 
 #[cfg(target_os = "none")]
 impl VfsMutationGuard {
     fn acquire() -> Result<Self, u16> {
+        use carlio_os::linux_abi::{EAGAIN, EIO};
         VFS_MUTATION_ACTIVE
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .map(|_| Self)
-            .map_err(|_| carlio_os::linux_abi::EAGAIN)
+            .map_err(|_| EAGAIN)?;
+        let mut guard = Self {
+            before: None,
+            committed: core::cell::Cell::new(false),
+        };
+        if VFS_STORE_FAILED.load(Ordering::Acquire) {
+            return Err(EIO);
+        }
+        if VFS_STORE.lock().is_some() {
+            guard.before = Some(
+                PROCESS_VFS
+                    .lock()
+                    .encode_snapshot(&mut *VFS_BEFORE.lock())
+                    .map_err(vfs_errno)?,
+            );
+        }
+        Ok(guard)
     }
 }
 
 #[cfg(target_os = "none")]
 impl Drop for VfsMutationGuard {
     fn drop(&mut self) {
+        if let Some(length) = self.before.filter(|_| !self.committed.get()) {
+            let mut vfs = PROCESS_VFS.lock();
+            let before = VFS_BEFORE.lock();
+            if vfs.restore_overlay(&before[..length]).is_err() {
+                VFS_STORE_FAILED.store(true, Ordering::Release);
+            }
+        }
         VFS_MUTATION_ACTIVE.store(false, Ordering::Release);
     }
 }
@@ -909,6 +962,9 @@ mod ahci;
 #[path = "arch/x86_64/e1000.rs"]
 mod e1000;
 #[cfg(target_os = "none")]
+#[path = "arch/x86_64/entropy.rs"]
+mod entropy;
+#[cfg(target_os = "none")]
 #[path = "arch/x86_64/idt.rs"]
 mod idt;
 #[cfg(target_os = "none")]
@@ -964,6 +1020,7 @@ pub extern "C" fn _start() -> ! {
     enumerate_pci();
     boot_progress(70, "detecção de hardware");
     initialize_vfs_mounts();
+    initialize_persistent_storage();
     boot_progress(82, "VFS e rootfs");
     unsafe { idt::install_timer_frame_switch(timer_process_switch) };
     if PAGE_TABLE_PROBE_PENDING.swap(false, Ordering::AcqRel) {
@@ -1126,10 +1183,193 @@ fn run_smp_parallel_probe() {
 #[cfg(not(target_os = "none"))]
 fn main() {}
 
+#[cfg(all(target_os = "none", feature = "storage-test"))]
+struct StorageCutDisk {
+    disk: ahci::AhciBlockDevice,
+    cut: bool,
+    metadata_cut: bool,
+}
+
+#[cfg(all(target_os = "none", feature = "storage-test"))]
+impl carlio_os::block::BlockDevice for StorageCutDisk {
+    fn sector_count(&self) -> u64 {
+        self.disk.sector_count()
+    }
+
+    fn read_sector(
+        &mut self,
+        lba: u64,
+        out: &mut [u8; 512],
+    ) -> Result<(), carlio_os::block::BlockError> {
+        self.disk.read_sector(lba, out)
+    }
+
+    fn write_sector(
+        &mut self,
+        lba: u64,
+        data: &[u8; 512],
+    ) -> Result<(), carlio_os::block::BlockError> {
+        if self.cut && lba >= 2048 {
+            // Simulate a torn sector at the device boundary, then stop before
+            // the log can flush or publish the new sequence.
+            let mut torn = *data;
+            if self.metadata_cut {
+                let mut previous = [0; 512];
+                self.disk.read_sector(lba, &mut previous)?;
+                let first_change = data
+                    .iter()
+                    .zip(previous)
+                    .position(|(&new, old)| new != old)
+                    .ok_or(carlio_os::block::BlockError::Device)?;
+                let half_start = (first_change / 256) * 256;
+                torn[half_start..half_start + 256].fill(0);
+            } else {
+                torn[256..].fill(0);
+            }
+            self.disk.write_sector(lba, &torn)?;
+            write("Armazenamento: setor parcial escrito; flush pendente.\r\n");
+            loop {
+                core::hint::spin_loop();
+            }
+        }
+        self.disk.write_sector(lba, data)
+    }
+
+    fn flush(&mut self) -> Result<(), carlio_os::block::BlockError> {
+        self.disk.flush()
+    }
+}
+
+#[cfg(all(target_os = "none", feature = "storage-test"))]
+fn filesystem_cut_probe(cut: bool) -> Option<()> {
+    use carlio_os::block::BlockDevice;
+
+    const PARTITION: u64 = 2048;
+    const JOURNAL: u64 = 64;
+    const PATH: &str = "/probe.bin";
+    let mut disk = ahci::block_device().ok()?;
+    let mut marker = [0; 512];
+    disk.read_sector(0, &mut marker).ok()?;
+    if &marker[..15] != b"CARLIO-FS-TEST1" || marker[16..].iter().any(|&byte| byte != 0) {
+        return None;
+    }
+    let disk = StorageCutDisk {
+        disk,
+        cut,
+        metadata_cut: false,
+    };
+    let before = [0x35; 512];
+    let after = [0x6d; 512];
+    let mut current = [0; 512];
+    match marker[15] {
+        1 => {
+            let mut fs = carlio_os::ext4::Ext4Volume::mount(disk, PARTITION).ok()?;
+            if cut {
+                fs.read_path(PATH, &mut current)
+                    .ok()
+                    .filter(|&len| len == 512)?;
+                if current == before {
+                    fs.overwrite_file_sector(PATH, JOURNAL, &after).ok()?;
+                }
+                return None;
+            }
+            fs.recover_file_sector(PATH, JOURNAL)
+                .ok()
+                .filter(|&replayed| replayed)?;
+            fs.read_path(PATH, &mut current)
+                .ok()
+                .filter(|&len| len == 512)?;
+            fs.recover_file_sector(PATH, JOURNAL)
+                .ok()
+                .filter(|&replayed| !replayed)?;
+        }
+        2 => {
+            let mut fs = carlio_os::fat32::Fat32Volume::mount(disk, PARTITION).ok()?;
+            if cut {
+                fs.read_path(PATH, &mut current)
+                    .ok()
+                    .filter(|&len| len == 512)?;
+                if current == before {
+                    fs.overwrite_file_sector(PATH, JOURNAL, &after).ok()?;
+                }
+                return None;
+            }
+            fs.recover_file_sector(PATH, JOURNAL)
+                .ok()
+                .filter(|&replayed| replayed)?;
+            fs.read_path(PATH, &mut current)
+                .ok()
+                .filter(|&len| len == 512)?;
+            fs.recover_file_sector(PATH, JOURNAL)
+                .ok()
+                .filter(|&replayed| !replayed)?;
+        }
+        _ => return None,
+    }
+    if current != after {
+        return None;
+    }
+    write("Filesystem: redo após corte e segunda recuperação idempotente OK.\r\n");
+    Some(())
+}
+
+#[cfg(all(target_os = "none", feature = "storage-test"))]
+fn filesystem_metadata_probe(cut: bool) -> Option<()> {
+    use carlio_os::block::BlockDevice;
+    use carlio_os::vfs::ReadOnlyMountBackend;
+
+    const PARTITION: u64 = 2048;
+    const JOURNAL: u64 = 64;
+    const PATH: &str = "/probe.bin";
+    let mut disk = ahci::block_device().ok()?;
+    let mut marker = [0; 512];
+    disk.read_sector(0, &mut marker).ok()?;
+    if &marker[..15] != b"CARLIO-FS-META1" || marker[16..].iter().any(|&byte| byte != 0) {
+        return None;
+    }
+    let disk = StorageCutDisk {
+        disk,
+        cut,
+        metadata_cut: true,
+    };
+    let mut content = [0; 512];
+    match marker[15] {
+        1 => {
+            let mut fs = carlio_os::ext4::Ext4Volume::mount(disk, PARTITION).ok()?;
+            if cut {
+                (fs.metadata(PATH).ok()?.mode == 0o644).then_some(())?;
+                fs.set_inode_mode(PATH, JOURNAL, 0o640).ok()?;
+                return None;
+            }
+            fs.recover_inode_mode(PATH, JOURNAL).ok()?.then_some(())?;
+            (fs.metadata(PATH).ok()?.mode == 0o640).then_some(())?;
+            (fs.read_file(PATH, &mut content).ok()? == 512).then_some(())?;
+            (!fs.recover_inode_mode(PATH, JOURNAL).ok()?).then_some(())?;
+        }
+        2 => {
+            let mut fs = carlio_os::fat32::Fat32Volume::mount(disk, PARTITION).ok()?;
+            if cut {
+                (fs.metadata(PATH).ok()?.mode == 0o666).then_some(())?;
+                fs.set_file_read_only(PATH, JOURNAL, true).ok()?;
+                return None;
+            }
+            fs.recover_file_attributes(JOURNAL).ok()?.then_some(())?;
+            (fs.metadata(PATH).ok()?.mode == 0o444).then_some(())?;
+            (fs.read_file(PATH, &mut content).ok()? == 512).then_some(())?;
+            (!fs.recover_file_attributes(JOURNAL).ok()?).then_some(())?;
+        }
+        _ => return None,
+    }
+    (content == [0x35; 512]).then_some(())?;
+    write("Filesystem: metadados nativos recuperados e segunda recuperação idempotente OK.\r\n");
+    Some(())
+}
+
 #[cfg(target_os = "none")]
 fn shell() -> ! {
     let mut line = [0u8; INPUT_LIMIT];
     loop {
+        flush_persistent_errors();
         write("carlio> ");
         let mut len = 0;
         let mut overflowed = false;
@@ -1166,6 +1406,40 @@ fn shell() -> ! {
         }
         let command = core::str::from_utf8(&line[..len]).unwrap_or("");
         #[cfg(all(target_os = "none", feature = "storage-test"))]
+        if matches!(
+            command,
+            "vfs-teste-gravar" | "vfs-teste-ler" | "vfs-teste-alterar"
+        ) {
+            if vfs_storage_probe(command).is_err() {
+                write("VFS: teste falhou.\r\n");
+            }
+            continue;
+        }
+        #[cfg(all(target_os = "none", feature = "storage-test"))]
+        if matches!(command, "diskteste-remocao" | "diskteste-timeout") {
+            let (result, success) = if command == "diskteste-timeout" {
+                (
+                    ahci::disposable_timeout_test(),
+                    "AHCI: nova leitura após COMRESET OK.\r\n",
+                )
+            } else {
+                (
+                    ahci::disposable_removal_test(),
+                    "AHCI: remoção detectada; buffer e descritor protegidos.\r\n",
+                )
+            };
+            match result {
+                Ok(()) => write(success),
+                Err(error) => {
+                    record_error(error);
+                    write("AHCI: teste falhou: ");
+                    write(error.message());
+                    write("\r\n");
+                }
+            }
+            continue;
+        }
+        #[cfg(all(target_os = "none", feature = "storage-test"))]
         if command == "diskteste" {
             write("Teste AHCI em disco QEMU descartável...\r\n");
             match unsafe { ahci::disposable_disk_test() } {
@@ -1178,6 +1452,100 @@ fn shell() -> ! {
                     write(error.message());
                     write("\r\n");
                 }
+            }
+            continue;
+        }
+        #[cfg(all(target_os = "none", feature = "storage-test"))]
+        if matches!(
+            command,
+            "log-teste-gravar" | "log-teste-corte" | "log-teste-ler"
+        ) {
+            use carlio_os::{
+                block::BlockRegion,
+                persistent_log::{PersistentLog, MAX_RECORD},
+                swap::PAGE_SIZE,
+            };
+            // Only the test build can access this fixed region on the disposable disk.
+            const RECORD: &[u8] = b"CarlioOS: persistencia entre boots";
+            let result = (|| {
+                let mut disk = ahci::block_device().ok()?;
+                carlio_os::storage_reserve::StorageReserve::detect(&mut disk).ok()??;
+                let region = BlockRegion::new(
+                    StorageCutDisk {
+                        disk,
+                        cut: command == "log-teste-corte",
+                        metadata_cut: false,
+                    },
+                    2048,
+                    8,
+                )
+                .ok()?;
+                let mut log = PersistentLog::open(region).ok()?;
+                if command == "log-teste-corte" {
+                    let _ = log.append(&[0x5a; MAX_RECORD]);
+                    return None;
+                }
+                if command == "log-teste-gravar" {
+                    log.append(RECORD).ok().filter(|seq| *seq == 1)?;
+                    for sequence in 2..=4 {
+                        log.append(RECORD).ok().filter(|&seq| seq == sequence)?;
+                    }
+                    let mut swap_guard = lock_swap();
+                    let swap = swap_guard.as_mut()?;
+                    let page = [0x6a; PAGE_SIZE];
+                    let mut restored = [0; PAGE_SIZE];
+                    let handle = swap.page_out(0, &page).ok()?;
+                    swap.page_in(0, &handle, &mut restored).ok()?;
+                    swap.release(0, &handle).ok()?;
+                    if page != restored {
+                        return None;
+                    }
+                    write("Swap: round-trip cifrado via AHCI OK.\r\n");
+                    record_error(KernelError::InputTooLong);
+                    flush_persistent_errors();
+                    write("Log persistente: gravação e flush OK.\r\n");
+                } else {
+                    let mut record = [0; MAX_RECORD];
+                    let count = log.read(1, &mut record).ok()??;
+                    let mut errors = PERSISTENT_ERRORS.lock();
+                    let errors = errors.as_mut()?;
+                    let mut event = [0; MAX_RECORD];
+                    let latest = errors.latest_sequence()?;
+                    let found_event = (latest.saturating_sub(7).max(1)..=latest).rev().any(|seq| {
+                        errors
+                            .read(seq, &mut event)
+                            .ok()
+                            .flatten()
+                            .is_some_and(|len| {
+                                &event[..len] == KernelError::InputTooLong.message().as_bytes()
+                            })
+                    });
+                    if &record[..count] != RECORD
+                        || log.latest_sequence() != Some(4)
+                        || !found_event
+                    {
+                        return None;
+                    }
+                    write("Log persistente: leitura após reboot OK.\r\n");
+                }
+                Some(())
+            })();
+            if result.is_none() {
+                write("Log persistente: teste falhou.\r\n");
+            }
+            continue;
+        }
+        #[cfg(all(target_os = "none", feature = "storage-test"))]
+        if matches!(command, "fs-meta-corte" | "fs-meta-recuperar") {
+            if filesystem_metadata_probe(command == "fs-meta-corte").is_none() {
+                write("Filesystem: teste falhou.\r\n");
+            }
+            continue;
+        }
+        #[cfg(all(target_os = "none", feature = "storage-test"))]
+        if matches!(command, "fs-teste-corte" | "fs-teste-recuperar") {
+            if filesystem_cut_probe(command == "fs-teste-corte").is_none() {
+                write("Filesystem: teste falhou.\r\n");
             }
             continue;
         }
@@ -1210,22 +1578,30 @@ fn shell() -> ! {
             _ => {}
         }
         match parse_command(command) {
-            Command::Help => write("Comandos: ajuda, sobre, usuario, permissoes, erros, logs, limpar, parar.\r\n"),
+            Command::Help => write(
+                "Comandos: ajuda, sobre, usuario, permissoes, erros, logs, limpar, parar.\r\n",
+            ),
             Command::About => {
                 write("carlIO OS | Criado por João G.R.Santos\r\n");
                 write("Sistema operacional experimental x86_64 escrito em Rust.\r\n");
             }
             Command::User => write("usuário: núcleo do sistema (nível de privilégio 0)\r\n"),
-            Command::Permissions => write("Política demonstrativa: convidado pode consultar o estado; alteração do sistema é negada.\r\nAviso: os processos ainda não estão isolados; o núcleo inteiro executa no nível 0.\r\n"),
+            Command::Permissions => write(
+                "Política demonstrativa: convidado pode consultar o estado; alteração do sistema é negada.\r\nAviso: os processos ainda não estão isolados; o núcleo inteiro executa no nível 0.\r\n",
+            ),
             Command::Errors => report_errors(),
             #[cfg(target_os = "none")]
             Command::Logs => report_errors_markdown(),
             #[cfg(not(target_os = "none"))]
-            Command::Logs => {},
+            Command::Logs => {}
             Command::Clear => write("\x1b[2J\x1b[H"),
             Command::Halt => {
                 write("Processador parado.\r\n");
-                loop { unsafe { asm!("cli; hlt", options(nomem, nostack)); } }
+                loop {
+                    unsafe {
+                        asm!("cli; hlt", options(nomem, nostack));
+                    }
+                }
             }
             Command::Unknown => write("Comando desconhecido. Digite 'ajuda'.\r\n"),
         }
@@ -1906,9 +2282,9 @@ fn make_process_space(
             return Err(ENOMEM);
         }
     };
-    let mut scratch = ELF_LOAD_SCRATCH.lock();
-    let mut interpreter_scratch = ELF_INTERPRETER_SCRATCH.lock();
     let image = {
+        let mut program = ELF_LOAD_SCRATCH.lock();
+        let mut interpreter = ELF_INTERPRETER_SCRATCH.lock();
         let vfs = PROCESS_VFS.lock();
         let mut backend = ROOTFS_BACKEND.lock();
         let loaded = match backend.as_mut() {
@@ -1922,8 +2298,8 @@ fn make_process_space(
                 backend,
                 path,
                 context,
-                &mut scratch[..],
-                &mut interpreter_scratch[..],
+                &mut program[..],
+                &mut interpreter[..],
                 &mut target,
             ),
             None => {
@@ -1931,8 +2307,8 @@ fn make_process_space(
                     &vfs,
                     path,
                     context,
-                    &mut scratch[..],
-                    &mut interpreter_scratch[..],
+                    &mut program[..],
+                    &mut interpreter[..],
                     &mut target,
                 )
             }
@@ -2117,7 +2493,11 @@ fn linux_syscall_probe_task() -> ([u8; 1024], usize) {
     const CODE_VA: u64 = 0x0000_4000_0000_3000;
     const STACK_VA: u64 = CODE_VA + 4096;
     const MESSAGE: &[u8] = b"write ok\n";
-    const PATH: &[u8] = b"/programas/probe\0";
+    let probe_path: &[u8] = if cfg!(feature = "disk-read-test") {
+        b"/probe.bin\0"
+    } else {
+        b"/programas/probe\0"
+    };
     let mut code = [0u8; 1024];
     let mut length = 0usize;
     // Sample the scheduled compatibility entry before the native calls.
@@ -2158,7 +2538,7 @@ fn linux_syscall_probe_task() -> ([u8; 1024], usize) {
     }
     append_probe_bytes(&mut code, &mut length, &[0x31, 0xff, 0x31, 0xf6]);
     append_probe_syscall(&mut code, &mut length, carlio_os::linux_abi::SYS_GETGROUPS);
-    // openat(AT_FDCWD, "/programas/probe", O_RDONLY), then read one byte
+    // openat(AT_FDCWD, probe_path, O_RDONLY), then read one byte
     // into writable user stack memory and close the descriptor.
     append_probe_bytes(&mut code, &mut length, &[0x48, 0xbf]);
     append_probe_bytes(&mut code, &mut length, &((-100i64) as u64).to_le_bytes());
@@ -2211,6 +2591,18 @@ fn linux_syscall_probe_task() -> ([u8; 1024], usize) {
     append_probe_syscall(&mut code, &mut length, carlio_os::linux_abi::SYS_MMAP);
     append_probe_bytes(&mut code, &mut length, &[0xc6, 0x00, 0x51]); // *rax = 'Q'
     append_probe_bytes(&mut code, &mut length, &[0x48, 0x89, 0xc3]); // rbx = mapping
+    if cfg!(feature = "storage-test") {
+        append_probe_bytes(&mut code, &mut length, &[0x48, 0x89, 0xdf]); // rdi = mapping
+        append_probe_bytes(&mut code, &mut length, &[0xbe, 0, 0x10, 0, 0]); // len
+        append_probe_bytes(&mut code, &mut length, &[0xba, 21, 0, 0, 0]); // MADV_PAGEOUT
+        append_probe_syscall(&mut code, &mut length, carlio_os::linux_abi::SYS_MADVISE);
+        // cmp byte [rbx], 'Q'; je past ud2. The load must fault and retry.
+        append_probe_bytes(
+            &mut code,
+            &mut length,
+            &[0x80, 0x3b, 0x51, 0x74, 0x02, 0x0f, 0x0b],
+        );
+    }
     append_probe_bytes(&mut code, &mut length, &[0x48, 0x89, 0xdf]); // rdi = mapping
     append_probe_bytes(&mut code, &mut length, &[0xbe, 0x00, 0x10, 0, 0]);
     append_probe_bytes(&mut code, &mut length, &[0xba, 1, 0, 0, 0]); // PROT_READ
@@ -2261,7 +2653,7 @@ fn linux_syscall_probe_task() -> ([u8; 1024], usize) {
     let message_offset = length;
     append_probe_bytes(&mut code, &mut length, MESSAGE);
     let path_offset = length;
-    append_probe_bytes(&mut code, &mut length, PATH);
+    append_probe_bytes(&mut code, &mut length, probe_path);
     let denied_path_offset = length;
     append_probe_bytes(&mut code, &mut length, b"/programas/restrito\0");
     code[message_pointer_offset..message_pointer_offset + 8]
@@ -2606,6 +2998,24 @@ struct KernelLinuxSyscallIo {
 
 #[cfg(target_os = "none")]
 impl KernelLinuxSyscallIo {
+    fn restore_user_range(&mut self, address: u64, length: u64) -> Result<(), u16> {
+        if length == 0 || BOOT_SWAP.try_lock().is_some_and(|swap| swap.is_none()) {
+            return Ok(());
+        }
+        let end = address
+            .checked_add(length)
+            .ok_or(carlio_os::linux_abi::EFAULT)?;
+        let owner = self.process.thread_group_id;
+        self.with_process_vm(|vm| {
+            if let Some(page) = vm.swapped_address() {
+                if page < end && page + 4096 > address {
+                    restore_vm_page(vm, owner, page)?;
+                }
+            }
+            Ok(())
+        })
+    }
+
     fn with_process_vm<R>(
         &mut self,
         operation: impl FnOnce(&mut RuntimeProcessVm) -> Result<R, u16>,
@@ -2629,6 +3039,60 @@ impl KernelLinuxSyscallIo {
         }
         operation(&mut entry.value)
     }
+}
+
+#[cfg(target_os = "none")]
+fn lock_swap() -> carlio_os::sync::IrqSpinLockGuard<'static, Option<KernelSwap>> {
+    loop {
+        if let Some(guard) = BOOT_SWAP.try_lock() {
+            return guard;
+        }
+        lapic::wait_for_shootdown_progress();
+    }
+}
+
+#[cfg(target_os = "none")]
+fn swap_frame_ptr(physical: u64) -> Result<*mut carlio_os::swap::Page, FrameError> {
+    let hhdm = unsafe { core::ptr::addr_of!(HHDM_OFFSET).read_volatile() };
+    hhdm.checked_add(physical)
+        .map(|address| address as *mut carlio_os::swap::Page)
+        .ok_or(FrameError::InvalidPhysicalAddress)
+}
+
+#[cfg(target_os = "none")]
+fn restore_vm_page(vm: &mut RuntimeProcessVm, owner: u64, address: u64) -> Result<bool, u16> {
+    if vm.swapped_address() != Some(address & !0xfff) {
+        return Ok(false);
+    }
+    let mut store = lock_swap();
+    let swap = store.as_mut().ok_or(carlio_os::linux_abi::EIO)?;
+    vm.page_in(address, owner, swap, |physical, page| {
+        // The new frame is exclusively held by this VM and is unpublished.
+        unsafe { swap_frame_ptr(physical)?.write(*page) };
+        Ok(())
+    })
+    .map_err(process_vm_errno)
+}
+
+#[cfg(target_os = "none")]
+pub(crate) fn process_swap_fault(cpu: usize, error: u64, address: u64) -> bool {
+    // A present or malformed PTE is a protection fault. Only CPL3
+    // not-present faults reach this path.
+    if error & (1 | 8) != 0 {
+        return false;
+    }
+    let Some(process) = PROCESS_SCHEDULER.current(cpu) else {
+        return false;
+    };
+    let mut context = KernelLinuxSyscallIo { process, cpu };
+    let restored = context
+        .with_process_vm(|vm| restore_vm_page(vm, process.thread_group_id, address))
+        == Ok(true);
+    #[cfg(feature = "storage-test")]
+    if restored {
+        write("Swap VM: page fault CPL3 restaurado.\r\n");
+    }
+    restored
 }
 
 #[cfg(target_os = "none")]
@@ -2780,29 +3244,63 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
         descriptor: u64,
         offset: u64,
     ) -> Result<u64, u16> {
+        let owner = self.process.thread_group_id;
         self.with_process_vm(|vm| {
+            if let Some(page) = vm.swapped_address() {
+                restore_vm_page(vm, owner, page)?;
+            }
             vm.mmap_linux(address, length, protection, flags, descriptor, offset)
                 .map_err(process_vm_errno)
         })
     }
 
     fn munmap(&mut self, address: u64, length: u64) -> Result<(), u16> {
+        self.restore_user_range(address, length)?;
         self.with_process_vm(|vm| vm.munmap(address, length).map_err(process_vm_errno))
     }
 
     fn mprotect(&mut self, address: u64, length: u64, protection: u64) -> Result<(), u16> {
+        self.restore_user_range(address, length)?;
         self.with_process_vm(|vm| {
             vm.mprotect(address, length, protection)
                 .map_err(process_vm_errno)
         })
     }
 
+    fn madvise(&mut self, address: u64, length: u64, advice: u64) -> Result<(), u16> {
+        use carlio_os::linux_abi::{EINVAL, EOPNOTSUPP, MADV_PAGEOUT};
+
+        if advice != MADV_PAGEOUT || self.process.is_thread() {
+            return Err(EOPNOTSUPP);
+        }
+        if length != 4096 || !address.is_multiple_of(4096) {
+            return Err(EINVAL);
+        }
+        let owner = self.process.id;
+        self.with_process_vm(|vm| {
+            let mut store = lock_swap();
+            let swap = store.as_mut().ok_or(EOPNOTSUPP)?;
+            vm.evict_anonymous(address, owner, swap, |physical| {
+                // The running process is the only current reader/writer of its frame.
+                Ok(unsafe { swap_frame_ptr(physical)?.read() })
+            })
+            .map_err(process_vm_errno)
+        })
+    }
+
     fn brk(&mut self, current: u64, requested: u64) -> u64 {
-        self.with_process_vm(|vm| vm.brk(requested).map_err(process_vm_errno))
-            .unwrap_or(current)
+        let owner = self.process.thread_group_id;
+        self.with_process_vm(|vm| {
+            if let Some(page) = vm.swapped_address() {
+                restore_vm_page(vm, owner, page)?;
+            }
+            vm.brk(requested).map_err(process_vm_errno)
+        })
+        .unwrap_or(current)
     }
 
     fn copy_from_user(&mut self, address: u64, destination: &mut [u8]) -> Result<(), u16> {
+        self.restore_user_range(address, destination.len() as u64)?;
         let hhdm = unsafe { core::ptr::addr_of!(HHDM_OFFSET).read_volatile() };
         let lookup = PageTableManager::new(BootPageTableAccess { hhdm }, self.process.page_table)
             .map_err(|_| carlio_os::linux_abi::EFAULT)?;
@@ -2811,6 +3309,7 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
     }
 
     fn copy_to_user(&mut self, address: u64, source: &[u8]) -> Result<(), u16> {
+        self.restore_user_range(address, source.len() as u64)?;
         let hhdm = unsafe { core::ptr::addr_of!(HHDM_OFFSET).read_volatile() };
         let lookup = PageTableManager::new(BootPageTableAccess { hhdm }, self.process.page_table)
             .map_err(|_| carlio_os::linux_abi::EFAULT)?;
@@ -2819,6 +3318,7 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
     }
 
     fn validate_user_write(&mut self, address: u64, length: usize) -> Result<(), u16> {
+        self.restore_user_range(address, length as u64)?;
         let hhdm = unsafe { core::ptr::addr_of!(HHDM_OFFSET).read_volatile() };
         let lookup = PageTableManager::new(BootPageTableAccess { hhdm }, self.process.page_table)
             .map_err(|_| carlio_os::linux_abi::EFAULT)?;
@@ -3434,7 +3934,7 @@ fn process_vm_errno(error: carlio_os::vma::ProcessVmError) -> u16 {
         E::Memory(FrameError::InvalidVirtualAddress | FrameError::InvalidPageFlags) => {
             carlio_os::linux_abi::EINVAL
         }
-        E::Memory(_) | E::RollbackFailed => carlio_os::linux_abi::EIO,
+        E::Memory(_) | E::RollbackFailed | E::Swap => carlio_os::linux_abi::EIO,
     }
 }
 
@@ -3626,7 +4126,9 @@ pub(crate) fn process_probe_result() -> u64 {
         }
     }
     if ap_probe_passed {
-        write("SMP CPL3: mmap/munmap concluídos nos dois APs; sobreposição simultânea e retorno a idle confirmados.\r\n");
+        write(
+            "SMP CPL3: mmap/munmap concluídos nos dois APs; sobreposição simultânea e retorno a idle confirmados.\r\n",
+        );
         write("SMP CPL3 ciclos: AP1=");
         write_usize(AP_VM_STRESS_MUNMAPS[0].load(Ordering::Acquire));
         write(", AP2=");
@@ -3700,7 +4202,9 @@ pub(crate) fn process_probe_result() -> u64 {
     }
     let memory_probe_mask = LINUX_MEMORY_PROBE_MASK.load(Ordering::Acquire);
     if memory_probe_mask & 0x1f == 0x1f {
-        write("ABI Linux: mmap/mprotect/munmap/brk CPL3 validaram ownership e permissões de página.\r\n");
+        write(
+            "ABI Linux: mmap/mprotect/munmap/brk CPL3 validaram ownership e permissões de página.\r\n",
+        );
     } else {
         write("ABI Linux: probe CPL3 de mmap/munmap incompleto; máscara=");
         write_hex_u64(memory_probe_mask as u64);
@@ -3831,6 +4335,18 @@ fn destroy_process_vm(
             || expected_owner.is_some_and(|id| entry.owner != Some(id))
     }) {
         return false;
+    }
+    if let Some(entry) = guard
+        .as_mut()
+        .filter(|entry| entry.value.swapped_address().is_some())
+    {
+        let mut swap = lock_swap();
+        let Some((owner, swap)) = entry.owner.zip(swap.as_mut()) else {
+            return false;
+        };
+        if entry.value.discard_swap(owner, swap).is_err() {
+            return false;
+        }
     }
     let Some(ProcessVmSlot { owner, value: vm }) = guard.take() else {
         return false;
@@ -4017,19 +4533,86 @@ fn prepare_ring3_elf_fixture(bytes: &mut [u8; 120]) {
 
 #[cfg(target_os = "none")]
 fn record_error(error: KernelError) {
-    // O kernel ainda executa somente na CPU de boot; o logger será protegido
-    // por lock/atomics quando SMP e interrupções forem habilitados.
-    unsafe {
-        core::ptr::addr_of_mut!(ERROR_LOG)
-            .as_mut()
-            .unwrap()
-            .record(error);
+    if let Some(mut log) = ERROR_LOG.try_lock() {
+        log.record(error);
+    }
+    if !matches!(
+        error,
+        KernelError::SerialReadTimeout | KernelError::SerialWriteTimeout
+    ) {
+        if let Some(mut pending) = PENDING_ERRORS.try_lock() {
+            pending.record(error);
+        }
+    }
+}
+
+#[cfg(target_os = "none")]
+fn initialize_persistent_storage() {
+    use carlio_os::{persistent_log::PersistentLog, storage_reserve::StorageReserve};
+
+    let Ok(mut device) = ahci::block_device() else {
+        return;
+    };
+    let Ok(Some(reserve)) = StorageReserve::detect(&mut device) else {
+        return;
+    };
+    if reserve.has_vfs() {
+        initialize_vfs_store(reserve);
+    }
+    if let Ok(log) = reserve.log(device).and_then(|region| {
+        PersistentLog::open(region).map_err(|_| carlio_os::block::BlockError::Device)
+    }) {
+        *PERSISTENT_ERRORS.lock() = Some(log);
+        write("Log persistente: reserva do coletor aberta.\r\n");
+    } else {
+        write("Log persistente: reserva do coletor recusada.\r\n");
+    }
+
+    let Some((key, session)) = entropy::swap_credentials() else {
+        return;
+    };
+    if let Ok(region) = ahci::block_device().and_then(|device| {
+        reserve
+            .swap(device)
+            .map_err(|_| KernelError::DeviceInitFailed)
+    }) {
+        use carlio_os::block::BlockDevice;
+        let count = (region.sector_count() / 8).min(64) as usize;
+        let slots = alloc::boxed::Box::leak(
+            alloc::vec![carlio_os::swap::SwapSlot::default(); count].into_boxed_slice(),
+        );
+        if let Ok(swap) = KernelSwap::new(region, key, session, slots) {
+            *BOOT_SWAP.lock() = Some(swap);
+        }
+    }
+}
+
+#[cfg(target_os = "none")]
+fn flush_persistent_errors() {
+    let failed = {
+        let mut storage = PERSISTENT_ERRORS.lock();
+        let Some(log) = storage.as_mut() else {
+            return;
+        };
+        let pending = core::mem::take(&mut *PENDING_ERRORS.lock());
+        let failed = (0..pending.len()).rev().any(|index| {
+            pending
+                .recent(index)
+                .is_some_and(|error| log.append(error.message().as_bytes()).is_err())
+        });
+        if failed {
+            *storage = None;
+        }
+        failed
+    };
+    if failed {
+        write("Log persistente: falha de I/O; coleta em disco suspensa.\r\n");
     }
 }
 
 #[cfg(target_os = "none")]
 fn report_errors() {
-    let log = unsafe { core::ptr::addr_of!(ERROR_LOG).read() };
+    let log = *ERROR_LOG.lock();
     write("Erros registrados: ");
     write_u32(log.total());
     write("\r\n");
@@ -4044,7 +4627,7 @@ fn report_errors() {
 
 #[cfg(target_os = "none")]
 fn report_errors_markdown() {
-    let log = unsafe { core::ptr::addr_of!(ERROR_LOG).read() };
+    let log = *ERROR_LOG.lock();
     write("# Eventos do kernel (buffer volátil)\r\n\r\n");
     write("| Métrica | Valor | Gráfico |\r\n|---|---:|---|\r\n");
     write("| Eventos desde o boot | ");
@@ -4368,7 +4951,9 @@ fn page_table_boot_probe(hhdm: u64) {
     }
     if result.is_ok() && address_space_result.is_ok() {
         write("Ring 3: probe CPL3, retorno seguro e fault #UD isolado passaram.\r\n");
-        write("Ring 3 rotinas: ELF carregado em CPL3, scheduler e preempção entre dois CR3 passaram; pilhas recuperadas pelo reaper.\r\n");
+        write(
+            "Ring 3 rotinas: ELF carregado em CPL3, scheduler e preempção entre dois CR3 passaram; pilhas recuperadas pelo reaper.\r\n",
+        );
         write("TLB SMP: shootdowns enviados=");
         write_u32(lapic::shootdown_count().min(u32::MAX as usize) as u32);
         write(", ACKs remotos por IPI concluídos antes de liberar tabelas.\r\n");
@@ -4426,7 +5011,9 @@ fn kernel_heap_boot_probe() {
     drop(large);
     if valid && released && stress_ok && grew && global_ok {
         write("Heap global: alocação Rust maior que a arena bootstrap passou.\r\n");
-        write("Heap kernel: regiões dinâmicas, alinhamento, escrita/leitura, expansão e liberação passaram.\r\n");
+        write(
+            "Heap kernel: regiões dinâmicas, alinhamento, escrita/leitura, expansão e liberação passaram.\r\n",
+        );
     } else {
         record_error(KernelError::DeviceInitFailed);
         write("Heap kernel: teste de alocação/liberação falhou.\r\n");
@@ -4806,9 +5393,98 @@ fn discover_boot_storage() {
 }
 
 #[cfg(target_os = "none")]
-fn commit_vfs_mutation(_transaction: &VfsMutationGuard) -> Result<(), u16> {
-    // ext4/FAT32 mounts stay read-only; mutations currently land in the bounded
-    // RAM overlay and are not reported as durable on the device.
+fn initialize_vfs_store(reserve: carlio_os::storage_reserve::StorageReserve) {
+    let mut vfs = PROCESS_VFS.lock();
+    let mut before = VFS_BEFORE.lock();
+    let mut snapshot = VFS_AFTER.lock();
+    let result = (|| {
+        let initial = vfs.encode_snapshot(&mut *before).ok()?;
+        let region = reserve.vfs(ahci::block_device().ok()?).ok()?;
+        let (mut store, len) = OverlayStore::open(region, &mut *snapshot).ok()?;
+        if len == 0 {
+            store.commit(&before[..initial]).ok()?;
+        } else if vfs.restore_overlay(&snapshot[..len]).is_err() {
+            let _ = vfs.restore_overlay(&before[..initial]);
+            return None;
+        }
+        *VFS_STORE.lock() = Some(store);
+        Some(())
+    })();
+    if result.is_some() {
+        write("VFS: overlay persistente aberto.\r\n");
+    } else {
+        VFS_STORE_FAILED.store(true, Ordering::Release);
+        write("VFS: reserva persistente recusada; alterações bloqueadas.\r\n");
+    }
+}
+
+#[cfg(target_os = "none")]
+fn commit_vfs_mutation(transaction: &VfsMutationGuard) -> Result<(), u16> {
+    let Some(before_len) = transaction.before else {
+        return Ok(());
+    };
+    let vfs = PROCESS_VFS.lock();
+    let mut snapshot = VFS_AFTER.lock();
+    let before = VFS_BEFORE.lock();
+    let length = vfs.encode_snapshot(&mut *snapshot).map_err(vfs_errno)?;
+    if before[..before_len] == snapshot[..length] {
+        transaction.committed.set(true);
+        return Ok(());
+    }
+    let result = VFS_STORE
+        .lock()
+        .as_mut()
+        .ok_or(carlio_os::block::BlockError::Device)
+        .and_then(|store| store.commit(&snapshot[..length]));
+    if result.is_err() {
+        VFS_STORE_FAILED.store(true, Ordering::Release);
+        return Err(carlio_os::linux_abi::EIO);
+    }
+    transaction.committed.set(true);
+    Ok(())
+}
+
+#[cfg(all(target_os = "none", feature = "storage-test"))]
+fn vfs_storage_probe(command: &str) -> Result<(), u16> {
+    use carlio_os::linux_abi::EIO;
+    let transaction = VfsMutationGuard::acquire()?;
+    if transaction.before.is_none() {
+        return Err(EIO);
+    }
+    let root = Credentials { uid: 0, gid: 0 };
+    let access = AccessContext::new(root, &[], 0);
+    let mut vfs = PROCESS_VFS.lock();
+    let path = "/tmp/prova-persistente";
+    match command {
+        "vfs-teste-gravar" => {
+            vfs.create_file("/tmp", "prova-persistente", root, 0o640)
+                .map_err(vfs_errno)?;
+            vfs.write_file_as(path, access, b"estado anterior")
+                .map_err(vfs_errno)?;
+        }
+        "vfs-teste-alterar" => {
+            vfs.set_mode_as(path, access, 0o600).map_err(vfs_errno)?;
+            vfs.write_file_as(path, access, b"estado novo")
+                .map_err(vfs_errno)?;
+        }
+        _ => {
+            let mut bytes = [0; 32];
+            let length = vfs
+                .read_file_as(path, access, &mut bytes)
+                .map_err(vfs_errno)?;
+            let metadata = vfs.metadata(path, access).map_err(vfs_errno)?;
+            if &bytes[..length] != b"estado anterior" || metadata.mode != 0o640 {
+                return Err(EIO);
+            }
+        }
+    }
+    drop(vfs);
+    commit_vfs_mutation(&transaction)?;
+    match command {
+        "vfs-teste-gravar" => write("VFS: primeira geração confirmada.\r\n"),
+        "vfs-teste-alterar" => write("VFS: segunda geração confirmada.\r\n"),
+        _ => write("VFS: dados e permissões anteriores recuperados.\r\n"),
+    }
     Ok(())
 }
 

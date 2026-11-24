@@ -1,0 +1,6 @@
+Saída do bootstrap Ubuntu Base: /tmp/carlioos-ubuntu-userland.2GpdOjVX
+gpgv: Signature made Thu Sep 10 13:44:43 2026 -03
+gpgv:                using RSA key 843938DF228D22F7B3742BC0D94AA3F0EFE21092
+gpgv: Good signature from "Ubuntu CD Image Automatic Signing Key (2012) <cdimage@ubuntu.com>"
+ubuntu-base-24.04.5-base-amd64.tar.gz: OK
+Ubuntu Base 24.04.5 amd64 extraída em /tmp/carlioos-ubuntu-userland.2GpdOjVX/rootfs.

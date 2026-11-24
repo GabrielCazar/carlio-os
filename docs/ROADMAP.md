@@ -60,7 +60,7 @@ positivos, negativos e de falha; modelos host e detecção PCI não bastam.
 | Módulos do kernel (LKMs) | Parser ET_REL host com relocations x86_64, extração de exports da `.symtab`, registro persistente host, lookup kernel/módulos e contabilidade host de dependências; `SmpPageTableManager::protect` com shootdown testado em host ([log fase 2](../reports/fase-2-memoria-execucao.md)) | Ciclo runtime ainda não ligado; backend x86_64 para alocação/mapeamento/invocação, bloqueio de novas chamadas, rollback transacional e quiescência SMP; gates QEMU/NAS que carreguem objetos ET_REL positivos, negativos e de falha |
 | Memória | Bitmap até 32 GiB, VM x86-64, folhas user owned, heap expansível e shootdown xAPIC com ACK | Contabilidade confirmada na fixture CPL3. Allocator geral e stress SMP sustentado pendentes; swap permanece desligado |
 | Drivers / E/S | PCI read-only, framebuffer Limine, adaptador BlockDevice AHCI e Ethernet Intel QEMU; prioridade de filesystem em ext4/FAT32 | Validação física de AHCI e demais dispositivos (RTL8111/I219, EHCI/xHCI, iGPU), timeout/remoção em hardware |
-| VFS | Rootfs ext4 prioritário/FAT32 alternativo detectado em MBR/GPT e montado no boot; leitura, stat/access, ELF loader por mount, `execve` transacional limitado e copy-up/escrita em overlay RAM; Hermione arquivado | Escrita persistente, whiteouts/rename/unlink, limites atuais de 16 KiB e 40 nós, nomes longos FAT, recursos ext4 completos, validação QEMU/NAS do execve e enforcement integral de inode/processo |
+| VFS | Rootfs ext4 prioritário/FAT32 alternativo detectado em MBR/GPT e montado no boot; leitura, stat/access, ELF loader por mount, `execve` transacional limitado e copy-up/escrita em overlay persistente em mídia dedicada; Hermione arquivado | Escrita nativa ext4/FAT32, whiteouts/rename/unlink, limites atuais de 16 KiB e 40 nós, nomes longos FAT, recursos ext4 completos, validação QEMU/NAS do execve e enforcement integral de inode/processo |
 | Rede | NICs alvo identificadas; prova limitada do Intel 82574L em QEMU | Drivers físicos, pilha TCP/IP integrada, DNS e serviços de servidor pendentes; rede de servidor não está disponível |
 | Syscalls (SCI) | Entrada x86-64 `SYSCALL`; CPL3 valida identidade/grupos, `getpid`/`gettid`, `clock_gettime`/`clock_getres` monotônicos, `brk` positivo, `mmap/munmap`, `execve` transacional limitado, VFS e serial; `mprotect` parcial foi conectado, validação suspensa | NAS UEFI smoke aberto: a prova de duas CR3 não observou preempção de timer e o probe de page tables falhou ([relatório](../reports/fase-4-aplicacoes-linux.md), [log](../reports/logs/fase4-linux-abi-timers-nas-20261119-021821-qemu-kvm-uefi.log)). Ainda faltam gates de `execve`, `CLOCK_REALTIME`, dependências ELF completas, relocations/glibc, GNU version tables, TLS, sinais, futex, chamadas completas de threads, mapeamento de arquivo, mounts no VFS e compatibilidade geral glibc/systemd |
 | pegasusDS / servidor de diretório | Contrato ABI v1 congelado como documento; crate local `libcarlio` define interface Rust segura sem transporte de syscall | ABI implementada, capacidades, sandbox, hooks LSM, keyring, AF_UNIX/SCM_RIGHTS, IPv6/TCP/epoll, canais opt-in, verified boot e workload QEMU/NAS; não executar servidor de rede |
@@ -213,8 +213,9 @@ APs. A revalidação atual do probe CPL3 falha, e stress de scheduler/VM/allocat
 segue pendente. Objetos VM ficam no backend e a tabela/pilhas têm capacidade
 fixa.
 
-**Swap e persistência são metas, não capacidades habilitadas.** Dependem de VM
-e bloco confiáveis. Antes de integrar swap, fechar gates de ownership e
+**O boot reconhece uma reserva dedicada, gera credenciais de swap via RDRAND
+e conecta o coletor de erros ao anel persistente.** O swap cifrado ainda
+depende do paginador. Antes de integrar swap, fechar gates de ownership e
 contabilidade de frames por processo, rollback de falhas, concorrência e stress
 SMP; provar page fault/page-in/page-out, pinning e recuperação sem corromper o
 processo. No bloco, validar limites de LBA, erros de I/O, timeout, flush/barrier,
@@ -271,10 +272,18 @@ genérico. Evidências no [relatório da fase 2](../reports/fase-2-memoria-execu
 Os leitores FAT32 e ext4 implementam `ReadOnlyMountBackend`. O boot agora
 enumera partições MBR/GPT no AHCI, prioriza ext4 (FAT32 como fallback), tenta
 montar a partição em `/` e conecta leituras/stat/access e o carregador ELF ao
-backend. A escrita é copy-up para o VFS em RAM, limitada a 16 KiB por arquivo;
-não persiste no dispositivo.
+backend. O copy-up do VFS limita cada arquivo a 16 KiB. O overlay é gravado
+na mídia dedicada `CARLIO-PERSIST-02` quando provisionada.
 
 ### 3 — Bloco, filesystems e recuperação
+
+**Aceite em VM concluído (24/11/2026).** NAS/KVM validou BIOS e UEFI,
+leitura FAT32 por syscall, execução ext4, replay de metadados, overlay
+persistente, timeout com COMRESET e retirada do disco SATA com o HBA
+presente. A prova de 2 TiB atingiu o último setor. A retirada foi feita
+com um comando pendente em `PxCI` antes do DMA, no QEMU de diagnóstico.
+A validação elétrica e os backends nativos graváveis de uso geral
+permanecem fora do aceite em VM. [Relatório e evidências](../reports/fase-3-bloco-filesystems.md).
 
 **Prioridade de produto:** ext4 é o filesystem principal para rootfs e volumes
 Linux; FAT32 é central para a partição EFI e mídia removível/intercâmbio. Ambos
@@ -315,7 +324,14 @@ não é aceite corrente da fase nem valida montagem, cifra ou tolerância à fal
 os leitores ext4/FAT32 e o adaptador AHCI usam esse contrato sem depender do
 módulo Hermione. O VFS passa offsets de leitura aos backends; o kernel conecta a
 descoberta MBR/GPT e o mount do rootfs no boot. Syscalls `open/read/write/stat`
-usam o rootfs e as alterações são mantidas em overlay volátil.
+usam o rootfs. As alterações usam o overlay do VFS, que persiste dados e
+metadados em mídia dedicada com o layout `CARLIO-PERSIST-02`. O layout
+anterior mantém o overlay em RAM. Em imagens descartáveis, o backend ext4
+altera permissões no inode e atualiza seu CRC32C. O backend FAT32 altera o
+atributo somente leitura na entrada de diretório. Ambos recuperam o setor
+de metadados por redo externo após reboot. O suporte gravável geral aos
+backends montados inclui trabalho futuro de alocação e atualização de
+diretórios.
 
 **Histórico de mounts (2026-11-16):** VFS delega leitura ao backend tipado de
 mount. FAT32 lê caminhos com nomes curtos 8.3; ext4 lê arquivos regulares via
@@ -354,7 +370,11 @@ Logs: [QEMU local](../reports/logs/fase2-storage-qemu-local-20261116.log),
 Atualização de capacidade: o formato e `herm-fs` agora aceitam exatamente
 `2^32` setores (2 TiB); teste com imagem esparsa grava/lê o último LBA e rejeita
 um setor além. Isso fecha apenas a faixa endereçável no backend de imagem; não
-prova AHCI físico nem interoperabilidade.
+prova AHCI físico nem interoperabilidade. Em 24/11/2026, o adaptador AHCI
+também gravou, executou flush e releu padrões distintos no LBA 1 e nos
+dois últimos LBAs de um QCOW2 esparso de 2 TiB no NAS/KVM. Leitura e escrita
+no primeiro LBA fora da imagem retornaram `OutOfRange`.
+[Log AHCI/KVM](../reports/logs/fase-3-capacidade-nas-20261124-131517-filesystem-qemu-kvm.log).
 
 **Histórico de protótipo arquivado (2026-11-16):** `storage-test` local TCG e
 NAS/KVM passou IDENTIFY, WRITE/READ, erro ATA, Hermione formatar/remontar/scrub
@@ -370,7 +390,8 @@ sistema para o espaço do kernel. Planejamento inicial: área de logs persistent
 de 1 GiB e área de paginação de até 15 GiB. Os tamanhos serão configuráveis e
 validados contra a capacidade disponível; não haverá ativação de swap até que a
 VM, o driver de bloco, flush, falhas e recuperação sejam confiáveis. Ainda não
-existe reserva física nem escrita persistente implementada.
+existe reserva física ou coleta persistente habilitada no boot. O anel de
+logs foi validado em uma região de teste AHCI com leitura em novo boot.
 
 ### 4 — VFS, contas, permissões e serviços de rede
 
@@ -509,6 +530,16 @@ Histórico: dispatcher host-testável cobre `read` com retorno parcial, EOF e
 erros. A camada kernel fornece entrada serial em `fd 0`; o VFS corrente mantém
 alterações em RAM. Backends mounted ext4/FAT32 ainda não estão conectados às
 syscalls Linux.
+
+**Evidência atual (2026-11-24):** a prova de `execve` a partir de ext4
+valida `mkdir/openat/write/fchmod/fsync/fstat/newfstatat/unlink/rmdir` e
+retornos negativos da ABI em CPL3. A variante PIE executa um interpretador
+`PT_INTERP` de teste e verifica `AT_BASE` e `AT_ENTRY`. As duas variantes
+passaram em BIOS e UEFI local e no NAS/KVM. O bootstrap preparou Arch com
+zsh e Ubuntu Base no host com validação de origem. O aceite continua aberto
+para glibc, mapeamento de arquivos, ferramentas reais em CarlioOS e
+instalação de pacotes com isolamento e rollback no alvo.
+[Evidências](../reports/fase-4-aplicacoes-linux.md#correção--abi-vfs-pt_interp-e-bootstrap-de-userlands--2026-11-24).
 
 ### 6 — Interface, desktop e agentes
 

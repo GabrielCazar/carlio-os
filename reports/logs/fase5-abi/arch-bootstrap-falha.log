@@ -1,0 +1,5 @@
+Construindo rootfs Arch x86_64 para CarlioOS.
+Kernel HEAD: b62e4f8bc02b7f0601b1743aba2b1f5f82524b7f (dirty; origin/main b62e4f8bc02b7f0601b1743aba2b1f5f82524b7f está contido em HEAD).
+Snapshot Arch: 2026/11/23. Destino: /tmp/carlioos-arch-userland-GHvpSpfL/rootfs
+Pacotes: filesystem glibc bash coreutils zsh pacman archlinux-keyring tzdata
+Erro: banco de pacotes ausente após pacstrap.

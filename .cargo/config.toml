@@ -4,4 +4,7 @@ rustflags = [
   "-C", "relocation-model=static",
   "-C", "code-model=kernel",
   "-C", "no-redzone=yes",
+  # Kernel paths must not clobber user SIMD registers.
+  "--cfg", "chacha20_force_soft",
+  "--cfg", "poly1305_force_soft",
 ]

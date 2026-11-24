@@ -1,0 +1,77 @@
+IRQ stack: pilha por CPU e duas fatias aninhadas passaram.
+[2J[H+----------------------------------------------------+
+| carlIO OS | Criado por João G.R.Santos             |
+| Sistema operacional experimental x86_64            |
++----------------------------------------------------+
+Núcleo Rust · BOOT LOG
+[10;1H[10;24r[s[7;1H[2K[[32;1m###[90m---------------------------------------------------------------------------[0m][8;1H[2KBOOT  5%  kernel carregado[uFramebuffer Limine: RGB ativo; renderização de pixels validada.
+[s[7;1H[2K[[32;1m#########[90m---------------------------------------------------------------------[0m][8;1H[2KBOOT 12%  vídeo/console[uIDT: exceções 0-31 registradas; IRQs externos permanecem desativados.
+Ring 3: GDT, TSS, RSP0 e seletores de usuário configurados; CPL continua 0.
+Aviso: terminal de diagnóstico em ring 0; não é uma fronteira de segurança.
+Mapa de memória Limine: regiões usáveis=3, RAM usável MiB=489; HHDM e bases físico/virtual do kernel disponíveis.
+Allocator físico: frames livres até 32 GiB=125213, sem RAM acima de 4 GiB; teste usa frame baixo; alocação, escrita, leitura e liberação passaram.
+[s[7;1H[2K[[32;1m###################[90m-----------------------------------------------------------[0m][8;1H[2KBOOT 25%  memória física e HHDM[uLAPIC xAPIC ativo no BSP; vetor de shootdown remoto 0xF1 instalado.
+SMP Limine: CPUs detectadas=4, APs iniciadas=3, aguardadas=3; APs aguardam despacho de tarefa, scheduler ainda desativado.
+SMP trabalho: CPUs AP=3, tarefas concluídas=3, resultados válidos=3; despacho de prova concluído.
+[s[7;1H[2K[[32;1m###################################[90m-------------------------------------------[0m][8;1H[2KBOOT 45%  inicialização SMP[uHeap global: alocação Rust maior que a arena bootstrap passou.
+Heap kernel: regiões dinâmicas, alinhamento, escrita/leitura, expansão e liberação passaram.
+[s[7;1H[2K[[32;1m#############################################[90m---------------------------------[0m][8;1H[2KBOOT 58%  heap do kernel[uInventário PCI (somente leitura):
+PCI 00:00.0 8086:29c0 classe=bridge
+PCI 00:01.0 1234:1111 classe=vídeo vídeo
+PCI 00:02.0 8086:10d3 classe=rede rede (Intel 82574L/QEMU)
+NIC Intel 82574L: filas DMA TX/RX ativas, MAC=525400123456; envio/recepcao polling disponiveis.
+DHCP IPv4: concessao recebida 10.0.2.15
+PCI 00:1f.0 8086:2918 classe=bridge
+PCI 00:1f.2 8086:2922 classe=armazenamento SATA/AHCI (QEMU: reconhecido; driver AHCI experimental)
+AHCI: dispositivo identificado em leitura, setores=133120. Adaptador BlockDevice pronto para rootfs.
+Storage: descoberta de partições falhou: tabela inválida
+PCI 00:1f.3 8086:2930 classe=barramento serial
+Funções PCI presentes detectadas: 6
+[s[7;1H[2K[[32;1m######################################################[90m------------------------[0m][8;1H[2KBOOT 70%  detecção de hardware[uVFS: nenhum rootfs ext4/FAT32 montável; namespace FHS em RAM.
+[s[7;1H[2K[[32;1m###############################################################[90m---------------[0m][8;1H[2KBOOT 82%  VFS e rootfs[uRuntime de processos: preparando tarefas CPL3.
+Runtime: tarefas com CR3 independentes despachadas.
+write ok
+ABI Linux: probe CPL3 aguardando byte de entrada serial.
+Runtime: tarefas encerradas; trocas de timer=5, trocas de CR3=1, faults isolados=0.
+SMP CPL3: mmap/munmap concluídos nos dois APs; sobreposição simultânea e retorno a idle confirmados.
+SMP CPL3 ciclos: AP1=512, AP2=512.
+Memória user por processo (folhas/tabelas/total/limite-folhas/limite-total): 2/4/6/128/513 2/4/6/128/513 2/4/6/128/513.
+ABI Linux x86_64: getpid/exit via SYSCALL passou.
+ABI Linux: getuid/geteuid/getgid/getegid/getgroups via SYSCALL passaram.
+ABI Linux: gettid e clock_gettime monotônico CPL3 passaram.
+ABI Linux: write CPL3 validou buffer de usuário e serial.
+ABI Linux: read CPL3 recusou destino inválido antes da leitura serial.
+ABI Linux: openat/read/close CPL3 leu arquivo pelo VFS.
+Segurança CPL3: openat negou arquivo 0600 de outro UID com EACCES.
+ABI Linux: read(0) CPL3 recebeu entrada serial.
+ABI Linux: mmap/mprotect/munmap/brk CPL3 validaram ownership e permissões de página.
+Reaper SMP: BSP e APs confirmaram CR3 kernel; ACKs dos APs=3; CPL3 ativo=0; stacks, VM e page tables liberáveis.
+Allocator por processo: frames livres restaurados ao baseline=125174.
+Ring 3: probe CPL3, retorno seguro e fault #UD isolado passaram.
+Ring 3 rotinas: ELF carregado em CPL3, scheduler e preempção entre dois CR3 passaram; pilhas recuperadas pelo reaper.
+TLB SMP: shootdowns enviados=2076, ACKs remotos por IPI concluídos antes de liberar tabelas.
+[s[7;1H[2K[[32;1m#######################################################################[90m-------[0m][8;1H[2KBOOT 92%  VM e processos[u[s[7;1H[2K[[32;1m##############################################################################[0m][8;1H[2KBOOT 100%  shell disponível[u[rWatchdog PIT ativo: prazo de 5 s sem progresso.
+Digite 'ajuda' para ver os comandos.
+
+carlio> fs-meta-recuperar
+Filesystem: metadados nativos recuperados e segunda recuperação idempotente OK.
+carlio> fsck.fat 4.2 (2021-01-31)
+Checking we can access the last sector of the filesystem
+Boot sector contents:
+System ID "mkfs.fat"
+Media byte 0xf8 (hard disk)
+       512 bytes per logical sector
+       512 bytes per cluster
+        32 reserved sectors
+First FAT starts at byte 16384 (sector 32)
+         2 FATs, 32 bit entries
+    516608 bytes per FAT (= 1009 sectors)
+Root directory start at cluster 2 (arbitrary size)
+Data area starts at byte 1049600 (sector 2050)
+    129022 data clusters (66059264 bytes)
+32 sectors/track, 8 heads
+         0 hidden sectors
+    131072 sectors total
+Checking for unused clusters.
+Checking free cluster summary.
+/tmp/carlioos-persistence-ohf4c1y1/restored.raw: 1 files, 2/129022 clusters

@@ -1,8 +1,7 @@
-//! Leitor ext4 somente leitura para volumes simples com blocos de 1–4 KiB.
+//! Leitor ext4 para volumes simples com blocos de 1–4 KiB.
 //!
-//! Suporta lookup linear de diretórios e extents armazenados no inode. Não
-//! recupera journal nem interpreta recursos avançados; volumes com recursos
-//! incompatíveis devem continuar sendo montados somente em outro sistema.
+//! A montagem VFS é somente leitura. Operações explícitas e restritas usam
+//! redo externo em mídia dedicada. O journal JBD2 não é interpretado.
 use crate::block::{BlockDevice, SECTOR_SIZE};
 
 const MAX_BLOCK_SIZE: usize = 4096;
@@ -11,6 +10,8 @@ const EXT4_EXTENTS_FL: u32 = 0x0008_0000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ext4Error {
+    Journal(crate::sector_journal::JournalError),
+    WriteUnsupported,
     Device,
     InvalidSuperblock,
     UnsupportedFeature,
@@ -30,6 +31,9 @@ pub struct Ext4Volume<D> {
     inodes_per_group: u32,
     inode_size: usize,
     descriptor_size: usize,
+    clean: bool,
+    inode_checksum_seed: Option<u32>,
+    inode_metadata_supported: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -46,11 +50,15 @@ struct Inode {
 impl<D: BlockDevice> Ext4Volume<D> {
     /// Monta uma partição ext4 já identificada pelo chamador sem escrita.
     pub fn mount(mut device: D, partition_start: u64) -> Result<Self, Ext4Error> {
+        let superblock_lba = partition_start
+            .checked_add(2)
+            .filter(|start| start.saturating_add(1) < device.sector_count())
+            .ok_or(Ext4Error::InvalidSuperblock)?;
         let mut sb = [0u8; 1024];
         for sector in 0..2 {
             let mut data = [0u8; SECTOR_SIZE];
             device
-                .read_sector(partition_start + 2 + sector, &mut data)
+                .read_sector(superblock_lba + sector, &mut data)
                 .map_err(|_| Ext4Error::Device)?;
             sb[sector as usize * SECTOR_SIZE..(sector as usize + 1) * SECTOR_SIZE]
                 .copy_from_slice(&data);
@@ -75,7 +83,7 @@ impl<D: BlockDevice> Ext4Volume<D> {
         let inode_size = u16le(&sb, 88) as usize;
         let descriptor_size = if incompat & 0x0080 != 0 {
             let size = u16le(&sb, 254) as usize;
-            if size < 32 || size > block_size {
+            if size < 64 || !size.is_power_of_two() || size > block_size {
                 return Err(Ext4Error::UnsupportedFeature);
             }
             size
@@ -108,7 +116,125 @@ impl<D: BlockDevice> Ext4Volume<D> {
             inodes_per_group,
             inode_size,
             descriptor_size,
+            clean: u16le(&sb, 58) == 1,
+            inode_checksum_seed: (u32le(&sb, 100) & 0x0400 != 0)
+                .then(|| crc32c_extend(u32::MAX, &sb[104..120])),
+            inode_metadata_supported: u32le(&sb, 72) == 0
+                && (u32le(&sb, 100) & 0x0400 == 0 || sb[373] == 1),
         })
+    }
+
+    /// Overwrites one allocated sector of an existing file on a clean,
+    /// exclusively owned volume. The caller reserves two sectors outside
+    /// this volume for the redo record and must recover before other writes.
+    pub fn overwrite_file_sector(
+        &mut self,
+        path: &str,
+        journal: u64,
+        data: &[u8; SECTOR_SIZE],
+    ) -> Result<(), Ext4Error> {
+        let target = self.writable_file_sector(path, journal)?;
+        crate::sector_journal::overwrite(&mut self.device, journal, target, data)
+            .map_err(Ext4Error::Journal)
+    }
+
+    pub fn recover_file_sector(&mut self, path: &str, journal: u64) -> Result<bool, Ext4Error> {
+        let target = self.writable_file_sector(path, journal)?;
+        crate::sector_journal::recover(&mut self.device, journal, target)
+            .map_err(Ext4Error::Journal)
+    }
+
+    fn writable_file_sector(&mut self, path: &str, journal: u64) -> Result<u64, Ext4Error> {
+        let inode = self.resolve_file(path)?;
+        if !self.clean
+            || inode.size < SECTOR_SIZE as u64
+            || inode.flags != EXT4_EXTENTS_FL
+            || journal == 0
+            || journal
+                .checked_add(1)
+                .is_none_or(|last| last >= self.partition_start)
+        {
+            return Err(Ext4Error::WriteUnsupported);
+        }
+        let block = self
+            .extent_block(&inode, 0)?
+            .ok_or(Ext4Error::WriteUnsupported)?;
+        Ok(self.partition_start + block * (self.block_size / SECTOR_SIZE) as u64)
+    }
+
+    /// Updates the permission bits in an existing regular inode, including its
+    /// metadata checksum when enabled. Requires a clean, exclusively owned volume
+    /// and two dedicated redo sectors outside the partition.
+    pub fn set_inode_mode(&mut self, path: &str, journal: u64, mode: u16) -> Result<(), Ext4Error> {
+        use crate::sector_journal::{overwrite_tagged, EXT4_INODE};
+
+        if mode & !0o777 != 0 {
+            return Err(Ext4Error::WriteUnsupported);
+        }
+        let inode = self.resolve_file(path)?;
+        if inode.flags & !EXT4_EXTENTS_FL != 0 {
+            return Err(Ext4Error::WriteUnsupported);
+        }
+        let (lba, offset) = self.inode_mode_location(inode.number, journal)?;
+        let mut sector = [0; SECTOR_SIZE];
+        self.device
+            .read_sector(lba, &mut sector)
+            .map_err(|_| Ext4Error::Device)?;
+        let raw = &mut sector[offset..offset + self.inode_size];
+        if let Some(seed) = self.inode_checksum_seed {
+            let (checksum, high) = inode_checksum(seed, inode.number, raw);
+            let bytes = checksum.to_le_bytes();
+            if raw[124..126] != bytes[..2] || (high && raw[130..132] != bytes[2..]) {
+                return Err(Ext4Error::CorruptMetadata);
+            }
+        }
+        raw[..2].copy_from_slice(&((inode.mode & !0o777) | mode).to_le_bytes());
+        if let Some(seed) = self.inode_checksum_seed {
+            let (checksum, high) = inode_checksum(seed, inode.number, raw);
+            let bytes = checksum.to_le_bytes();
+            raw[124..126].copy_from_slice(&bytes[..2]);
+            if high {
+                raw[130..132].copy_from_slice(&bytes[2..]);
+            }
+        }
+        overwrite_tagged(&mut self.device, journal, lba, &sector, EXT4_INODE)
+            .map_err(Ext4Error::Journal)
+    }
+
+    pub fn recover_inode_mode(&mut self, path: &str, journal: u64) -> Result<bool, Ext4Error> {
+        use crate::sector_journal::{recover_tagged, EXT4_INODE};
+
+        // The directory can identify the inode even if its mode or checksum tore.
+        let number = self.resolve_inode_number(path)?;
+        let (lba, _) = self.inode_mode_location(number, journal)?;
+        recover_tagged(&mut self.device, journal, EXT4_INODE, |target| {
+            target == lba
+        })
+        .map_err(Ext4Error::Journal)
+    }
+
+    fn inode_mode_location(
+        &mut self,
+        number: u32,
+        journal: u64,
+    ) -> Result<(u64, usize), Ext4Error> {
+        if !self.clean
+            || !self.inode_metadata_supported
+            || journal == 0
+            || journal
+                .checked_add(1)
+                .is_none_or(|last| last >= self.partition_start)
+            || !matches!(self.inode_size, 128 | 256 | 512)
+        {
+            return Err(Ext4Error::WriteUnsupported);
+        }
+        let (block, offset) = self.inode_location(number)?;
+        Ok((
+            self.partition_start
+                + block * (self.block_size / SECTOR_SIZE) as u64
+                + (offset / SECTOR_SIZE) as u64,
+            offset % SECTOR_SIZE,
+        ))
     }
 
     pub fn into_device(self) -> D {
@@ -135,7 +261,7 @@ impl<D: BlockDevice> Ext4Volume<D> {
         self.read_inode_range(&inode, offset, output)
     }
 
-    fn resolve_inode(&mut self, path: &str) -> Result<Inode, Ext4Error> {
+    fn resolve_inode_number(&mut self, path: &str) -> Result<u32, Ext4Error> {
         let mut inode_number = 2u32;
         for component in path.split('/').filter(|part| !part.is_empty()) {
             let directory = self.read_inode(inode_number)?;
@@ -144,7 +270,12 @@ impl<D: BlockDevice> Ext4Volume<D> {
             }
             inode_number = self.find_directory_entry(directory, component)?;
         }
-        self.read_inode(inode_number)
+        Ok(inode_number)
+    }
+
+    fn resolve_inode(&mut self, path: &str) -> Result<Inode, Ext4Error> {
+        let number = self.resolve_inode_number(path)?;
+        self.read_inode(number)
     }
 
     fn resolve_file(&mut self, path: &str) -> Result<Inode, Ext4Error> {
@@ -192,7 +323,7 @@ impl<D: BlockDevice> Ext4Volume<D> {
         Ok(written)
     }
 
-    fn read_inode(&mut self, number: u32) -> Result<Inode, Ext4Error> {
+    fn inode_location(&mut self, number: u32) -> Result<(u64, usize), Ext4Error> {
         if number == 0 || number > self.inodes_count {
             return Err(Ext4Error::CorruptMetadata);
         }
@@ -214,13 +345,21 @@ impl<D: BlockDevice> Ext4Volume<D> {
                 0
             };
         let byte_offset = local as u64 * self.inode_size as u64;
-        let inode_block = inode_table + byte_offset / self.block_size as u64;
+        let inode_block = inode_table
+            .checked_add(byte_offset / self.block_size as u64)
+            .filter(|&block| block < self.blocks_count)
+            .ok_or(Ext4Error::CorruptMetadata)?;
         let inode_offset = (byte_offset % self.block_size as u64) as usize;
-        let mut data = [0u8; MAX_BLOCK_SIZE];
-        self.read_block(inode_block, &mut data[..self.block_size])?;
         if inode_offset + self.inode_size > self.block_size {
             return Err(Ext4Error::CorruptMetadata);
         }
+        Ok((inode_block, inode_offset))
+    }
+
+    fn read_inode(&mut self, number: u32) -> Result<Inode, Ext4Error> {
+        let (inode_block, inode_offset) = self.inode_location(number)?;
+        let mut data = [0u8; MAX_BLOCK_SIZE];
+        self.read_block(inode_block, &mut data[..self.block_size])?;
         let mut block = [0u8; 60];
         block.copy_from_slice(&data[inode_offset + 40..inode_offset + 100]);
         let size_lo = u32le(&data, inode_offset + 4) as u64;
@@ -281,19 +420,22 @@ impl<D: BlockDevice> Ext4Volume<D> {
         if inode.flags & EXT4_EXTENTS_FL == 0 {
             return Err(Ext4Error::UnsupportedFeature);
         }
-        let mut node = inode.block;
+        let mut buffer = [0; MAX_BLOCK_SIZE];
+        buffer[..inode.block.len()].copy_from_slice(&inode.block);
+        let mut node_len = inode.block.len();
         for _ in 0..6 {
-            let entries = u16le(&node, 2) as usize;
-            let maximum = u16le(&node, 4) as usize;
-            let depth = u16le(&node, 6);
-            if u16le(&node, 0) != 0xf30a || entries > maximum || maximum > (node.len() - 12) / 12 {
+            let node = &buffer[..node_len];
+            let entries = u16le(node, 2) as usize;
+            let maximum = u16le(node, 4) as usize;
+            let depth = u16le(node, 6);
+            if u16le(node, 0) != 0xf30a || entries > maximum || maximum > (node.len() - 12) / 12 {
                 return Err(Ext4Error::CorruptMetadata);
             }
             if depth == 0 {
                 for index in 0..entries {
                     let at = 12 + index * 12;
-                    let first = u32le(&node, at);
-                    let encoded_length = u16le(&node, at + 4);
+                    let first = u32le(node, at);
+                    let encoded_length = u16le(node, at + 4);
                     let unwritten = encoded_length > 32_768;
                     let length = if unwritten {
                         encoded_length - 32_768
@@ -304,7 +446,7 @@ impl<D: BlockDevice> Ext4Volume<D> {
                         return Err(Ext4Error::CorruptMetadata);
                     }
                     let physical =
-                        u32le(&node, at + 8) as u64 | ((u16le(&node, at + 6) as u64) << 32);
+                        u32le(node, at + 8) as u64 | ((u16le(node, at + 6) as u64) << 32);
                     if logical >= first && (logical as u64) < first as u64 + length as u64 {
                         let block = physical + (logical - first) as u64;
                         if block >= self.blocks_count {
@@ -318,9 +460,9 @@ impl<D: BlockDevice> Ext4Volume<D> {
             let mut selected = None;
             for index in 0..entries {
                 let at = 12 + index * 12;
-                if u32le(&node, at) <= logical {
+                if u32le(node, at) <= logical {
                     selected =
-                        Some(u32le(&node, at + 4) as u64 | ((u16le(&node, at + 8) as u64) << 32));
+                        Some(u32le(node, at + 4) as u64 | ((u16le(node, at + 8) as u64) << 32));
                 } else {
                     break;
                 }
@@ -331,7 +473,8 @@ impl<D: BlockDevice> Ext4Volume<D> {
             if block >= self.blocks_count {
                 return Err(Ext4Error::CorruptMetadata);
             }
-            self.read_block(block, &mut node[..self.block_size])?;
+            node_len = self.block_size;
+            self.read_block(block, &mut buffer[..node_len])?;
         }
         Err(Ext4Error::CorruptMetadata)
     }
@@ -405,6 +548,32 @@ impl<D: BlockDevice> crate::vfs::ReadOnlyMountBackend for Ext4Volume<D> {
                 _ => crate::vfs::VfsError::InvalidPath,
             })
     }
+}
+
+fn crc32c_extend(mut crc: u32, bytes: &[u8]) -> u32 {
+    for &byte in bytes {
+        crc ^= u32::from(byte);
+        for _ in 0..8 {
+            crc = (crc >> 1) ^ (0x82f6_3b78 & 0u32.wrapping_sub(crc & 1));
+        }
+    }
+    crc
+}
+
+fn inode_checksum(seed: u32, number: u32, raw: &[u8]) -> (u32, bool) {
+    let high = raw.len() >= 132 && u16le(raw, 128) >= 4;
+    let mut crc = crc32c_extend(seed, &number.to_le_bytes());
+    crc = crc32c_extend(crc, &raw[100..104]);
+    crc = crc32c_extend(crc, &raw[..124]);
+    crc = crc32c_extend(crc, &[0; 2]);
+    if high {
+        crc = crc32c_extend(crc, &raw[126..130]);
+        crc = crc32c_extend(crc, &[0; 2]);
+        crc = crc32c_extend(crc, &raw[132..]);
+    } else {
+        crc = crc32c_extend(crc, &raw[126..]);
+    }
+    (crc, high)
 }
 
 fn u16le(bytes: &[u8], offset: usize) -> u16 {

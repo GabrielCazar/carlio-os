@@ -53,6 +53,7 @@ pub struct VmaMap<const N: usize> {
 pub struct ProcessVm<A, const PAGES: usize, const REGIONS: usize> {
     address_space: crate::memory::OwnedAddressSpace<A, PAGES>,
     vmas: VmaMap<REGIONS>,
+    swapped: Option<(u64, crate::swap::SwapPage)>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -77,6 +78,7 @@ impl<A: crate::memory::PageTableAccess, const PAGES: usize, const REGIONS: usize
         Self {
             address_space,
             vmas: VmaMap::new(heap_start, heap_limit),
+            swapped: None,
         }
     }
 
@@ -370,14 +372,104 @@ impl<A: crate::memory::PageTableAccess, const PAGES: usize, const REGIONS: usize
         Ok(requested)
     }
 
+    pub fn swapped_address(&self) -> Option<u64> {
+        self.swapped.as_ref().map(|(address, _)| *address)
+    }
+
+    /// Called with exclusive access to the VM and no other CPU executing
+    /// this address space. The frame remains owned until the swap write
+    /// and flush finish.
+    pub fn evict_anonymous<D: crate::block::BlockDevice>(
+        &mut self,
+        address: u64,
+        owner: u64,
+        swap: &mut crate::swap::SwapStore<'_, D>,
+        read_frame: impl FnOnce(u64) -> Result<crate::swap::Page, crate::memory::FrameError>,
+    ) -> Result<(), ProcessVmError> {
+        if self.swapped.is_some() {
+            return Err(ProcessVmError::Memory(
+                crate::memory::FrameError::CapacityExceeded,
+            ));
+        }
+        if !address.is_multiple_of(PAGE_SIZE) || self.mmap_region(address).is_none() {
+            return Err(ProcessVmError::Vma(VmaError::InvalidRange));
+        }
+        let mapping = self
+            .address_space
+            .mapping(address)
+            .map_err(ProcessVmError::Memory)?;
+        let page =
+            zeroize::Zeroizing::new(read_frame(mapping.physical).map_err(ProcessVmError::Memory)?);
+        let handle = swap
+            .page_out(owner, &page)
+            .map_err(|_| ProcessVmError::Swap)?;
+        if let Err(error) = self.address_space.unmap(address) {
+            let _ = swap.release(owner, &handle);
+            return Err(ProcessVmError::Memory(error));
+        }
+        self.swapped = Some((address, handle));
+        Ok(())
+    }
+
+    pub fn page_in<D: crate::block::BlockDevice>(
+        &mut self,
+        address: u64,
+        owner: u64,
+        swap: &mut crate::swap::SwapStore<'_, D>,
+        write_frame: impl FnOnce(u64, &crate::swap::Page) -> Result<(), crate::memory::FrameError>,
+    ) -> Result<bool, ProcessVmError> {
+        let Some((page, handle)) = self
+            .swapped
+            .as_ref()
+            .filter(|(page, _)| *page == page_floor(address))
+        else {
+            return Ok(false);
+        };
+        let flags = page_flags(
+            self.mmap_region(*page)
+                .ok_or(ProcessVmError::Swap)?
+                .protection,
+        );
+        let mut contents = zeroize::Zeroizing::new([0; crate::swap::PAGE_SIZE]);
+        swap.page_in(owner, handle, &mut contents)
+            .map_err(|_| ProcessVmError::Swap)?;
+        self.address_space
+            .map_initialized(*page, flags, |physical| write_frame(physical, &contents))
+            .map_err(ProcessVmError::Memory)?;
+        self.discard_swap(owner, swap)?;
+        Ok(true)
+    }
+
+    pub fn discard_swap<D: crate::block::BlockDevice>(
+        &mut self,
+        owner: u64,
+        swap: &mut crate::swap::SwapStore<'_, D>,
+    ) -> Result<(), ProcessVmError> {
+        if let Some((_, handle)) = self.swapped.as_ref() {
+            swap.release(owner, handle)
+                .map_err(|_| ProcessVmError::Swap)?;
+            self.swapped = None;
+        }
+        Ok(())
+    }
+
+    fn mmap_region(&self, page: u64) -> Option<Region> {
+        self.vmas.regions().find(|region| {
+            region.kind == RegionKind::Mmap && region.start <= page && page < region.end
+        })
+    }
+
     pub fn into_address_space(self) -> crate::memory::OwnedAddressSpace<A, PAGES> {
         self.address_space
     }
 
+    // Preserve the VM for a teardown retry without allocating under pressure.
+    #[allow(clippy::result_large_err)]
     pub fn try_destroy(self) -> Result<A, (Self, crate::memory::FrameError)> {
         let Self {
             address_space,
             vmas,
+            swapped,
         } = self;
         match address_space.try_destroy() {
             Ok(access) => Ok(access),
@@ -385,6 +477,7 @@ impl<A: crate::memory::PageTableAccess, const PAGES: usize, const REGIONS: usize
                 Self {
                     address_space,
                     vmas,
+                    swapped,
                 },
                 error,
             )),
@@ -397,6 +490,7 @@ pub enum ProcessVmError {
     Vma(VmaError),
     Memory(crate::memory::FrameError),
     RollbackFailed,
+    Swap,
     UnsupportedMapping,
     PermissionDenied,
 }

@@ -31,6 +31,8 @@ def main() -> int:
                         help="imagem de disco anexada ao AHCI; escrita fica em snapshot temporário")
     parser.add_argument("--expect-disk-exec", action="store_true",
                         help="exige saída do ELF CPL3 carregado do disco por execve")
+    parser.add_argument("--expect-disk-read", action="store_true",
+                        help="exige montagem e leitura CPL3 de /probe.bin com disk-read-test")
     parser.add_argument("--expect-rootfs", choices=("initialized", "mounted"),
                         help="exige mensagem positiva de inicialização ou remontagem do rootfs")
     parser.add_argument("--qemu-debug-log", type=Path,
@@ -44,6 +46,8 @@ def main() -> int:
         parser.error("use apenas um entre --herm-image e --disk-image")
     if args.expect_disk_exec and not args.disk_image:
         parser.error("--expect-disk-exec exige --disk-image")
+    if args.expect_disk_read and not args.disk_image:
+        parser.error("--expect-disk-read exige --disk-image")
     if args.expect_rootfs and not args.herm_image:
         parser.error("--expect-rootfs exige --herm-image")
 
@@ -162,8 +166,16 @@ def main() -> int:
         sys.stderr.write(errors.decode("utf-8", errors="replace"))
         return 1
 
-    if args.expect_disk_exec and b"execve: ELF do disco executado em CPL3" not in output:
-        sys.stderr.write(f"ELF do disco não executou em CPL3. Log: {args.log}\n")
+    if args.expect_disk_exec and (
+            b"execve: ELF do disco executado em CPL3" not in output
+            or b"ABI Linux: stat, mutacoes e fsync verificados em CPL3" not in output):
+        sys.stderr.write(f"Execução do ELF ou validação da ABI VFS ausente em CPL3. Log: {args.log}\n")
+        return 1
+
+    if args.expect_disk_read and (
+            "VFS: rootfs montado em / para leitura".encode() not in output
+            or "ABI Linux: openat/read/close CPL3 leu arquivo pelo VFS.".encode() not in output):
+        sys.stderr.write(f"Leitura CPL3 do arquivo no disco ausente. Log: {args.log}\n")
         return 1
 
     if args.expect_rootfs:

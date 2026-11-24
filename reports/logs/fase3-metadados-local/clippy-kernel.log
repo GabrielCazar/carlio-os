@@ -1,0 +1,359 @@
+   Compiling version_check v0.9.5
+    Checking typenum v1.20.1
+    Checking subtle v2.6.1
+    Checking zeroize v1.9.2
+    Checking cpufeatures v0.2.17
+    Checking opaque-debug v0.3.1
+    Checking cfg-if v1.0.5
+    Checking base64ct v1.8.3
+    Checking rand_core v0.6.4
+   Compiling generic-array v0.14.7
+   Compiling carlio-os v0.1.0 (/home/gabriel/Work/carlio-os)
+    Checking password-hash v0.5.0
+    Checking crypto-common v0.1.7
+    Checking inout v0.1.4
+    Checking block-buffer v0.10.4
+    Checking universal-hash v0.5.1
+    Checking cipher v0.4.4
+    Checking aead v0.5.2
+    Checking poly1305 v0.8.0
+    Checking chacha20 v0.9.1
+    Checking digest v0.10.7
+    Checking blake2 v0.10.6
+    Checking chacha20poly1305 v0.10.1
+    Checking argon2 v0.5.3
+error: function `activate_process_address_space` is never used
+   --> src/arch/x86_64/idt.rs:749:15
+    |
+749 | pub unsafe fn activate_process_address_space(root: u64, kernel_stack_top: u64) -> bool {
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `-D dead-code` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[expect(dead_code)]` or `#[allow(dead_code)]`
+
+error: manual `!RangeInclusive::contains` implementation
+   --> src/arch/x86_64/ahci.rs:202:8
+    |
+202 |     if bar_offset < 0x10 || bar_offset > 0x24 || bar_offset & 3 != 0 {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: use: `!(0x10..=0x24).contains(&bar_offset)`
+    |
+    = help: for further information visit https://clippy.rust-lang.org/main/index.html#manual_range_contains
+    = note: `-D clippy::manual-range-contains` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::manual_range_contains)]`
+
+error: manual `!RangeInclusive::contains` implementation
+   --> src/arch/x86_64/e1000.rs:281:12
+    |
+281 |           || length < 14
+    |  ____________^
+282 | |         || length > BUFFER_SIZE
+    | |_______________________________^ help: use: `!(14..=BUFFER_SIZE).contains(&length)`
+    |
+    = help: for further information visit https://clippy.rust-lang.org/main/index.html#manual_range_contains
+
+error: very complex type used. Consider factoring parts into `type` definitions
+   --> src/arch/x86_64/e1000.rs:393:6
+    |
+393 | ) -> Result<Option<([u8; 4], [u8; 4], carlio_os::net::DhcpOptions)>, KernelError> {
+    |      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://clippy.rust-lang.org/main/index.html#type_complexity
+    = note: `-D clippy::type-complexity` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::type_complexity)]`
+
+error: using `chunks_exact_mut` with a constant chunk size
+  --> src/arch/x86_64/entropy.rs:12:22
+   |
+12 |     for chunk in key.chunks_exact_mut(8).chain(session.chunks_exact_mut(8)) {
+   |                      ^^^^^^^^^^^^^^^^^^^ help: consider using `as_chunks_mut` instead: `as_chunks_mut::<8>().0.iter_mut()`
+   |
+   = help: for further information visit https://clippy.rust-lang.org/main/index.html#chunks_exact_to_as_chunks
+   = note: `-D clippy::chunks-exact-to-as-chunks` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::chunks_exact_to_as_chunks)]`
+
+error: using `chunks_exact_mut` with a constant chunk size
+  --> src/arch/x86_64/entropy.rs:12:56
+   |
+12 |     for chunk in key.chunks_exact_mut(8).chain(session.chunks_exact_mut(8)) {
+   |                                                        ^^^^^^^^^^^^^^^^^^^
+   |
+help: consider using `as_chunks_mut::<8>()` instead
+  --> src/arch/x86_64/entropy.rs:12:56
+   |
+12 |     for chunk in key.chunks_exact_mut(8).chain(session.chunks_exact_mut(8)) {
+   |                                                        ^^^^^^^^^^^^^^^^^^^
+   = help: for further information visit https://clippy.rust-lang.org/main/index.html#chunks_exact_to_as_chunks
+
+error: the loop variable `vector` is used to index `IDT`
+   --> src/arch/x86_64/idt.rs:567:19
+    |
+567 |     for vector in 0..32 {
+    |                   ^^^^^
+    |
+note: for this index operation
+   --> src/arch/x86_64/idt.rs:571:13
+    |
+571 |             IDT[vector] = IdtEntry::interrupt_gate(address, selector, ist);
+    |             ^^^^^^^^^^^
+    = help: for further information visit https://clippy.rust-lang.org/main/index.html#needless_range_loop
+    = note: `-D clippy::needless-range-loop` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::needless_range_loop)]`
+help: consider using an iterator and `.enumerate()`
+    |
+567 -     for vector in 0..32 {
+567 +     for (vector, <item>) in IDT.iter_mut().enumerate().take(32) {
+    |
+
+error: the loop variable `index` is used to index `CPU_GDT[cpu]`
+   --> src/arch/x86_64/idt.rs:617:22
+    |
+617 |         for index in 0..5 {
+    |                      ^^^^
+    |
+note: for this index operation
+   --> src/arch/x86_64/idt.rs:618:13
+    |
+618 |             CPU_GDT[cpu][index] = core::ptr::addr_of!(GDT)
+    |             ^^^^^^^^^^^^^^^^^^^
+    = help: for further information visit https://clippy.rust-lang.org/main/index.html#needless_range_loop
+help: consider using an iterator and `.enumerate()`
+    |
+617 -         for index in 0..5 {
+617 +         for (index, <item>) in CPU_GDT[cpu].iter_mut().enumerate().take(5) {
+    |
+
+error: the loop variable `index` is used to index `BOOT_CPU_LOCALS`
+    --> src/main.rs:1063:18
+     |
+1063 |     for index in 0..limit {
+     |                  ^^^^^^^^
+     |
+note: for this index operation
+    --> src/main.rs:1071:26
+     |
+1071 |             let local = &BOOT_CPU_LOCALS[index];
+     |                          ^^^^^^^^^^^^^^^^^^^^^^
+     = help: for further information visit https://clippy.rust-lang.org/main/index.html#needless_range_loop
+help: consider using an iterator and `.enumerate()`
+     |
+1063 -     for index in 0..limit {
+1063 +     for (index, <item>) in BOOT_CPU_LOCALS.iter().enumerate().take(limit) {
+     |
+
+error: the loop variable `index` is used to index `BOOT_CPU_LOCALS`
+    --> src/main.rs:1129:18
+     |
+1129 |     for index in 0..cpu_count {
+     |                  ^^^^^^^^^^^^
+     |
+note: for this index operation
+    --> src/main.rs:1130:22
+     |
+1130 |         let local = &BOOT_CPU_LOCALS[index];
+     |                      ^^^^^^^^^^^^^^^^^^^^^^
+     = help: for further information visit https://clippy.rust-lang.org/main/index.html#needless_range_loop
+help: consider using an iterator and `.enumerate()`
+     |
+1129 -     for index in 0..cpu_count {
+1129 +     for (index, <item>) in BOOT_CPU_LOCALS.iter().enumerate().take(cpu_count) {
+     |
+
+error: the loop variable `cpu` is used to index `BOOT_CPU_LOCALS`
+    --> src/main.rs:1869:16
+     |
+1869 |       for cpu in 0..SMP_DETECTED_COUNT
+     |  ________________^
+1870 | |         .load(Ordering::Acquire)
+1871 | |         .min(MAX_BOOT_CPUS)
+     | |___________________________^
+     |
+note: for this index operation
+    --> src/main.rs:1873:12
+     |
+1873 |         if BOOT_CPU_LOCALS[cpu].online.load(Ordering::Acquire) != 0 && is_secondary_cpu(cpu) {
+     |            ^^^^^^^^^^^^^^^^^^^^
+     = help: for further information visit https://clippy.rust-lang.org/main/index.html#needless_range_loop
+help: consider using an iterator and `.enumerate()`
+     |
+1869 ~     for (cpu, <item>) in BOOT_CPU_LOCALS.iter().enumerate().take(SMP_DETECTED_COUNT
+1870 +         .load(Ordering::Acquire)
+1871 +         .min(MAX_BOOT_CPUS))
+     |
+
+error: the loop variable `cpu` is used to index `BOOT_CPU_LOCALS`
+    --> src/main.rs:2148:16
+     |
+2148 |     for cpu in 0..SMP_DETECTED_COUNT.load(Ordering::Acquire) {
+     |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+note: for this index operation
+    --> src/main.rs:2149:12
+     |
+2149 |         if BOOT_CPU_LOCALS[cpu].online.load(Ordering::Acquire) != 0
+     |            ^^^^^^^^^^^^^^^^^^^^
+     = help: for further information visit https://clippy.rust-lang.org/main/index.html#needless_range_loop
+help: consider using an iterator and `.enumerate()`
+     |
+2148 -     for cpu in 0..SMP_DETECTED_COUNT.load(Ordering::Acquire) {
+2148 +     for (cpu, <item>) in BOOT_CPU_LOCALS.iter().enumerate().take(SMP_DETECTED_COUNT.load(Ordering::Acquire)) {
+     |
+
+error: very complex type used. Consider factoring parts into `type` definitions
+    --> src/main.rs:2244:6
+     |
+2244 |   ) -> Result<
+     |  ______^
+2245 | |     (
+2246 | |         OwnedAddressSpace<BootPageTableAccess, PROCESS_VM_PAGE_CAPACITY>,
+2247 | |         u64,
+...    |
+2251 | |     u16,
+2252 | | > {
+     | |_^
+     |
+     = help: for further information visit https://clippy.rust-lang.org/main/index.html#type_complexity
+
+error: match can be simplified with `.unwrap_or_default()`
+    --> src/main.rs:2653:22
+     |
+2653 |       let iterations = match u32::try_from(AP_VM_STRESS_TARGET) {
+     |  ______________________^
+2654 | |         Ok(iterations) => iterations,
+2655 | |         Err(_) => 0,
+2656 | |     };
+     | |_____^ help: ascribe the type u32 and replace your expression with: `u32::try_from(AP_VM_STRESS_TARGET).unwrap_or_default()`
+     |
+     = help: for further information visit https://clippy.rust-lang.org/main/index.html#manual_unwrap_or_default
+     = note: `-D clippy::manual-unwrap-or-default` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::manual_unwrap_or_default)]`
+
+error: this `if` statement can be collapsed
+    --> src/main.rs:2765:21
+     |
+2765 | /                     if process.id == PROCESS_PROBE_IDS[process_index].load(Ordering::Acquire) {
+2766 | |                         if !cfg!(feature = "smp-stress-test") || heap_stress_cycle(process.id) {
+2767 | |                             let completed = counter.fetch_add(1, Ordering::AcqRel) + 1;
+2768 | |                             sample_stack |= completed == AP_VM_STRESS_TARGET;
+2769 | |                         }
+2770 | |                     }
+     | |_____________________^
+     |
+     = help: for further information visit https://clippy.rust-lang.org/main/index.html#collapsible_if
+     = note: `-D clippy::collapsible-if` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::collapsible_if)]`
+help: collapse nested if block
+     |
+2765 ~                     if process.id == PROCESS_PROBE_IDS[process_index].load(Ordering::Acquire)
+2766 ~                         && (!cfg!(feature = "smp-stress-test") || heap_stress_cycle(process.id)) {
+2767 |                             let completed = counter.fetch_add(1, Ordering::AcqRel) + 1;
+2768 |                             sample_stack |= completed == AP_VM_STRESS_TARGET;
+2769 ~                         }
+     |
+
+error: the `Err`-variant returned from this function is very large
+    --> src/main.rs:3108:69
+     |
+3108 | fn store_process_vm(space: RuntimeProcessVm, owner: Option<u64>) -> Result<u8, RuntimeProcessVm> {
+     |                                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 4744 bytes
+     |
+     = help: try reducing the size of `carlio_os::vma::ProcessVm<BootPageTableAccess, PROCESS_VM_PAGE_CAPACITY, PROCESS_VM_REGION_CAPACITY>`, for example by boxing large elements or replacing it with `Box<carlio_os::vma::ProcessVm<BootPageTableAccess, PROCESS_VM_PAGE_CAPACITY, PROCESS_VM_REGION_CAPACITY>>`
+     = help: for further information visit https://clippy.rust-lang.org/main/index.html#result_large_err
+     = note: `-D clippy::result-large-err` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::result_large_err)]`
+
+error: call to `std::mem::forget` with a value that does not implement `Drop`. Forgetting such a type is the same as dropping it
+    --> src/main.rs:3135:21
+     |
+3135 |                     core::mem::forget(space);
+     |                     ^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+note: argument has type `carlio_os::vma::ProcessVm<BootPageTableAccess, 128, 64>`
+    --> src/main.rs:3135:39
+     |
+3135 |                     core::mem::forget(space);
+     |                                       ^^^^^
+     = help: for further information visit https://clippy.rust-lang.org/main/index.html#forget_non_drop
+     = note: `-D clippy::forget-non-drop` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::forget_non_drop)]`
+
+error: call to `std::mem::forget` with a value that does not implement `Drop`. Forgetting such a type is the same as dropping it
+    --> src/main.rs:3160:21
+     |
+3160 |                     core::mem::forget(vm);
+     |                     ^^^^^^^^^^^^^^^^^^^^^
+     |
+note: argument has type `carlio_os::vma::ProcessVm<BootPageTableAccess, 128, 64>`
+    --> src/main.rs:3160:39
+     |
+3160 |                     core::mem::forget(vm);
+     |                                       ^^
+     = help: for further information visit https://clippy.rust-lang.org/main/index.html#forget_non_drop
+
+error: enclosing `Ok` and `?` operator are unneeded
+    --> src/main.rs:3441:9
+     |
+3441 |         Ok(usize::try_from(amount).map_err(|_| carlio_os::linux_abi::EOVERFLOW)?)
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: for further information visit https://clippy.rust-lang.org/main/index.html#needless_question_mark
+     = note: `-D clippy::needless-question-mark` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::needless_question_mark)]`
+help: remove the enclosing `Ok` and `?` operator
+     |
+3441 -         Ok(usize::try_from(amount).map_err(|_| carlio_os::linux_abi::EOVERFLOW)?)
+3441 +         usize::try_from(amount).map_err(|_| carlio_os::linux_abi::EOVERFLOW)
+     |
+
+error: useless conversion to the same type: `usize`
+    --> src/main.rs:3441:12
+     |
+3441 |         Ok(usize::try_from(amount).map_err(|_| carlio_os::linux_abi::EOVERFLOW)?)
+     |            ^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: consider removing `usize::try_from()`
+     = help: for further information visit https://clippy.rust-lang.org/main/index.html#useless_conversion
+     = note: `-D clippy::useless-conversion` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::useless_conversion)]`
+
+error: this `if` statement can be collapsed
+    --> src/main.rs:4368:16
+     |
+4368 |           } else if roots[index] != 0 {
+     |  ________________^
+4369 | |             if !destroy_process_probe_space_by_root(roots[index]) {
+4370 | |                 success = false;
+4371 | |             }
+4372 | |         }
+     | |_________^
+     |
+     = help: for further information visit https://clippy.rust-lang.org/main/index.html#collapsible_if
+help: collapse nested if block
+     |
+4368 ~         } else if roots[index] != 0
+4369 ~             && !destroy_process_probe_space_by_root(roots[index]) {
+4370 |                 success = false;
+4371 ~             }
+     |
+
+error: this `if` statement can be collapsed
+    --> src/main.rs:5124:5
+     |
+5124 | /     if vfs
+5125 | |         .check_access_as(
+5126 | |             "/bin",
+5127 | |             AccessContext::new(root, &[], 0),
+...    |
+5136 | |     }
+     | |_____^
+     |
+     = help: for further information visit https://clippy.rust-lang.org/main/index.html#collapsible_if
+help: collapse nested if block
+     |
+5130 ~         .is_err()
+5131 ~         && vfs.create_fhs_layout().is_err() {
+5132 |             write("VFS: falha ao criar hierarquia FHS em RAM.\r\n");
+5133 |             return;
+5134 ~         }
+     |
+
+error: could not compile `carlio-os` (bin "carlio-kernel") due to 22 previous errors

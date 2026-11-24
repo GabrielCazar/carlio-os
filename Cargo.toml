@@ -15,6 +15,7 @@ storage-test = []
 stack-watermark = []
 smp-stress-test = []
 disk-exec-test = []
+disk-read-test = []
 graphics = ["dep:embedded-graphics"]
 
 [lib]
@@ -41,6 +42,7 @@ opt-level = "s"
 
 [dependencies]
 argon2 = { version = "0.5.3", default-features = false, features = ["password-hash", "zeroize"] }
+chacha20poly1305 = { version = "0.10.1", default-features = false }
 embedded-graphics = { version = "0.8.1", default-features = false, optional = true }
 zeroize = { version = "1", default-features = false }
 

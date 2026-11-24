@@ -3,6 +3,8 @@ use crate::block::{BlockDevice, SECTOR_SIZE};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fat32Error {
+    Journal(crate::sector_journal::JournalError),
+    WriteUnsupported,
     Device,
     InvalidBootSector,
     UnsupportedGeometry,
@@ -19,6 +21,8 @@ pub struct Fat32File {
     pub name: [u8; 11],
     pub size: u32,
     first_cluster: u32,
+    directory_lba: u64,
+    directory_offset: usize,
     pub attributes: u8,
 }
 
@@ -32,6 +36,80 @@ pub struct Fat32Volume<D> {
     cluster_count: u32,
     root_cluster: u32,
     sectors_per_cluster: u8,
+}
+
+const LFN_ENTRY_UNITS: usize = 13;
+const LFN_MAX_ENTRIES: usize = 20;
+
+struct LongName {
+    units: [u16; LFN_ENTRY_UNITS * LFN_MAX_ENTRIES],
+    count: usize,
+    next: usize,
+    checksum: u8,
+}
+
+impl LongName {
+    fn new() -> Self {
+        Self {
+            units: [0; LFN_ENTRY_UNITS * LFN_MAX_ENTRIES],
+            count: 0,
+            next: 0,
+            checksum: 0,
+        }
+    }
+
+    fn push(&mut self, raw: &[u8; 32]) {
+        let ordinal = usize::from(raw[0] & 0x1f);
+        if raw[0] & 0xa0 != 0
+            || !(1..=LFN_MAX_ENTRIES).contains(&ordinal)
+            || raw[12] != 0
+            || u16le(raw, 26) != 0
+        {
+            self.count = 0;
+            return;
+        }
+        if raw[0] & 0x40 != 0 {
+            self.count = ordinal;
+            self.next = ordinal;
+            self.checksum = raw[13];
+        }
+        if self.count == 0 || self.next != ordinal || self.checksum != raw[13] {
+            self.count = 0;
+            return;
+        }
+        let start = (ordinal - 1) * LFN_ENTRY_UNITS;
+        for (index, offset) in [1, 3, 5, 7, 9, 14, 16, 18, 20, 22, 24, 28, 30]
+            .into_iter()
+            .enumerate()
+        {
+            self.units[start + index] = u16le(raw, offset);
+        }
+        self.next -= 1;
+    }
+
+    fn for_alias(&self, alias: &[u8; 11]) -> Option<&[u16]> {
+        let checksum = alias
+            .iter()
+            .fold(0u8, |sum, byte| sum.rotate_right(1).wrapping_add(*byte));
+        if self.count == 0 || self.next != 0 || self.checksum != checksum {
+            return None;
+        }
+        let units = &self.units[..self.count * LFN_ENTRY_UNITS];
+        let length = units
+            .iter()
+            .position(|unit| *unit == 0)
+            .unwrap_or(units.len());
+        if length <= (self.count - 1) * LFN_ENTRY_UNITS
+            || length > 255
+            || units[..length].contains(&0xffff)
+            || units
+                .get(length + 1..)
+                .is_some_and(|padding| padding.iter().any(|unit| *unit != 0xffff))
+        {
+            return None;
+        }
+        Some(&units[..length])
+    }
 }
 
 impl<D: BlockDevice> Fat32Volume<D> {
@@ -54,12 +132,15 @@ impl<D: BlockDevice> Fat32Volume<D> {
             u32le(&boot, 32)
         };
         let fat_sectors = u32le(&boot, 36);
+        let flags = u16le(&boot, 40);
+        let active_fat = if flags & 0x80 == 0 { 0 } else { flags & 0x0f };
         let root_cluster = u32le(&boot, 44) & 0x0fff_ffff;
         if bytes_per_sector != 512
             || !sectors_per_cluster.is_power_of_two()
             || sectors_per_cluster > 128
             || reserved == 0
             || !(1..=2).contains(&fats)
+            || active_fat >= u16::from(fats)
             || fat_sectors == 0
             || total == 0
         {
@@ -76,7 +157,10 @@ impl<D: BlockDevice> Fat32Volume<D> {
         }
         let data_sectors = total as u64 - metadata_sectors;
         let cluster_count = (data_sectors / sectors_per_cluster as u64) as u32;
-        if cluster_count < 65_525 || root_cluster < 2 || root_cluster >= cluster_count + 2 {
+        if !(65_525..=0x0fff_ffee).contains(&cluster_count)
+            || root_cluster < 2
+            || root_cluster >= cluster_count + 2
+        {
             return Err(Fat32Error::UnsupportedGeometry);
         }
         let fat_capacity = fat_sectors as u64 * (SECTOR_SIZE as u64 / 4);
@@ -87,7 +171,9 @@ impl<D: BlockDevice> Fat32Volume<D> {
             device,
             partition_start,
             volume_sectors: total as u64,
-            fat_start: partition_start + reserved as u64,
+            fat_start: partition_start
+                + reserved as u64
+                + u64::from(active_fat) * u64::from(fat_sectors),
             fat_sectors,
             data_start: partition_start + metadata_sectors,
             cluster_count,
@@ -96,13 +182,106 @@ impl<D: BlockDevice> Fat32Volume<D> {
         })
     }
 
+    /// Overwrites one allocated sector of an existing file on a clean,
+    /// exclusively owned volume. The caller reserves two sectors outside
+    /// this volume for the redo record and must recover before other writes.
+    pub fn overwrite_file_sector(
+        &mut self,
+        path: &str,
+        journal: u64,
+        data: &[u8; SECTOR_SIZE],
+    ) -> Result<(), Fat32Error> {
+        let target = self.writable_file_sector(path, journal)?;
+        crate::sector_journal::overwrite(&mut self.device, journal, target, data)
+            .map_err(Fat32Error::Journal)
+    }
+
+    pub fn recover_file_sector(&mut self, path: &str, journal: u64) -> Result<bool, Fat32Error> {
+        let target = self.writable_file_sector(path, journal)?;
+        crate::sector_journal::recover(&mut self.device, journal, target)
+            .map_err(Fat32Error::Journal)
+    }
+
+    fn writable_file_sector(&mut self, path: &str, journal: u64) -> Result<u64, Fat32Error> {
+        let file = self.resolve_file(path)?;
+        if file.size < SECTOR_SIZE as u32
+            || file.attributes & 0x09 != 0
+            || journal == 0
+            || journal
+                .checked_add(1)
+                .is_none_or(|last| last >= self.partition_start)
+        {
+            return Err(Fat32Error::WriteUnsupported);
+        }
+        self.next_cluster(file.first_cluster)?;
+        self.cluster_sector(file.first_cluster)
+    }
+
+    /// Updates the on-disk read-only attribute of an existing file.
+    /// The caller must exclusively own the volume and reserve the redo sectors.
+    pub fn set_file_read_only(
+        &mut self,
+        path: &str,
+        journal: u64,
+        read_only: bool,
+    ) -> Result<(), Fat32Error> {
+        use crate::sector_journal::{overwrite_tagged, FAT32_ENTRY};
+
+        self.check_metadata_journal(journal)?;
+        let file = self.resolve_file(path)?;
+        let mut sector = [0; SECTOR_SIZE];
+        self.device
+            .read_sector(file.directory_lba, &mut sector)
+            .map_err(|_| Fat32Error::Device)?;
+        sector[file.directory_offset + 11] = (file.attributes & !1) | u8::from(read_only);
+        overwrite_tagged(
+            &mut self.device,
+            journal,
+            file.directory_lba,
+            &sector,
+            FAT32_ENTRY,
+        )
+        .map_err(Fat32Error::Journal)
+    }
+
+    /// Replays a dedicated metadata journal before directory lookup. A torn
+    /// directory sector can have lost the name needed to reach the record.
+    pub fn recover_file_attributes(&mut self, journal: u64) -> Result<bool, Fat32Error> {
+        use crate::sector_journal::{recover_tagged, FAT32_ENTRY};
+
+        self.check_metadata_journal(journal)?;
+        let data = self.data_start..self.partition_start + self.volume_sectors;
+        recover_tagged(&mut self.device, journal, FAT32_ENTRY, |lba| {
+            data.contains(&lba)
+        })
+        .map_err(Fat32Error::Journal)
+    }
+
+    fn check_metadata_journal(&mut self, journal: u64) -> Result<(), Fat32Error> {
+        if journal == 0
+            || journal
+                .checked_add(1)
+                .is_none_or(|last| last >= self.partition_start)
+        {
+            return Err(Fat32Error::WriteUnsupported);
+        }
+        let mut fat = [0; SECTOR_SIZE];
+        self.device
+            .read_sector(self.fat_start, &mut fat)
+            .map_err(|_| Fat32Error::Device)?;
+        if u32le(&fat, 4) & 0x0c00_0000 != 0x0c00_0000 {
+            return Err(Fat32Error::WriteUnsupported);
+        }
+        Ok(())
+    }
+
     pub fn into_device(self) -> D {
         self.device
     }
 
     pub fn list_root(&mut self, output: &mut [Option<Fat32File>]) -> Result<usize, Fat32Error> {
         let mut count = 0;
-        self.walk_directory(self.root_cluster, |entry| {
+        self.walk_directory(self.root_cluster, |entry, _| {
             if entry.attributes & 0x08 != 0 || entry.attributes == 0x0f {
                 return Ok(());
             }
@@ -200,7 +379,9 @@ impl<D: BlockDevice> Fat32Volume<D> {
             if visited >= self.cluster_count {
                 return Err(Fat32Error::CorruptChain);
             }
-            cluster = self.next_cluster(cluster)?;
+            cluster = self
+                .next_cluster(cluster)?
+                .ok_or(Fat32Error::CorruptChain)?;
             visited += 1;
             skip_clusters -= 1;
         }
@@ -239,17 +420,30 @@ impl<D: BlockDevice> Fat32Volume<D> {
             }
             cluster_offset = 0;
             if remaining > 0 {
-                cluster = self.next_cluster(cluster)?;
+                cluster = self
+                    .next_cluster(cluster)?
+                    .ok_or(Fat32Error::CorruptChain)?;
             }
         }
         Ok(written)
     }
 
     fn find_child(&mut self, directory: u32, name: &str) -> Result<Fat32File, Fat32Error> {
-        let encoded = encode_short_name(name)?;
+        if name.encode_utf16().count() > 255 || name.contains('\0') {
+            return Err(Fat32Error::InvalidName);
+        }
+        let encoded = encode_short_name(name).ok();
         let mut found = None;
-        self.walk_directory(directory, |entry| {
-            if entry.name == encoded {
+        self.walk_directory(directory, |entry, long_name| {
+            if found.is_none()
+                && entry.attributes & 0x08 == 0
+                && (encoded == Some(entry.name)
+                    || long_name.is_some_and(|units| {
+                        char::decode_utf16(units.iter().copied())
+                            .map(|ch| ch.map(|ch| ch.to_ascii_lowercase()))
+                            .eq(name.chars().map(|ch| Ok(ch.to_ascii_lowercase())))
+                    }))
+            {
                 found = Some(entry);
             }
             Ok(())
@@ -260,42 +454,51 @@ impl<D: BlockDevice> Fat32Volume<D> {
     fn walk_directory(
         &mut self,
         first: u32,
-        mut visit: impl FnMut(Fat32File) -> Result<(), Fat32Error>,
+        mut visit: impl FnMut(Fat32File, Option<&[u16]>) -> Result<(), Fat32Error>,
     ) -> Result<(), Fat32Error> {
         let mut cluster = first;
+        let mut long_name = LongName::new();
         for _ in 0..self.cluster_count {
             self.validate_cluster(cluster)?;
             for sector_index in 0..self.sectors_per_cluster {
                 let mut sector = [0; SECTOR_SIZE];
+                let directory_lba = self.cluster_sector(cluster)? + u64::from(sector_index);
                 self.device
-                    .read_sector(
-                        self.cluster_sector(cluster)? + sector_index as u64,
-                        &mut sector,
-                    )
+                    .read_sector(directory_lba, &mut sector)
                     .map_err(|_| Fat32Error::Device)?;
-                for raw in sector.as_chunks::<32>().0 {
+                for (index, raw) in sector.as_chunks::<32>().0.iter().enumerate() {
                     if raw[0] == 0 {
                         return Ok(());
                     }
-                    if raw[0] == 0xe5 || raw[11] == 0x0f {
+                    if raw[0] == 0xe5 {
+                        long_name.count = 0;
+                        continue;
+                    }
+                    if raw[11] == 0x0f {
+                        long_name.push(raw);
                         continue;
                     }
                     let mut name = [0; 11];
                     name.copy_from_slice(&raw[..11]);
                     let first_cluster =
                         (((u16le(raw, 20) as u32) << 16) | u16le(raw, 26) as u32) & 0x0fff_ffff;
-                    visit(Fat32File {
-                        name,
-                        size: u32le(raw, 28),
-                        first_cluster,
-                        attributes: raw[11],
-                    })?;
+                    visit(
+                        Fat32File {
+                            name,
+                            size: u32le(raw, 28),
+                            first_cluster,
+                            directory_lba,
+                            directory_offset: index * 32,
+                            attributes: raw[11],
+                        },
+                        long_name.for_alias(&name),
+                    )?;
+                    long_name.count = 0;
                 }
             }
-            match self.next_cluster(cluster) {
-                Ok(next) => cluster = next,
-                Err(Fat32Error::CorruptChain) => return Ok(()),
-                Err(error) => return Err(error),
+            match self.next_cluster(cluster)? {
+                Some(next) => cluster = next,
+                None => return Ok(()),
             }
         }
         Err(Fat32Error::CorruptChain)
@@ -321,7 +524,7 @@ impl<D: BlockDevice> Fat32Volume<D> {
         Ok(relative)
     }
 
-    fn next_cluster(&mut self, cluster: u32) -> Result<u32, Fat32Error> {
+    fn next_cluster(&mut self, cluster: u32) -> Result<Option<u32>, Fat32Error> {
         self.validate_cluster(cluster)?;
         let offset = cluster as u64 * 4;
         let sector_index = offset / SECTOR_SIZE as u64;
@@ -338,10 +541,11 @@ impl<D: BlockDevice> Fat32Volume<D> {
                 .unwrap(),
         ) & 0x0fff_ffff;
         if value >= 0x0fff_fff8 {
-            return Err(Fat32Error::CorruptChain);
+            return Ok(None);
         }
-        self.validate_cluster(value)?;
-        Ok(value)
+        self.validate_cluster(value)
+            .map_err(|_| Fat32Error::CorruptChain)?;
+        Ok(Some(value))
     }
 }
 
@@ -405,7 +609,7 @@ fn encode_short_name(name: &str) -> Result<[u8; 11], Fat32Error> {
         || parts.next().is_some()
         || !name
             .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+            .all(|b| b.is_ascii_alphanumeric() || b".$%'-_@~`!(){}^#&".contains(&b))
     {
         return Err(Fat32Error::InvalidName);
     }
@@ -539,6 +743,82 @@ mod tests {
         let mut output = [0; 8];
         assert_eq!(volume.read_path("/docs/note.txt", &mut output), Ok(6));
         assert_eq!(&output[..6], b"nested");
+    }
+
+    #[test]
+    fn reads_long_name_and_retains_alias_when_checksum_is_invalid() {
+        let mut disk = sample_volume();
+        let alias = *b"LONGNA~1TXT";
+        let name = "Long name 🚀.txt";
+        let mut units = [0xffffu16; 26];
+        let length = name.encode_utf16().count();
+        for (target, unit) in units.iter_mut().zip(name.encode_utf16()) {
+            *target = unit;
+        }
+        units[length] = 0;
+        let root = disk.sectors.get_mut(&611).unwrap();
+        root.copy_within(..32, 64);
+        root[64..75].copy_from_slice(&alias);
+        root[96..].fill(0);
+        let checksum = alias
+            .iter()
+            .fold(0u8, |sum, byte| sum.rotate_right(1).wrapping_add(*byte));
+        for (slot, ordinal) in [2usize, 1].into_iter().enumerate() {
+            let raw = &mut root[slot * 32..(slot + 1) * 32];
+            raw.fill(0);
+            raw[0] = ordinal as u8 | if slot == 0 { 0x40 } else { 0 };
+            raw[11] = 0x0f;
+            raw[13] = checksum;
+            for (index, offset) in [1, 3, 5, 7, 9, 14, 16, 18, 20, 22, 24, 28, 30]
+                .into_iter()
+                .enumerate()
+            {
+                raw[offset..offset + 2]
+                    .copy_from_slice(&units[(ordinal - 1) * 13 + index].to_le_bytes());
+            }
+        }
+        let mut volume = Fat32Volume::mount(disk, 10).unwrap();
+        let mut output = [0; 5];
+        assert_eq!(
+            volume.read_root_file("long NAME 🚀.TXT", &mut output),
+            Ok(5)
+        );
+        assert_eq!(&output, b"beta!");
+        let mut disk = volume.into_device();
+        disk.sectors.get_mut(&611).unwrap()[13] ^= 1;
+        let mut volume = Fat32Volume::mount(disk, 10).unwrap();
+        assert_eq!(
+            volume.read_root_file(name, &mut output),
+            Err(Fat32Error::NotFound)
+        );
+        assert_eq!(volume.read_root_file("LONGNA~1.TXT", &mut output), Ok(5));
+    }
+
+    #[test]
+    fn uses_active_fat_and_distinguishes_bad_cluster_from_end_of_chain() {
+        let mut disk = sample_volume();
+        let boot = disk.sectors.get_mut(&10).unwrap();
+        boot[16] = 2;
+        boot[40..42].copy_from_slice(&0x81u16.to_le_bytes());
+        let fat = disk.sectors.remove(&11).unwrap();
+        for sector in (611..=614).rev() {
+            let data = disk.sectors.remove(&sector).unwrap();
+            disk.sectors.insert(sector + 600, data);
+        }
+        let root = disk.sectors.get_mut(&1211).unwrap();
+        for entry in root[64..].as_chunks_mut::<32>().0 {
+            entry[0] = 0xe5;
+        }
+        disk.sectors.insert(611, fat);
+        let mut volume = Fat32Volume::mount(disk, 10).unwrap();
+        assert_eq!(volume.list_root(&mut [None; 2]), Ok(2));
+        let mut disk = volume.into_device();
+        disk.sectors.get_mut(&611).unwrap()[8..12].copy_from_slice(&0x0fff_fff7u32.to_le_bytes());
+        let mut volume = Fat32Volume::mount(disk, 10).unwrap();
+        assert_eq!(
+            volume.list_root(&mut [None; 2]),
+            Err(Fat32Error::CorruptChain)
+        );
     }
 
     #[test]

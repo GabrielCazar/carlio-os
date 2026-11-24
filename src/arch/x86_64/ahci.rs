@@ -5,7 +5,7 @@ use carlio_os::{errors::KernelError, pci::PciFunction};
 use core::{
     arch::asm,
     ptr,
-    sync::atomic::{compiler_fence, Ordering},
+    sync::atomic::{compiler_fence, AtomicBool, Ordering},
 };
 
 const PCI_ADDRESS: u16 = 0xcf8;
@@ -24,6 +24,9 @@ const CMD_FRE: u32 = 1 << 4;
 const CMD_FR: u32 = 1 << 14;
 const CMD_CR: u32 = 1 << 15;
 const TFD_BSY_DRQ: u32 = (1 << 7) | (1 << 3);
+const SSTS_DET_MASK: u32 = 0xf;
+const SSTS_DET_ESTABLISHED: u32 = 3;
+const SERR_PHY_READY_CHANGED: u32 = 1 << 16;
 const HBA_IS_TFES: u32 = 1 << 30;
 const POLL_LIMIT: usize = 10_000_000;
 const PAGE_PRESENT: u64 = 1;
@@ -65,6 +68,12 @@ struct Controller {
 
 static mut CONTROLLER: Option<Controller> = None;
 static BLOCK_IO_LOCK: carlio_os::sync::IrqSpinLock<()> = carlio_os::sync::IrqSpinLock::new(());
+static DEVICE_REMOVED: AtomicBool = AtomicBool::new(false);
+static PORT_UNUSABLE: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "storage-test")]
+static PROBE_REMOVAL: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "storage-test")]
+static PROBE_TIMEOUT: AtomicBool = AtomicBool::new(false);
 
 /// Dispositivo de bloco AHCI descoberto pelo kernel.
 /// Não executa I/O durante a construção; o chamador escolhe quando montar ou
@@ -75,6 +84,9 @@ pub struct AhciBlockDevice {
 }
 
 pub fn block_device() -> Result<AhciBlockDevice, KernelError> {
+    if DEVICE_REMOVED.load(Ordering::Acquire) {
+        return Err(KernelError::DeviceNotFound);
+    }
     let controller = unsafe { CONTROLLER }.ok_or(KernelError::DeviceNotFound)?;
     if controller.sectors == 0 {
         return Err(KernelError::DeviceNotFound);
@@ -116,6 +128,7 @@ impl carlio_os::block::BlockDevice for AhciBlockDevice {
             return Err(carlio_os::block::BlockError::OutOfRange);
         }
         let _guard = BLOCK_IO_LOCK.lock();
+        self.check_ready().map_err(map_block_error)?;
         let target = unsafe { core::ptr::addr_of_mut!(DMA.sector).cast::<u8>() };
         for (index, byte) in data.iter().enumerate() {
             unsafe { ptr::write_volatile(target.add(index), *byte) };
@@ -127,6 +140,17 @@ impl carlio_os::block::BlockDevice for AhciBlockDevice {
     fn flush(&mut self) -> Result<(), carlio_os::block::BlockError> {
         let _guard = BLOCK_IO_LOCK.lock();
         command(&self.map, 0xea, 0, false, false, false).map_err(map_block_error)
+    }
+}
+
+impl AhciBlockDevice {
+    fn check_ready(&self) -> Result<(), KernelError> {
+        let controller = unsafe { CONTROLLER }.ok_or(KernelError::DeviceNotFound)?;
+        check_media(controller.port)?;
+        if PORT_UNUSABLE.load(Ordering::Acquire) {
+            return Err(KernelError::IoTimeout);
+        }
+        Ok(())
     }
 }
 
@@ -339,29 +363,42 @@ pub unsafe fn initialize(
 
 #[cfg(feature = "storage-test")]
 pub unsafe fn disposable_disk_test() -> Result<(), KernelError> {
-    let controller = unsafe { CONTROLLER }.ok_or(KernelError::DeviceNotFound)?;
-    if controller.sectors < 2 {
+    use carlio_os::block::{BlockDevice, BlockError, SECTOR_SIZE};
+
+    let mut disk = block_device()?;
+    let sectors = disk.sector_count();
+    if sectors < 4 {
         return Err(KernelError::DeviceNotFound);
     }
-    let map = unsafe {
-        let hhdm = core::ptr::addr_of!(super::HHDM_OFFSET).read_volatile();
-        let kernel_physical = core::ptr::addr_of!(super::KERNEL_PHYSICAL_BASE).read_volatile();
-        let kernel_virtual = core::ptr::addr_of!(super::KERNEL_VIRTUAL_BASE).read_volatile();
-        AddressMap {
-            hhdm,
-            kernel_physical,
-            kernel_virtual,
-        }
-    };
-    unsafe { read_write_sector(&map, 1, true)? };
-    unsafe { read_write_sector(&map, 1, false)? };
-    let sector = unsafe { core::ptr::addr_of!(DMA.sector).cast::<u8>() };
-    for index in 0..512 {
-        if unsafe { ptr::read_volatile(sector.add(index)) } != test_byte(index) {
+    let positions = [1, sectors - 2, sectors - 1];
+    let patterns = [
+        [0x5a; SECTOR_SIZE],
+        [0x93; SECTOR_SIZE],
+        [0xc7; SECTOR_SIZE],
+    ];
+    let io_error = |_| KernelError::ControllerError;
+    for (lba, pattern) in positions.into_iter().zip(&patterns) {
+        disk.write_sector(lba, pattern).map_err(io_error)?;
+    }
+    disk.flush().map_err(io_error)?;
+
+    let mut sector = [0; SECTOR_SIZE];
+    for (lba, pattern) in positions.into_iter().zip(&patterns) {
+        disk.read_sector(lba, &mut sector).map_err(io_error)?;
+        if &sector != pattern {
             return Err(KernelError::ControllerError);
         }
     }
-    match command(&map, 0xff, 0, false, false, false) {
+    if disk.read_sector(sectors, &mut sector) != Err(BlockError::OutOfRange)
+        || disk.write_sector(sectors, &sector) != Err(BlockError::OutOfRange)
+    {
+        return Err(KernelError::ControllerError);
+    }
+    if sectors == 1_u64 << 32 {
+        super::write("AHCI: limite de 2 TiB verificado.\r\n");
+    }
+    let _guard = BLOCK_IO_LOCK.lock();
+    match command(&disk.map, 0xff, 0, false, false, false) {
         Err(KernelError::ControllerError) => Ok(()),
         Err(error) => Err(error),
         Ok(()) => Err(KernelError::ControllerError),
@@ -437,23 +474,45 @@ fn identify(map: &AddressMap) -> Result<(), KernelError> {
 }
 
 #[cfg(feature = "storage-test")]
-unsafe fn read_write_sector(map: &AddressMap, lba: u64, write: bool) -> Result<(), KernelError> {
-    if write {
-        for index in 0..512 {
-            unsafe {
-                ptr::write_volatile(core::ptr::addr_of_mut!(DMA.sector[index]), test_byte(index))
-            };
-        }
-        compiler_fence(Ordering::SeqCst);
+pub fn disposable_removal_test() -> Result<(), KernelError> {
+    use carlio_os::block::{BlockDevice, BlockError, SECTOR_SIZE};
+
+    let mut disk = block_device()?;
+    let mut sector = [0xa5; SECTOR_SIZE];
+    PROBE_REMOVAL.store(true, Ordering::Release);
+    let result = disk.read_sector(1, &mut sector);
+    PROBE_REMOVAL.store(false, Ordering::Release);
+    if result != Err(BlockError::Removed)
+        || sector != [0xa5; SECTOR_SIZE]
+        || disk.write_sector(1, &sector) != Err(BlockError::Removed)
+        || disk.flush() != Err(BlockError::Removed)
+    {
+        return Err(KernelError::ControllerError);
     }
-    command(
-        map,
-        if write { 0x35 } else { 0x25 },
-        lba,
-        write,
-        false,
-        true,
-    )
+    Ok(())
+}
+
+#[cfg(feature = "storage-test")]
+pub fn disposable_timeout_test() -> Result<(), KernelError> {
+    use carlio_os::block::{BlockDevice, BlockError, SECTOR_SIZE};
+
+    let mut disk = block_device()?;
+    let mut sector = [0xa5; SECTOR_SIZE];
+    PROBE_TIMEOUT.store(true, Ordering::Release);
+    let result = disk.read_sector(1, &mut sector);
+    PROBE_TIMEOUT.store(false, Ordering::Release);
+    if result != Err(BlockError::Timeout)
+        || sector != [0xa5; SECTOR_SIZE]
+        || PORT_UNUSABLE.load(Ordering::Acquire)
+    {
+        return Err(KernelError::ControllerError);
+    }
+    super::write("AHCI: timeout e COMRESET verificados; aguardando QEMU.\r\n");
+    let _ = super::serial_read();
+    if disk.read_sector(1, &mut sector).is_err() || sector != [0; SECTOR_SIZE] {
+        return Err(KernelError::ControllerError);
+    }
+    Ok(())
 }
 
 fn command(
@@ -465,6 +524,16 @@ fn command(
     transfer_data: bool,
 ) -> Result<(), KernelError> {
     let controller = unsafe { CONTROLLER }.ok_or(KernelError::DeviceNotFound)?;
+    let port = controller.port;
+    check_media(port)?;
+    if PORT_UNUSABLE.load(Ordering::Acquire) {
+        return Err(KernelError::IoTimeout);
+    }
+    if !poll_clear(port, PORT_TFD, TFD_BSY_DRQ) || unsafe { read_reg(port, PORT_CI) } & 1 != 0 {
+        check_media(port)?;
+        reset_after_error(port, map)?;
+        return Err(KernelError::IoTimeout);
+    }
     let table = unsafe { core::ptr::addr_of_mut!(DMA.command_table).cast::<u8>() };
     let data = unsafe {
         if identify {
@@ -507,27 +576,69 @@ fn command(
         }
     }
     compiler_fence(Ordering::SeqCst);
-    unsafe { write_reg(controller.port, 0x30 / 4, u32::MAX) };
-    if !poll_clear(controller.port, PORT_TFD, TFD_BSY_DRQ) {
-        return Err(KernelError::IoTimeout);
+    check_media(port)?;
+    unsafe { write_reg(port, PORT_CI, 1) };
+    #[cfg(feature = "storage-test")]
+    if PROBE_REMOVAL.swap(false, Ordering::AcqRel) {
+        super::write("AHCI: leitura submetida; aguardando remoção QEMU.\r\n");
+        let _ = super::serial_read();
     }
-    unsafe { write_reg(controller.port, PORT_CI, 1) };
-    for iteration in 0..POLL_LIMIT {
+    // The QEMU diagnostic holds PxCI until COMRESET. A shorter poll budget
+    // keeps the same timeout/recovery path practical under MMIO emulation.
+    let poll_limit = POLL_LIMIT;
+    #[cfg(feature = "storage-test")]
+    let poll_limit = if PROBE_TIMEOUT.swap(false, Ordering::AcqRel) {
+        100_000
+    } else {
+        poll_limit
+    };
+    for iteration in 0..poll_limit {
         if iteration & 0x3fff == 0 {
             super::idt::heartbeat();
         }
-        let is = unsafe { read_reg(controller.port, 0x10 / 4) };
+        check_media(port)?;
+        let is = unsafe { read_reg(port, 0x10 / 4) };
         if is & HBA_IS_TFES != 0 {
-            recover_port(controller.port, map)?;
+            reset_after_error(port, map)?;
             return Err(KernelError::ControllerError);
         }
-        if unsafe { read_reg(controller.port, PORT_CI) } & 1 == 0 {
+        if unsafe { read_reg(port, PORT_CI) } & 1 == 0 {
+            check_media(port)?;
             compiler_fence(Ordering::SeqCst);
+            if transfer_data && unsafe { ptr::read_volatile(list.add(4).cast::<u32>()) } != 512 {
+                return Err(KernelError::ControllerError);
+            }
             return Ok(());
         }
         core::hint::spin_loop();
     }
+    check_media(port)?;
+    reset_after_error(port, map)?;
     Err(KernelError::IoTimeout)
+}
+
+fn check_media(port: *mut u32) -> Result<(), KernelError> {
+    if DEVICE_REMOVED.load(Ordering::Acquire) {
+        return Err(KernelError::DeviceNotFound);
+    }
+    let status = unsafe { read_reg(port, PORT_SSTS) };
+    let errors = unsafe { read_reg(port, PORT_SERR) };
+    if status & SSTS_DET_MASK != SSTS_DET_ESTABLISHED || errors & SERR_PHY_READY_CHANGED != 0 {
+        // Existing mounts and regions refer to the original disk.
+        DEVICE_REMOVED.store(true, Ordering::Release);
+        return Err(KernelError::DeviceNotFound);
+    }
+    Ok(())
+}
+
+fn reset_after_error(port: *mut u32, map: &AddressMap) -> Result<(), KernelError> {
+    let result = recover_port(port, map);
+    match result {
+        Err(KernelError::DeviceNotFound) => DEVICE_REMOVED.store(true, Ordering::Release),
+        Err(_) => PORT_UNUSABLE.store(true, Ordering::Release),
+        Ok(()) => {}
+    }
+    result
 }
 
 /// Reinicia somente o link SATA após erro de task file, preservando o HBA.
@@ -630,11 +741,6 @@ fn identify_capacity() -> u64 {
                 | ptr::read_volatile(words.add(60)) as u64
         }
     }
-}
-
-#[cfg(feature = "storage-test")]
-fn test_byte(index: usize) -> u8 {
-    (index as u8).wrapping_mul(37).wrapping_add(0x5a)
 }
 
 unsafe fn read_reg(base: *mut u32, register: usize) -> u32 {

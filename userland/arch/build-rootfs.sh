@@ -22,7 +22,7 @@ normalized_date=$(date -d "$snapshot_date" +%F 2>/dev/null) || fail 'data de sna
 [[ $normalized_date == "${snapshot_date//\//-}" ]] || fail 'data de snapshot inválida.'
 (( EUID != 0 )) || fail 'execute como usuário comum; pacstrap usará namespaces (-N), sem root no host.'
 
-for command in pacstrap git install mkdir mktemp sed date; do
+for command in pacstrap pacman git install mkdir mktemp sed date; do
     command -v "$command" >/dev/null 2>&1 || fail "comando obrigatório ausente: $command"
 done
 
@@ -84,6 +84,14 @@ printf 'Pacotes: %s\n' "${packages[*]}"
 # -N confina a instalação a namespaces user/mount; não há fallback privilegiado.
 # -K cria keyring próprio no alvo; assinaturas continuam obrigatórias no pacman.
 pacstrap -N -K -C "$pacman_conf" "$rootfs" "${packages[@]}"
+
+# Algumas versões de pacstrap -N retornam zero mesmo após falha do pacman.
+# Consulte o banco do alvo antes de publicar o manifesto de sucesso.
+package_db="$rootfs/var/lib/pacman"
+[[ -d $package_db/local ]] || fail 'banco de pacotes ausente após pacstrap.'
+pacman --config "$pacman_conf" --root "$rootfs" --dbpath "$package_db" -Q "${packages[@]}" >/dev/null \
+    || fail 'a transação não instalou todos os pacotes do perfil.'
+pacman --config "$pacman_conf" --root "$rootfs" --dbpath "$package_db" -Q >"$output_dir/packages.installed.txt"
 
 install -D -m 0644 -- "$pacman_conf" "$rootfs/etc/pacman.conf"
 install -D -m 0644 -- "$packages_file" "$output_dir/packages.base.txt"

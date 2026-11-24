@@ -12,6 +12,8 @@ pub const SYS_LSEEK: u64 = 8;
 pub const SYS_MMAP: u64 = 9;
 pub const SYS_MPROTECT: u64 = 10;
 pub const SYS_MUNMAP: u64 = 11;
+pub const SYS_MADVISE: u64 = 28;
+pub const MADV_PAGEOUT: u64 = 21;
 pub const SYS_BRK: u64 = 12;
 pub const SYS_READ: u64 = 0;
 pub const SYS_OPEN: u64 = 2;
@@ -246,6 +248,9 @@ pub trait LinuxSyscallIo {
     fn mprotect(&mut self, _address: u64, _length: u64, _protection: u64) -> Result<(), u16> {
         Err(EOPNOTSUPP)
     }
+    fn madvise(&mut self, _address: u64, _length: u64, _advice: u64) -> Result<(), u16> {
+        Err(EOPNOTSUPP)
+    }
     fn brk(&mut self, current: u64, _requested: u64) -> u64 {
         current
     }
@@ -301,6 +306,10 @@ pub fn dispatch<I: LinuxSyscallIo>(
         SYS_MUNMAP => result(io.munmap(arguments[0], arguments[1]).map(|_| 0)),
         SYS_MPROTECT => result(
             io.mprotect(arguments[0], arguments[1], arguments[2])
+                .map(|_| 0),
+        ),
+        SYS_MADVISE => result(
+            io.madvise(arguments[0], arguments[1], arguments[2])
                 .map(|_| 0),
         ),
         SYS_BRK => SyscallOutcome::Return(io.brk(context.program_break, arguments[0])),

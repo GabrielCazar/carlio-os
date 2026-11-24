@@ -1,0 +1,133 @@
+--- a/include/hw/ide/ahci.h
++++ b/include/hw/ide/ahci.h
+@@ -44,6 +44,8 @@
+     unsigned idp_offset;    /* Offset of index in I/O port space */
+     uint32_t idp_index;     /* Current IDP index */
+     uint32_t ports;
++    bool test_hold_port0;
++    bool test_comreset_port0;
+     qemu_irq irq;
+     AddressSpace *as;
+ } AHCIState;
+--- a/hw/ide/ahci.c
++++ b/hw/ide/ahci.c
+@@ -334,6 +334,9 @@
+     case AHCI_PORT_REG_SCR_CTL:
+         if (((pr->scr_ctl & AHCI_SCR_SCTL_DET) == 1) &&
+             ((val & AHCI_SCR_SCTL_DET) == 0)) {
++            if (port == 0 && s->test_hold_port0) {
++                s->test_comreset_port0 = true;
++            }
+             ahci_reset_port(s, port);
+         }
+         pr->scr_ctl = val;
+@@ -564,6 +567,9 @@
+     AHCIPortRegs *pr = &s->dev[port].port_regs;
+     uint8_t slot;
+ 
++    if (port == 0 && s->test_hold_port0) {
++        return;
++    }
+     if ((pr->cmd & PORT_CMD_START) && pr->cmd_issue) {
+         for (slot = 0; (slot < 32) && pr->cmd_issue; slot++) {
+             if (pr->cmd_issue & (1U << slot)) {
+--- a/hw/ide/ich.c
++++ b/hw/ide/ich.c
+@@ -61,6 +61,8 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#include "qapi/error.h"
++#include "system/block-backend.h"
+ #include "hw/pci/msi.h"
+ #include "hw/pci/pci.h"
+ #include "migration/vmstate.h"
+@@ -110,6 +112,63 @@
+     ahci_reset(&d->ahci);
+ }
+ 
++/*
++ * Test-only hot unplug. Hold slot submission at PxCI so no backend DMA has
++ * started, then detach the sole disk from port 0 via DEVICE_DELETED.
++ */
++static bool test_hold_get(Object *obj, Error **errp)
++{
++    return ICH9_AHCI(obj)->ahci.test_hold_port0;
++}
++
++static void test_hold_set(Object *obj, bool value, Error **errp)
++{
++    AHCIState *s = &ICH9_AHCI(obj)->ahci;
++
++    if (!s->dev || !s->dev[0].port.ifs[0].blk ||
++        s->dev[0].port_regs.cmd_issue) {
++        error_setg(errp, "Changing the test hold requires an idle attached port 0");
++        return;
++    }
++    if (!value && !s->test_comreset_port0) {
++        error_setg(errp, "Releasing the test hold requires a COMRESET");
++        return;
++    }
++    qbus_set_hotplug_handler(BUS(&s->dev[0].port), value ? obj : NULL);
++    s->test_hold_port0 = value;
++    s->test_comreset_port0 = false;
++}
++
++static bool test_link_get(Object *obj, Error **errp)
++{
++    AHCIState *s = &ICH9_AHCI(obj)->ahci;
++
++    return s->dev && s->dev[0].port.ifs[0].blk;
++}
++
++static void test_unplug(HotplugHandler *handler, DeviceState *dev, Error **errp)
++{
++    AHCIState *s = &ICH9_AHCI(OBJECT(handler))->ahci;
++    AHCIDevice *ad = &s->dev[0];
++
++    if (!s->test_hold_port0 || !ad->port.master ||
++        dev != &ad->port.master->qdev ||
++        ad->port_regs.cmd_issue != 1 || ad->port.dma->aiocb ||
++        !ad->port.ifs[0].blk || ad->port.ifs[0].drive_kind != IDE_HD) {
++        error_setg(errp, "Test unplug requires a held command on SATA port 0");
++        return;
++    }
++    blk_set_dev_ops(ad->port.ifs[0].blk, NULL, NULL);
++    ad->port.ifs[0].blk = NULL;
++    ad->port.master = NULL;
++    ad->port_regs.cmd_issue = 0;
++    ad->port_regs.sig = UINT32_MAX;
++    ad->port_regs.scr_err |= 1U << 16; /* PhyRdy changed */
++    ad->port_regs.irq_stat |= (1U << AHCI_PORT_IRQ_BIT_PRCS) |
++                              (1U << AHCI_PORT_IRQ_BIT_PCS);
++    qdev_simple_device_unplug_cb(handler, dev, errp);
++}
++
+ static void pci_ich9_ahci_init(Object *obj)
+ {
+     AHCIPCIState *d = ICH9_AHCI(obj);
+@@ -118,6 +177,8 @@
+                         pci_ich9_ahci_update_irq, d, 0);
+     ahci_init(&d->ahci, DEVICE(obj));
+     d->ahci.irq = &d->irq;
++    object_property_add_bool(obj, "x-carlio-hold", test_hold_get, test_hold_set);
++    object_property_add_bool(obj, "x-carlio-link", test_link_get, NULL);
+ }
+ 
+ static void pci_ich9_ahci_realize(PCIDevice *dev, Error **errp)
+@@ -181,6 +242,7 @@
+     DeviceClass *dc = DEVICE_CLASS(klass);
+     PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);
+ 
++    HOTPLUG_HANDLER_CLASS(klass)->unplug = test_unplug;
+     k->realize = pci_ich9_ahci_realize;
+     k->exit = pci_ich9_uninit;
+     k->vendor_id = PCI_VENDOR_ID_INTEL;
+@@ -200,6 +262,7 @@
+     .class_init    = ich_ahci_class_init,
+     .interfaces = (const InterfaceInfo[]) {
+         { INTERFACE_CONVENTIONAL_PCI_DEVICE },
++        { TYPE_HOTPLUG_HANDLER },
+         { },
+     },
+ };

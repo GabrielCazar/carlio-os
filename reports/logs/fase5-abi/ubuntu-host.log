@@ -1,0 +1,12 @@
+Verificação negativa do manifesto Ubuntu Base alterado.
+gpgv: Signature made Thu Sep 10 13:44:43 2026 -03
+gpgv:                using RSA key 843938DF228D22F7B3742BC0D94AA3F0EFE21092
+gpgv: BAD signature from "Ubuntu CD Image Automatic Signing Key (2012) <cdimage@ubuntu.com>"
+Manifesto alterado recusado.
+apt	2.8.3
+base-files	13ubuntu10.5
+coreutils	9.4-3ubuntu6.3
+libc6:amd64	2.39-0ubuntu8.8
+/tmp/carlioos-ubuntu-userland.2GpdOjVX/rootfs/usr/bin/true 26936 bytes
+/tmp/carlioos-ubuntu-userland.2GpdOjVX/rootfs/lib64/ld-linux-x86-64.so.2 236616 bytes
+Ubuntu Base: /usr/bin/true executado no kernel Linux do host.

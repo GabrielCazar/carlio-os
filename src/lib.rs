@@ -72,14 +72,19 @@ pub mod net;
 pub mod open_files;
 pub mod partition;
 pub mod pci;
+pub mod persistent_log;
 pub mod process;
 pub mod pseudo_fs;
+pub mod sector_journal;
 pub mod serial_rx;
+pub mod storage_reserve;
+pub mod swap;
 pub mod sync;
 pub mod syscall;
 pub mod user_memory;
 pub mod userland;
 pub mod vfs;
+pub mod vfs_store;
 pub mod video;
 pub mod vma;
 
@@ -115,3 +120,6 @@ mod tests {
         assert!(allowed(Principal::Kernel, Capability::ChangeSystemState));
     }
 }
+
+#[cfg(test)]
+mod persistence_tests;

@@ -947,6 +947,9 @@ extern "C" fn exception_dispatch(frame: *mut ExceptionFrame) -> *mut ExceptionFr
         } else {
             0
         };
+        if frame.vector == 14 && crate::process_swap_fault(cpu, frame.error_code, cr2) {
+            return frame;
+        }
         if let Some(next) = crate::process_runtime_fault(cpu, frame.vector, frame.error_code, cr2) {
             return next.cast();
         }

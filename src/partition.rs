@@ -1,4 +1,5 @@
 //! Descoberta read-only de partições MBR/GPT e identificação inicial de ext4/FAT32.
+use crate::block::{crc32, crc32_update};
 use crate::block::{BlockDevice, SECTOR_SIZE};
 
 const MAX_PARTITIONS: usize = 128;
@@ -182,18 +183,6 @@ fn detect_partition<D: BlockDevice>(
     Ok(())
 }
 
-fn crc32(bytes: &[u8]) -> u32 {
-    !crc32_update(!0, bytes)
-}
-fn crc32_update(mut crc: u32, bytes: &[u8]) -> u32 {
-    for byte in bytes {
-        crc ^= *byte as u32;
-        for _ in 0..8 {
-            crc = (crc >> 1) ^ (0xedb8_8320 & 0u32.wrapping_sub(crc & 1));
-        }
-    }
-    crc
-}
 fn u16le(bytes: &[u8], offset: usize) -> u16 {
     u16::from_le_bytes([bytes[offset], bytes[offset + 1]])
 }

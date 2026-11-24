@@ -192,6 +192,15 @@ impl<A: PageTableAccess, const PAGES: usize> OwnedAddressSpace<A, PAGES> {
     /// Aloca, zera e mapeia uma página de usuário. Em falha de mapeamento o
     /// frame recém-alocado é devolvido imediatamente ao backend.
     pub fn map_zeroed(&mut self, virtual_address: u64, flags: u64) -> Result<u64, FrameError> {
+        self.map_initialized(virtual_address, flags, |_| Ok(()))
+    }
+
+    pub(crate) fn map_initialized(
+        &mut self,
+        virtual_address: u64,
+        flags: u64,
+        initialize: impl FnOnce(u64) -> Result<(), FrameError>,
+    ) -> Result<u64, FrameError> {
         if self.frames[..self.frame_count]
             .iter()
             .any(|(address, _)| *address == virtual_address)
@@ -206,7 +215,9 @@ impl<A: PageTableAccess, const PAGES: usize> OwnedAddressSpace<A, PAGES> {
             let _ = self.space.tables.access.release_user_frame(physical);
             return Err(FrameError::InvalidPhysicalAddress);
         }
-        if let Err(error) = self.map_owned_frame(virtual_address, physical, flags) {
+        if let Err(error) = initialize(physical)
+            .and_then(|()| self.map_owned_frame(virtual_address, physical, flags))
+        {
             let _ = self.space.tables.access.release_user_frame(physical);
             return Err(error);
         }

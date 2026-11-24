@@ -32,6 +32,9 @@ fi
 if [[ ${CARLIO_DISK_EXEC_TEST:-0} == 1 ]]; then
   features+=(disk-exec-test)
 fi
+if [[ ${CARLIO_DISK_READ_TEST:-0} == 1 ]]; then
+  features+=(disk-read-test)
+fi
 if ((${#features[@]})); then
   feature_list=$(IFS=,; echo "${features[*]}")
   build_args+=(--features "$feature_list")
