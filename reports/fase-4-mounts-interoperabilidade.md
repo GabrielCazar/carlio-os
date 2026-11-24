@@ -1,6 +1,44 @@
 # Fase 4 — mounts, rede e namespace interoperável
 
-## Entrega
+## Permissões do VFS montado no kernel
+
+O VFS exige o bit de busca em cada diretório do backend montado antes de
+consultar metadados, ler ou executar um arquivo. A autorização usa UID, GID
+e grupos suplementares. A leitura também exige permissão no inode alvo.
+FAT32 expõe metadados sintéticos para a raiz e seus subdiretórios.
+
+A prova ext4, executada como UID 1000, exige `EACCES` em `access`,
+`openat` e `execve` para um arquivo `0755` dentro de um diretório
+`0700` de UID 0. Na mesma execução, o ELF permitido testa metadados,
+mutações e `fsync` no overlay. O host também cobre a concessão por
+grupo suplementar em diretório `0710`.
+
+- Ext4 em QEMU TCG local: [BIOS](logs/fase4-vfs-local/ext4-bios.log)
+  e [UEFI com PT_INTERP](logs/fase4-vfs-local/ext4-uefi.log).
+- FAT32 em QEMU TCG local: montagem e leitura de `/probe.bin` em
+  [BIOS](logs/fase4-vfs-local/fat32-bios.log) e
+  [UEFI](logs/fase4-vfs-local/fat32-uefi.log). A imagem reutiliza o
+  gerador FAT32 do teste de persistência porque o host estava sem `mcopy`.
+- Overlay persistente em QEMU TCG local: BIOS e UEFI recuperaram dados
+  e modo após reinicialização e depois de corromper o checksum do cabeçalho
+  mais recente. [BIOS](logs/fase4-vfs-local/overlay-bios.log) e
+  [UEFI](logs/fase4-vfs-local/overlay-uefi.log).
+- Host: 200 testes aprovados. Formatação do pacote e Clippy passaram.
+
+Para reproduzir a prova ext4, compile a ISO com `CARLIO_DISK_EXEC_TEST=1`
+e execute `scripts/test-disk-exec-qemu.sh ISO LOG`. Para a variante UEFI,
+use `CARLIO_TEST_EXEC_INTERP=1` e passe `--firmware` com o OVMF.
+A prova de persistência usa uma ISO compilada com `CARLIO_STORAGE_TEST=1`
+e `scripts/test-persistence-qemu.py --iso ISO --vfs --log-dir DIRETORIO`.
+
+A política validada cobre a fatia de VFS implementada no kernel.
+As montagens ext4/FAT32 permanecem em leitura e as mutações usam o overlay.
+Login, contas persistentes ligadas ao kernel e serviços de rede continuam
+como gates do bloco 4.
+
+## Histórico de novembro de 2026
+
+### Entrega inicial
 
 - `Vfs::create_fhs_layout()` cria caminhos FHS básicos para userlands Linux.
 - `Vfs::mount()` registra source, tipo de filesystem e opções `ro`, `noexec` e
@@ -21,7 +59,7 @@
 - ABI Linux liga `socket`, `bind`, `listen` e `close` à tabela bounded de
   sockets IPv4 TCP/UDP por PID, com conflitos de portas e portas privilegiadas.
 
-## Limites
+### Limites da entrega inicial
 
 A delegação exige que o chamador forneça o backend/dispositivo correto; o boot
 normal ainda não descobre partições nem conecta o AHCI ao VFS. FAT32 só lê nomes
@@ -37,7 +75,7 @@ connect, send/recv e integração com o TCP/IP. DHCP obtém lease, mas falta
 instalar rota, DNS e validar acesso geral à internet. O driver NIC suporta
 somente QEMU Intel 82574L; RTL8111 e I219 físicos seguem pendentes.
 
-## Validação
+### Validação da entrega inicial
 
 - Host final: 136 testes aprovados; `cargo fmt --check` e `git diff --check`
   passaram. Log: [`host final`](logs/mounts-ext4-fat32-final-host-20261116-114554.txt).

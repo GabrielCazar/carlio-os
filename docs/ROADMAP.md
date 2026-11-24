@@ -406,8 +406,8 @@ SMB; demais protocolos ficam atrás dos serviços essenciais.
 
 **Aceite:** negação e concessão verificadas no kernel/VFS, isolamento entre
 usuários/processos, persistência segura de contas, login real, rede funcional,
-autenticação negativa e serviços headless reiniciáveis. VFS/login/catálogo
-atuais são modelos host-testados, ainda não conectados a processos ou disco.
+autenticação negativa e serviços headless reiniciáveis. Login e catálogo
+seguem como modelos host-testados.
 
 **Incremento host (2026-11-15):** o VFS já aplica bits POSIX `rwx` por
 owner/group/other, grupos suplementares, `umask`, herança setgid, busca em
@@ -439,6 +439,13 @@ ABI Linux `SYSCALL`/dispatcher já está ligada ao contexto de processo para a
 fatia implementada. Pacotes Arch seguem em
 inspeção `.PKGINFO`, sem extração/transação; a ABI segue insuficiente para
 executar pacman ou binários Arch. Evidência: [relatório mounts e namespace](../reports/fase-4-mounts-interoperabilidade.md).
+
+**VFS no kernel:** o boot monta ext4 ou FAT32 via AHCI e encaminha mutações
+ao overlay, que pode ser persistente em disco provisionado. O VFS montado
+aplica permissão de busca por diretório, incluindo grupos suplementares.
+O smoke com UID 1000 confirma a negação em `access`, `openat` e
+`execve`; os testes também exercitam o caminho permitido em CPL3.
+Consulte o [relatório do VFS](../reports/fase-4-mounts-interoperabilidade.md).
 
 **Incremento de rede (2026-11-16):** driver Intel 82574L/QEMU (`8086:10d3`)
 com filas DMA em polling TX/RX e DHCPv4 DORA aprovado no QEMU. O dispatcher

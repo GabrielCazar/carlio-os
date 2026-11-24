@@ -76,21 +76,21 @@
       <div class="phase-head"><h2><span class="phase-no">03</span> · Bloco e filesystems</h2><a class="phase-link" href="../reports/fase-3-bloco-filesystems.md">Relatório ↗</a></div>
       <div class="tasks">
         <div class="task archived"><h3>Hermione v3 — arquivado</h3><p>Protótipo e logs históricos preservados no repositório.</p><span class="sub">Sem desenvolvimento ativo ou gate de produto</span></div>
-        <div class="task doing"><h3>Capacidade de disco 2 TiB</h3><p>Formato aceita 2^32 setores; imagem esparsa valida leitura/escrita no último LBA.</p><span class="sub">Evidência host; não valida AHCI físico nem mídia real</span></div>
-        <div class="task doing"><h3>AHCI e recuperação</h3><p>QEMU confirmou IDENTIFY, I/O, comando inválido, COMRESET e remontagem.</p><span class="sub">Controladores físicos e timeout/remoção permanecem pendentes</span></div>
-        <div class="task doing"><h3>VFS ext4 / FAT32</h3><p>Prioridade central: ext4 para rootfs/volumes Linux e FAT32 para EFI/mídia removível.</p><span class="sub">QEMU confirmou a montagem de ext4 e FAT32 em / e a execução CPL3 de um ELF estático em ext4 em BIOS e UEFI. Nomes longos FAT32 e seleção da FAT ativa passaram nos testes host. Escrita persistente segue aberta</span></div>
-        <div class="task doing"><h3>Swap e persistência</h3><p>Reserva dedicada com chave de boot e coletor de erros persistente.</p><span class="sub">Paginação de swap e provisionamento pelo instalador pendentes</span></div>
-        <div class="task doing"><h3>Integridade e segurança</h3><p>Swap autentica páginas com XChaCha20-Poly1305; o log usa CRC32 e duas cópias.</p><span class="sub">Testes cobrem adulteração, flush e recuperação do log após escrita parcial. Escrita e recuperação ext4/FAT32 pendentes</span></div>
+        <div class="task done"><h3>Capacidade de disco 2 TiB</h3><p>O AHCI gravou e releu o LBA 1 e os dois últimos setores em imagem esparsa no NAS.</p><span class="sub">Leitura e escrita após o último LBA retornaram OutOfRange</span></div>
+        <div class="task done"><h3>AHCI e recuperação em VM</h3><p>BIOS e UEFI confirmaram timeout com COMRESET e retirada SATA com comando pendente e HBA presente.</p><span class="sub">Validação elétrica em equipamento físico pendente</span></div>
+        <div class="task done"><h3>VFS ext4 / FAT32 em VM</h3><p>BIOS e UEFI confirmaram execução CPL3 a partir de ext4 e leitura FAT32 por syscall.</p><span class="sub">O overlay VFS persiste as alterações. As montagens nativas seguem em leitura</span></div>
+        <div class="task done"><h3>Recuperação de dados e metadados em VM</h3><p>Ext4 e FAT32 recuperaram setores após corte simulado em imagens descartáveis.</p><span class="sub">As imagens recuperadas passaram em e2fsck e fsck.fat</span></div>
+        <div class="task doing"><h3>Swap e provisionamento</h3><p>A reserva dedicada suporta páginas autenticadas e coleta persistente de erros.</p><span class="sub">Integração com a paginação e com o instalador pendente</span></div>
       </div>
     </article>
 
     <article class="phase" data-phase="4">
-      <div class="phase-head"><h2><span class="phase-no">04</span> · VFS, contas e rede</h2><a class="phase-link" href="../reports/fase-3-seguranca.md">Relatório ↗</a></div>
+      <div class="phase-head"><h2><span class="phase-no">04</span> · VFS, contas e rede</h2><a class="phase-link" href="../reports/fase-4-mounts-interoperabilidade.md">Relatório ↗</a></div>
       <div class="tasks">
-        <div class="task doing"><h3>Política POSIX</h3><p>UID/GID, grupos, rwx, umask no host; concessão e negação de `openat` CPL3 comprovadas.</p><span class="sub">Login e enforcement geral por processo permanecem pendentes</span></div>
-        <div class="task doing"><h3>VFS FHS</h3><p>Operações e permissões host, rootfs ext4/FAT32 em leitura e overlay em RAM.</p><span class="sub">Mount no boot validado em QEMU BIOS. Enforcement geral nas syscalls continua aberto</span></div>
+        <div class="task doing"><h3>Política POSIX</h3><p>O kernel aplica UID, GID e grupos suplementares ao percorrer diretórios do disco.</p><span class="sub">CPL3 confirmou EACCES em access, openat e execve. Login e cobertura geral seguem pendentes</span></div>
+        <div class="task done"><h3>VFS FHS em VM</h3><p>Rootfs ext4/FAT32 em leitura, syscalls em CPL3 e overlay persistente em disco provisionado.</p><span class="sub">Validação em BIOS e UEFI com imagens descartáveis</span></div>
         <div class="task doing"><h3>Contas e identidade</h3><p>Modelo host persiste contas; processos carregam UID/GID e grupos suplementares.</p><span class="sub">Sem login de boot, KDF próprio ou autorização geral de syscalls/VFS</span></div>
-        <div class="task pending"><h3>Rede de servidor</h3><p>NICs identificadas.</p><span class="sub">Drivers, TCP/IP, DNS e serviços pendentes</span></div>
+        <div class="task doing"><h3>Rede de servidor</h3><p>Intel 82574L e DHCPv4 passaram em QEMU.</p><span class="sub">Rede física, transporte TCP/IP, DNS e serviços pendentes</span></div>
       </div>
     </article>
 
