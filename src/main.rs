@@ -644,6 +644,7 @@ extern "C" fn carlio_ap_main(info: *mut LimineSmpInfo) -> ! {
                 }
             }
             unsafe { idt::load_shared_idt() };
+            user_fpu::enable();
             if unsafe { lapic::initialize(lapic::MMIO_VIRTUAL_BASE) }.is_err() {
                 loop {
                     unsafe { asm!("cli; hlt", options(nomem, nostack)) };
@@ -701,13 +702,7 @@ extern "C" fn carlio_ap_main(info: *mut LimineSmpInfo) -> ! {
                 if let Some(process) = schedule_process_on_cpu(index).ok().flatten() {
                     if process.interrupt_frame != 0
                         && process.kernel_stack_top != 0
-                        && unsafe {
-                            idt::activate_cpu_process_address_space(
-                                index,
-                                process.page_table,
-                                process.kernel_stack_top,
-                            )
-                        }
+                        && activate_scheduled_process(index, process)
                     {
                         if is_secondary_cpu(index) && is_ap_cpl3_probe_id(process.id) {
                             mark_ap_cpl3_running(index);
@@ -770,13 +765,7 @@ extern "C" fn carlio_ap_scheduler_idle(cpu: usize) -> ! {
         if let Some(process) = schedule_process_on_cpu(cpu).ok().flatten() {
             if process.interrupt_frame != 0
                 && process.kernel_stack_top != 0
-                && unsafe {
-                    idt::activate_cpu_process_address_space(
-                        cpu,
-                        process.page_table,
-                        process.kernel_stack_top,
-                    )
-                }
+                && activate_scheduled_process(cpu, process)
             {
                 if is_secondary_cpu(cpu) && is_ap_cpl3_probe_id(process.id) {
                     mark_ap_cpl3_running(cpu);
@@ -973,6 +962,9 @@ mod lapic;
 #[cfg(target_os = "none")]
 #[path = "arch/x86_64/pci.rs"]
 mod pci_device;
+#[cfg(target_os = "none")]
+#[path = "arch/x86_64/user_fpu.rs"]
+mod user_fpu;
 
 #[used]
 #[link_section = ".limine_requests_start"]
@@ -991,6 +983,7 @@ static REQUESTS_END: [u64; 2] = [0xadc0_e053_1bb1_0d03, 0x9572_709f_3176_4c62];
 pub extern "C" fn _start() -> ! {
     serial_init();
     unsafe { idt::install() };
+    user_fpu::enable();
     startup_screen();
     boot_progress(5, "kernel carregado");
     video_boot_probe();
@@ -1839,6 +1832,9 @@ extern "C" fn timer_process_switch(
     {
         PROCESS_PROBE_SWITCHES.fetch_add(1, Ordering::Relaxed);
     }
+    if let Some(process) = previous {
+        user_fpu::save(process);
+    }
     let next = if PROCESS_PROBE_STARTED.load(Ordering::Acquire) {
         PROCESS_SCHEDULER.preempt_frame_local(cpu, frame as u64)
     } else {
@@ -1864,9 +1860,7 @@ extern "C" fn timer_process_switch(
     if process.interrupt_frame == 0 || process.kernel_stack_top == 0 {
         return frame;
     }
-    if !unsafe {
-        idt::activate_cpu_process_address_space(cpu, process.page_table, process.kernel_stack_top)
-    } {
+    if !activate_scheduled_process(cpu, process) {
         loop {
             unsafe { asm!("cli; hlt", options(nomem, nostack)) };
         }
@@ -2213,13 +2207,7 @@ pub(crate) fn begin_process_switch_probe() -> Option<*mut idt::UserInterruptFram
     if process.page_table != root {
         PROCESS_PROBE_CR3_SWITCHES.fetch_add(1, Ordering::AcqRel);
     }
-    if !unsafe {
-        idt::activate_cpu_process_address_space(
-            current_scheduler_cpu(),
-            process.page_table,
-            process.kernel_stack_top,
-        )
-    } {
+    if !activate_scheduled_process(current_scheduler_cpu(), process) {
         PROCESS_PROBE_STARTED.store(false, Ordering::Release);
         return None;
     }
@@ -2445,9 +2433,7 @@ pub(crate) fn process_runtime_exit(code: u64) -> Option<*mut idt::UserInterruptF
         AP_CPL3_RUNNING_MASK.fetch_and(!(1usize << cpu), Ordering::AcqRel);
     }
     let process = schedule_process_on_cpu(cpu).ok()??;
-    if !unsafe {
-        idt::activate_cpu_process_address_space(cpu, process.page_table, process.kernel_stack_top)
-    } {
+    if !activate_scheduled_process(cpu, process) {
         return None;
     }
     Some(process.interrupt_frame as *mut idt::UserInterruptFrame)
@@ -2480,9 +2466,7 @@ pub(crate) fn process_runtime_fault(
     }
     write("; encerrando somente a tarefa.\r\n");
     let process = schedule_process_on_cpu(cpu).ok()??;
-    if !unsafe {
-        idt::activate_cpu_process_address_space(cpu, process.page_table, process.kernel_stack_top)
-    } {
+    if !activate_scheduled_process(cpu, process) {
         return None;
     }
     Some(process.interrupt_frame as *mut idt::UserInterruptFrame)
@@ -2639,6 +2623,7 @@ fn linux_syscall_probe_task() -> ([u8; 1024], usize) {
     append_probe_bytes(&mut code, &mut length, &[0x31, 0xd2]);
     append_probe_syscall(&mut code, &mut length, carlio_os::linux_abi::SYS_OPENAT);
     let disk_path_pointer = if cfg!(feature = "disk-exec-test") {
+        append_probe_bytes(&mut code, &mut length, &[0x66, 0x0f, 0x76, 0xff]); // pcmpeqd xmm7, xmm7
         append_probe_bytes(&mut code, &mut length, &[0x48, 0xbf]); // rdi = path
         let pointer = length;
         append_probe_bytes(&mut code, &mut length, &[0; 8]);
@@ -2731,6 +2716,17 @@ fn cpu_index_for_lapic(lapic_id: u32) -> Option<usize> {
 #[cfg(target_os = "none")]
 fn current_scheduler_cpu() -> usize {
     lapic::local_id().and_then(cpu_index_for_lapic).unwrap_or(0)
+}
+
+#[cfg(target_os = "none")]
+fn activate_scheduled_process(cpu: usize, process: carlio_os::process::Process) -> bool {
+    if !unsafe {
+        idt::activate_cpu_process_address_space(cpu, process.page_table, process.kernel_stack_top)
+    } {
+        return false;
+    }
+    user_fpu::restore(process);
+    true
 }
 
 #[cfg(target_os = "none")]
@@ -2970,6 +2966,7 @@ pub(crate) fn dispatch_linux_syscall(
 
 #[cfg(target_os = "none")]
 pub(crate) fn commit_exec_transition(transition: carlio_os::linux_abi::ExecTransition) {
+    user_fpu::reset();
     // The replacement address space keeps the kernel mappings and active
     // syscall stack. CR3 reload is the commit point before releasing old pages.
     unsafe {

@@ -10,7 +10,17 @@
 .endm
 
 _start:
+    movq %xmm7, %rax
+    test %rax, %rax                # execve clears the previous image state
+    jne failed
     cmpq $0, (%rsp)
+    jne failed
+    movabs $0x123456789abcdef0, %r15
+    movq %r15, %xmm7
+    mov $0x1000000, %ecx
+1:  loop 1b                        # permit a scheduler timer tick
+    movq %xmm7, %rax
+    cmp %r15, %rax
     jne failed
     sub $144, %rsp                  # Linux x86-64 struct stat
     lea directory(%rip), %rdi
@@ -74,6 +84,9 @@ _start:
     require 0
 
     mov $1, %edi
+    movq %xmm7, %rax
+    cmp %r15, %rax
+    jne failed
     lea message(%rip), %rsi
     mov $message_len, %edx
     syscall_nr 1
@@ -97,6 +110,7 @@ path: .asciz "/tmp/prova-abi-vfs/arquivo"
 payload: .ascii "VFS"
 message:
     .ascii "execve: ELF do disco executado em CPL3\n"
+    .ascii "execve: SSE iniciado e preservado em CPL3\n"
     .ascii "ABI Linux: stat, mutacoes e fsync verificados em CPL3\n"
 .set message_len, . - message
 .section .note.GNU-stack,"",@progbits

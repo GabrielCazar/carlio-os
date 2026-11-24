@@ -737,6 +737,7 @@ pub unsafe fn run_ring3_probe(entry: u64, stack_top: u64) -> u64 {
     if RING3_PROBE_ACTIVE.swap(true, Ordering::AcqRel) {
         return u64::MAX;
     }
+    crate::user_fpu::reset();
     let result = unsafe { carlio_enter_ring3_test(entry, stack_top) };
     RING3_PROBE_ACTIVE.store(false, Ordering::Release);
     result

@@ -1,5 +1,42 @@
 # Relatório — Fase 4: aplicações e pacotes Linux
 
+### Correção — Estado x87 e SSE por tarefa CPL3 — 2026-11-24
+
+O primeiro `movq` SSE do carregador Ubuntu causava `#UD` com
+`CR4.OSFXSR` desligado. O BSP e os APs agora habilitam x87 e SSE. O
+scheduler salva `FXSAVE64` antes de disponibilizar a tarefa para outra CPU
+e restaura `FXRSTOR64` ao ativá-la. A área acompanha a pilha de kernel
+da tarefa e é indexada com verificação de identidade. Um `execve` efetivado
+redefine a imagem x87/SSE. O alvo do kernel continua sem SSE e AVX segue
+desabilitado.
+
+- [x] A fixture suja XMM7 antes de `execve`, exige XMM7 limpo na
+  imagem nova e testa seu conteúdo depois da janela de timer e de
+  syscalls. A variante PIE também verifica XMM7 na entrada de
+  `PT_INTERP`. A prova exige o marcador no smoke.
+  [BIOS local](logs/fase5-sse/local-bios.log),
+  [UEFI local](logs/fase5-sse/local-uefi.log),
+  [BIOS NAS/KVM](logs/fase5-sse/nas-bios.log) e
+  [UEFI NAS/KVM](logs/fase5-sse/nas-uefi.log).
+- [x] `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`
+  e `cargo test --all-targets` passaram com 199 testes.
+  A ISO padrão passou em BIOS e UEFI local.
+  [Host](logs/fase5-sse/host.log), [BIOS](logs/fase5-sse/iso-bios.log)
+  e [UEFI](logs/fase5-sse/iso-uefi.log). Um smoke BIOS anterior, rodado
+  junto a outras VMs TCG, falhou na confirmação de SMP mesmo com a
+  prova SSE aprovada. A repetição sequencial passou.
+- [ ] O `true` oficial do Ubuntu passou do endereço que gerava `#UD`,
+  mas o teste expirou sem confirmar a execução do programa.
+  [Serial](logs/fase5-sse/ubuntu-exploratorio-bios.log) e
+  [amostra de RIP em CPL3](logs/fase5-sse/ubuntu-rip.txt).
+  Hardware físico permanece pendente.
+
+Reprodução: `CARLIO_DISK_EXEC_TEST=1 scripts/build-iso.sh` seguido de
+`scripts/test-disk-exec-qemu.sh ISO LOG`. Para PIE, usar
+`CARLIO_TEST_EXEC_INTERP=1`. Para UEFI, passar `--firmware` com OVMF.
+No NAS, executar em diretório temporário com `--accel kvm`. Para a ISO
+padrão, usar `scripts/test-local-iso.sh`.
+
 ### Correção — ABI VFS, PT_INTERP e bootstrap de userlands — 2026-11-24
 
 O painel ainda apontava lacunas de validação em `stat`, mutações e `fsync`,

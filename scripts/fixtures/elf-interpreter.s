@@ -1,6 +1,9 @@
 .globl _start
 .text
 _start:
+    movq %xmm7, %rax
+    test %rax, %rax                # execve clears the previous image state
+    jne failed
     cmpq $0, (%rsp)
     jne failed
     cmpq $0, 8(%rsp)

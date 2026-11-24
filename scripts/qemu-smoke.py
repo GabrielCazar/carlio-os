@@ -168,8 +168,9 @@ def main() -> int:
 
     if args.expect_disk_exec and (
             b"execve: ELF do disco executado em CPL3" not in output
+            or b"execve: SSE iniciado e preservado em CPL3" not in output
             or b"ABI Linux: stat, mutacoes e fsync verificados em CPL3" not in output):
-        sys.stderr.write(f"Execução do ELF ou validação da ABI VFS ausente em CPL3. Log: {args.log}\n")
+        sys.stderr.write(f"Validação do ELF, SSE ou ABI VFS ausente em CPL3. Log: {args.log}\n")
         return 1
 
     if args.expect_disk_read and (

@@ -1,0 +1,12 @@
+QEMU TCG BIOS: Ubuntu Base 24.04.5, /usr/bin/true e ld-linux originais.
+A captura completa usa qemu-smoke.py --qemu-debug-log com -d int.
+Eventos CPL3 posteriores ao endereço 0x7000000201e3 que gerava #UD:
+  1577: v=f1 e=0000 i=0 cpl=3 IP=0023:0000700000020266 pc=0000700000020266 SP=001b:00007ffffffffeb0 env->regs[R_EAX]=000000000000000e
+  1580: v=f1 e=0000 i=0 cpl=3 IP=0023:000070000002027d pc=000070000002027d SP=001b:00007ffffffffeb0 env->regs[R_EAX]=000000006ffffef5
+  1583: v=f1 e=0000 i=0 cpl=3 IP=0023:000070000002028a pc=000070000002028a SP=001b:00007ffffffffeb0 env->regs[R_EAX]=000000006ffffef5
+  1585: v=f1 e=0000 i=0 cpl=3 IP=0023:00007000000203a0 pc=00007000000203a0 SP=001b:00007ffffffffeb0 env->regs[R_EAX]=000000006ffffef5
+  1588: v=f1 e=0000 i=0 cpl=3 IP=0023:00007000000204c8 pc=00007000000204c8 SP=001b:00007ffffffffeb0 env->regs[R_EAX]=00000000000ff800
+  1592: v=f1 e=0000 i=0 cpl=3 IP=0023:0000700000020640 pc=0000700000020640 SP=001b:00007ffffffffeb0 env->regs[R_EAX]=0000700000000d60
+  1593: v=f1 e=0000 i=0 cpl=3 IP=0023:0000700000020640 pc=0000700000020640 SP=001b:00007ffffffffeb0 env->regs[R_EAX]=0000700000000d60
+Último evento CPL3 no interpretador observado antes de expirar o teste:
+  1662: v=f1 e=0000 i=0 cpl=3 IP=0023:000070000001cae2 pc=000070000001cae2 SP=001b:00007ffffffffa80 env->regs[R_EAX]=0000000000000000
