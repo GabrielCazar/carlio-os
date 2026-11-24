@@ -58,7 +58,7 @@ positivos, negativos e de falha; modelos host e detecção PCI não bastam.
 | --- | --- | --- |
 | Processos / scheduler | Filas por CPU, roubo, TSS/stacks RSP0/IST e timer LAPIC por CPU; `ProcessResourceBundle` associa Process, VM, CR3 e stack via token; fault CPL3 registra vetor, código e endereço. Registros históricos: boot 4 CPUs, 25 ACKs TLB e sobreposição CPL3 em dois APs | QEMU local BIOS/UEFI com quatro CPUs confirmou a preempção, a quiescência e 512 ciclos mmap/munmap em cada AP de teste. Ownership direto da VM, stress sustentado e revalidação NAS permanecem abertos ([relatório](../reports/implementation-local-pendente-validacao.md#revalidação-local--2026-11-23)) |
 | Módulos do kernel (LKMs) | Parser ET_REL host com relocations x86_64, extração de exports da `.symtab`, registro persistente host, lookup kernel/módulos e contabilidade host de dependências; `SmpPageTableManager::protect` com shootdown testado em host ([log fase 2](../reports/fase-2-memoria-execucao.md)) | Ciclo runtime ainda não ligado; backend x86_64 para alocação/mapeamento/invocação, bloqueio de novas chamadas, rollback transacional e quiescência SMP; gates QEMU/NAS que carreguem objetos ET_REL positivos, negativos e de falha |
-| Memória | Bitmap até 32 GiB, VM x86-64, folhas user owned, heap expansível e shootdown xAPIC com ACK | Contabilidade confirmada na fixture CPL3. Allocator geral e stress SMP sustentado pendentes; swap permanece desligado |
+| Memória | Bitmap até 32 GiB, VM x86-64, folhas user owned, heap expansível e shootdown xAPIC com ACK | Contabilidade confirmada na fixture CPL3. Allocator geral e stress SMP sustentado pendentes; swap experimental com adesão explícita em imagens novas |
 | Drivers / E/S | PCI read-only, framebuffer Limine, adaptador BlockDevice AHCI e Ethernet Intel QEMU; prioridade de filesystem em ext4/FAT32 | Validação física de AHCI e demais dispositivos (RTL8111/I219, EHCI/xHCI, iGPU), timeout/remoção em hardware |
 | VFS | Rootfs ext4 prioritário/FAT32 alternativo detectado em MBR/GPT e montado no boot; leitura, stat/access, ELF loader por mount, `execve` transacional limitado e copy-up/escrita em overlay persistente em mídia dedicada; Hermione arquivado | Escrita nativa ext4/FAT32, whiteouts/rename/unlink, limites atuais de 16 KiB e 40 nós, nomes longos FAT, recursos ext4 completos, validação QEMU/NAS do execve e enforcement integral de inode/processo |
 | Rede | NICs alvo identificadas; prova limitada do Intel 82574L em QEMU | Drivers físicos, pilha TCP/IP integrada, DNS e serviços de servidor pendentes; rede de servidor não está disponível |
@@ -213,15 +213,13 @@ APs. A revalidação atual do probe CPL3 falha, e stress de scheduler/VM/allocat
 segue pendente. Objetos VM ficam no backend e a tabela/pilhas têm capacidade
 fixa.
 
-**O boot reconhece uma reserva dedicada, gera credenciais de swap via RDRAND
-e conecta o coletor de erros ao anel persistente.** O swap cifrado ainda
-depende do paginador. Antes de integrar swap, fechar gates de ownership e
-contabilidade de frames por processo, rollback de falhas, concorrência e stress
-SMP; provar page fault/page-in/page-out, pinning e recuperação sem corromper o
-processo. No bloco, validar limites de LBA, erros de I/O, timeout, flush/barrier,
-remoção e falha parcial em imagens descartáveis. Testes de falha e recuperação
-devem passar antes de habilitar qualquer swap. Swap deve ser desligável, não
-substitui RAM e não deve receber dados sensíveis sem proteção criptográfica.
+O boot reconhece uma imagem dedicada e conecta o coletor de erros ao anel
+persistente. Quando a reserva habilita o swap experimental e há credenciais de
+sessão via RDRAND, o kernel aceita `MADV_PAGEOUT` para uma página anônima por
+espaço de endereçamento e restaura a página em um page fault CPL3. O limite
+global é de 64 páginas de 4 KiB. Evicção automática sob pressão de memória,
+validação sustentada em SMP, timeout/remoção durante I/O e aceite em hardware
+seguem pendentes.
 
 `src/sync.rs` agora tem `IrqSpinLock<T>`, que salva/desativa IRQs locais e
 restaura o estado após liberar o lock; scheduler, pool de pilhas e heap usam
@@ -385,13 +383,19 @@ corte de energia QEMU, timeout/remoção durante I/O, montagem normal e
 controladores físicos; portanto nenhum journal geral nem confiabilidade para
 dados reais é afirmado.
 
-**Requisito de capacidade:** o instalador deverá reservar 16 GiB do disco de
-sistema para o espaço do kernel. Planejamento inicial: área de logs persistentes
-de 1 GiB e área de paginação de até 15 GiB. Os tamanhos serão configuráveis e
-validados contra a capacidade disponível; não haverá ativação de swap até que a
-VM, o driver de bloco, flush, falhas e recuperação sejam confiáveis. Ainda não
-existe reserva física ou coleta persistente habilitada no boot. O anel de
-logs foi validado em uma região de teste AHCI com leitura em novo boot.
+**Provisionamento experimental em imagem RAW dedicada.** O comando abaixo cria
+uma imagem esparsa de 16 GiB com coletor persistente, overlay VFS e 64 páginas
+de swap experimental. `--size-mib` controla o tamanho da imagem e
+`--swap-pages` aceita de 0 a 64, com padrão 0. Imagens legadas v1/v2 mantêm
+o layout e a ativação anteriores, com o mesmo limite de 64 páginas.
+
+```sh
+python3 scripts/provision_storage.py carlio-reserva.raw --vfs --swap-pages 64
+```
+
+O provisionador cria exclusivamente um arquivo novo. A reserva interna no
+disco de instalação e o perfil de produção de 1 GiB para logs e até 15 GiB
+para swap continuam pendentes.
 
 ### 4 — VFS, contas, permissões e serviços de rede
 
