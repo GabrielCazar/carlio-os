@@ -3738,7 +3738,8 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
         let requested =
             carlio_os::vfs::Access::from_posix_bits(mode).ok_or(carlio_os::linux_abi::EINVAL)?;
         let context = self.process.security.access_context();
-        match PROCESS_VFS.lock().check_access_as(path, context, requested) {
+        let overlay_access = PROCESS_VFS.lock().check_access_as(path, context, requested);
+        match overlay_access {
             Ok(_) => Ok(()),
             Err(carlio_os::vfs::VfsError::NotFound) => {
                 let metadata = rootfs_metadata(path, context).map_err(vfs_errno)?;

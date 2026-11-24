@@ -1,5 +1,24 @@
 # Relatório — Fase 4: aplicações e pacotes Linux
 
+### Correção de `access()` no rootfs montado — 2026-11-24
+
+O carregador oficial do Ubuntu 24.04.5 parava em `access()`. O GDB
+capturou o BSP em `rootfs_metadata` tentando adquirir `PROCESS_VFS`.
+O temporário do `match` mantinha o guard do overlay vivo durante o
+fallback. A consulta ao overlay agora libera o guard antes do fallback.
+
+A fixture CPL3 exige sucesso de `R_OK | X_OK` em um executável ext4 e
+`ENOENT` em um caminho ausente antes de emitir seus marcadores.
+[Host](logs/fase5-access/host.log), [BIOS](logs/fase5-access/bios.log)
+e [UEFI](logs/fase5-access/uefi.log).
+
+Com a correção, o rastreio exploratório mostra `access()` retornando
+`ENOENT`, `openat(O_CLOEXEC)` retornando `EOPNOTSUPP` e
+`writev()` retornando `ENOSYS`. A execução de `/usr/bin/true`
+permanece sem aceite no CarlioOS.
+[GDB](logs/fase5-access/ubuntu-gdb.log) e
+[serial com instrumentação temporária](logs/fase5-access/ubuntu-exploratorio-bios.log).
+
 ### Correção — Estado x87 e SSE por tarefa CPL3 — 2026-11-24
 
 O primeiro `movq` SSE do carregador Ubuntu causava `#UD` com

@@ -22,6 +22,15 @@ _start:
     movq %xmm7, %rax
     cmp %r15, %rax
     jne failed
+    lea disk_executable(%rip), %rdi
+    mov $5, %esi                   # R_OK | X_OK on the mounted rootfs
+    syscall_nr 21
+    require 0
+    lea missing_file(%rip), %rdi
+    xor %esi, %esi                 # F_OK on an absent file
+    syscall_nr 21
+    require -2                     # ENOENT
+
     sub $144, %rsp                  # Linux x86-64 struct stat
     lea directory(%rip), %rdi
     mov $0700, %esi
@@ -113,4 +122,7 @@ message:
     .ascii "execve: SSE iniciado e preservado em CPL3\n"
     .ascii "ABI Linux: stat, mutacoes e fsync verificados em CPL3\n"
 .set message_len, . - message
+disk_executable: .asciz "/carlio-disk-exec"
+missing_file: .asciz "/carlio-access-missing"
+
 .section .note.GNU-stack,"",@progbits

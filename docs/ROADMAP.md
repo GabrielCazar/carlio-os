@@ -547,6 +547,11 @@ do Ubuntu avançou além da instrução que causava `#UD`. O teste ainda
 expirou antes de confirmar a execução do `true`.
 [Evidências](../reports/fase-4-aplicacoes-linux.md#correção--estado-x87-e-sse-por-tarefa-cpl3--2026-11-24).
 
+O fallback de `access()` para o rootfs montado libera o lock do overlay
+antes de consultar o disco. O carregador Ubuntu passou dessa chamada e
+encontrou chamadas ainda incompatíveis para abrir bibliotecas e emitir o
+diagnóstico. [Evidências](../reports/fase-4-aplicacoes-linux.md#correção-de-access-no-rootfs-montado--2026-11-24).
+
 ### 6 — Interface, desktop e agentes
 
 Entregar primeiro console/administração headless para o NAS, depois login
