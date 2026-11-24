@@ -32,7 +32,11 @@ assinaturas, cabeçalhos, entry point executável e limites de seções no arqui
 e na imagem. Testes host cobrem imagem válida, máquina/signatura incompatível,
 capacidade de seções, entry point não executável e seção truncada.
 
-Esse parser só reconhece metadados; não mapeia a imagem, faz relocação, resolve
-imports, inicializa TLS, fornece exceções/Win32/NT ou executa aplicações. A
-validação segue host-only. O caminho continua bloqueado pelos pré-requisitos de
-processos e ABI de produção e não inclui drivers `.sys`.
+`PeImage::materialize` prepara o layout virtual PE32+ em um buffer fornecido
+pelo chamador. Copia cabeçalhos e seções por RVA e preenche lacunas e caudas
+com zeros. Os testes host cobrem seções sobrepostas, destino insuficiente e
+preservação do destino quando a validação falha.
+
+O mapa permanece no buffer de preparação. Mapeamento em CPL3, relocação,
+imports, TLS, exceções, APIs Win32/NT e execução da matriz de aplicativos
+seguem pendentes.

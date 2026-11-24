@@ -89,9 +89,12 @@
       <div class="tasks">
         <div class="task doing"><h3>Política POSIX</h3><p>O kernel aplica UID, GID e grupos suplementares ao percorrer diretórios do disco.</p><span class="sub">CPL3 confirmou EACCES em access, openat e execve. A cobertura geral segue pendente.</span></div>
         <div class="task done"><h3>VFS FHS em VM</h3><p>Rootfs ext4/FAT32 em leitura, syscalls em CPL3 e overlay persistente em disco provisionado.</p><span class="sub">Validação em BIOS e UEFI com imagens descartáveis</span></div>
-        <div class="task doing"><h3>Contas e identidade</h3><p>O provisionador offline grava contas sem privilégios no banco protegido. O kernel abriu a imagem provisionada em QEMU com BIOS e UEFI. O teste de autenticação após remontagem passou com a conta de teste.</p><span class="sub">Autenticação da conta criada pelo provisionador e sessão interativa pendentes. <a href="../reports/logs/bloco4-conta-provisionada-bios.log">Log BIOS</a> · <a href="../reports/logs/bloco4-conta-provisionada-uefi.log">Log UEFI</a></span></div>
-        <div class="task doing"><h3>Rede de servidor</h3><p>DHCPv4 e ARP passaram em BIOS e UEFI. O parser DNS A passou no teste host. A consulta de boot a example.com ficou sem resposta válida em QEMU local.</p><span class="sub">A resolução DNS para aplicações, o transporte de sockets e a validação da rede em hardware físico seguem pendentes.</span></div>
-        <div class="task doing"><h3>Serviços de rede</h3><p>SSH/SFTP e SMB seguem pendentes, incluindo a capacidade de reiniciar os serviços.</p></div>
+        <div class="task done"><h3>Login serial e identidade POSIX</h3><p>Duas contas provisionadas foram autenticadas em QEMU/KVM no NAS. O teste verificou isolamento entre UIDs, proteção do banco de contas e leitura após reiniciar.</p></div>
+        <div class="task pending"><h3>Processos da sessão</h3><p>Iniciar aplicações com o UID, GID e grupos da sessão autenticada.</p></div>
+        <div class="task done"><h3>Diagnóstico UDP em VM</h3><p>Início, resposta e parada do serviço na porta 7704 validados no NAS em BIOS e UEFI.</p></div>
+        <div class="task doing"><h3>DNS e sockets</h3><p>O comando serial resolver recebeu uma resposta de DNS controlada em QEMU local. No NAS, a consulta expirou e devolveu o prompt.</p><span class="sub">DNS para aplicações e transporte por sockets pendentes.</span></div>
+        <div class="task pending"><h3>SSH/SFTP e SMB</h3><p>Implementação e reinício dos serviços pendentes.</p></div>
+        <div class="task pending"><h3>Rede em hardware físico</h3><p>O NAS usa Realtek RTL8111/8168. Em QEMU/KVM, o driver foi validado com a Intel 82574L emulada.</p></div>
       </div>
       <div class="phase-foot"><p><span class="status-word">Revalidação em VM concluída. Bloco 4 em aberto.</span> BIOS e UEFI passaram em QEMU/KVM via nas-manjaro (192.168.50.10). O acesso pelos três aliases SSH anteriores falhou.</p><div><a href="../reports/logs/bloco-4-revalidacao-nas-20261124-195431-qemu-kvm-bios.log">Log BIOS ↗</a> · <a href="../reports/logs/bloco-4-revalidacao-nas-20261124-195431-qemu-kvm-uefi.log">Log UEFI ↗</a></div></div>
     </article>
@@ -100,7 +103,7 @@
       <div class="phase-head"><h2><span class="phase-no">05</span> · ABI Linux, Arch e Ubuntu</h2><a class="phase-link" href="../reports/fase-4-aplicacoes-linux.md">Plano ↗</a></div>
       <div class="tasks">
         <div class="task doing"><h3>Syscall dispatcher inicial</h3><p>SYSCALL em CPL3 com identidade, relógio, memória e VFS.</p><span class="sub">Execução de ELF em ext4, stat, mutações e fsync verificados em BIOS e UEFI local e no NAS. ABI geral segue em andamento.</span></div>
-        <div class="task doing"><h3>Userlands Arch + Ubuntu</h3><p>Rootfs Arch e Ubuntu Base preparadas e verificadas no host. Execve transfere controle para um interpretador ELF de teste em CPL3.</p><span class="sub">Faltam glibc e carregamento de bibliotecas no CarlioOS, incluindo mmap de arquivos.</span></div>
+        <div class="task doing"><h3>Userlands Arch + Ubuntu</h3><p>Rootfs Arch e Ubuntu Base verificadas no host. Execve transfere controle para um interpretador ELF de teste. O mmap privado de arquivos passou na fixture CPL3.</p><span class="sub">A glibc do Ubuntu ainda falha no carregamento. A cota de páginas e o suporte a mapeamentos fixos continuam pendentes.</span></div>
         <div class="task doing"><h3>Pacotes</h3><p>Bootstrap Arch verificou assinaturas de pacotes com pacman no host. O planner ALPM próprio resolve dependências nomeadas e versionadas.</p><span class="sub">Instalação, isolamento e rollback no CarlioOS seguem em andamento.</span></div>
         <div class="task doing"><h3>Base Arch + zsh</h3><p>O perfil Arch de 110 pacotes inclui zsh 5.9.2, executado em chroot no Linux do host.</p><span class="sub">Execução de zsh no CarlioOS e boot da userland seguem em andamento.</span></div>
       </div>
@@ -109,15 +112,16 @@
     <article class="phase" data-phase="6">
       <div class="phase-head"><h2><span class="phase-no">06</span> · Desktop e agentes</h2><a class="phase-link" href="../reports/fase-6-interface-plataformas.md">Plano ↗</a></div>
       <div class="tasks">
+        <div class="task done"><h3>Diagnóstico headless em VM</h3><p>O comando serial diagnostico consulta raiz, log persistente, memória livre, framebuffer de firmware e tempo de atividade. Validado em BIOS e UEFI no NAS.</p></div>
         <div class="task pending"><h3>Plasma / SDDM</h3><p>Não instalável ainda: depende de linker, rootfs/ALPM, libc, threads/futex, DBus, entrada e driver gráfico/compositor.</p></div>
         <div class="task pending"><h3>Agentes</h3><p>ChatGPT/Ollama opcionais.</p><span class="sub">Rede, TLS e credenciais protegidas</span></div>
       </div>
     </article>
 
     <article class="phase" data-phase="7">
-      <div class="phase-head"><h2><span class="phase-no">07</span> · ISO beta instalável</h2><a class="phase-link" href="../docs/ROADMAP.md">Critérios ↗</a></div>
+      <div class="phase-head"><h2><span class="phase-no">07</span> · ISO beta instalável</h2><a class="phase-link" href="../reports/blocos-6-7-8-validacao-nas.md">Validação NAS ↗</a></div>
       <div class="tasks">
-        <div class="task pending"><h3>Instalador seguro</h3><p>Prévia, destino explícito e preservação de discos.</p></div>
+        <div class="task doing"><h3>Instalador seguro</h3><p>O preparador de imagem virtual exige SHA-256, destino novo e confirmação digitada.</p><span class="sub">Instalação em discos físicos e userland Arch mínima pendentes.</span></div>
         <div class="task pending"><h3>Recuperação</h3><p>Atualização, rollback e diagnóstico.</p><span class="sub">Validar em hardware e mídia descartável</span></div>
       </div>
     </article>
@@ -125,7 +129,7 @@
     <article class="phase" data-phase="8">
       <div class="phase-head"><h2><span class="phase-no">08</span> · Programas Windows</h2><a class="phase-link" href="../reports/fase-8-aplicacoes-windows-nativas.md">Plano ↗</a></div>
       <div class="tasks">
-        <div class="task pending"><h3>PE/COFF e APIs</h3><p>Compatibilidade Windows isolada ou VM.</p><span class="sub">Meta pós-beta; não implica suporte atual a .exe</span></div>
+        <div class="task doing"><h3>PE/COFF e APIs</h3><p>Validação PE32+ AMD64 e preparação de seções em memória.</p><span class="sub">Relocação, APIs Win32/NT e execução em CPL3 pendentes.</span></div>
       </div>
     </article>
   </section>

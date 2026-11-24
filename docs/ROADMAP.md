@@ -433,10 +433,25 @@ printf '%s\n' "$senha" | target/debug/carlio-account dados.raw operador 1000 100
 unset senha
 ```
 
+O provisionador também aceita até oito GIDs suplementares após o GID primário.
+Cada conta precisa de um UID próprio. No console serial administrativo, use
+`login operador` e digite a senha no prompt sem eco. A conta de teste do boot
+fica reservada. A sessão usa UID, GID e grupos do banco protegido e aplica
+`umask 077` a arquivos novos. Os comandos disponíveis são `id`, `ler`,
+`criar`, `gravar` e `sair`. As alterações usam o overlay persistente.
+Ao sair, o console retorna ao prompt administrativo. Restrinja o acesso à
+porta serial e ao console do hipervisor.
+
+`rede-status iniciar` habilita um diagnóstico UDP na porta 7704. Um cliente
+na mesma sub-rede pode enviar `STATUS` e receber `OK`. O serviço começa
+desativado, para com `rede-status parar` e deixa de responder ao expirar a
+concessão DHCP. Ele não recebe senhas nem expõe dados do sistema.
+
 O cenário `--account-provisioner target/debug/carlio-account` de
-`scripts/test-persistence-qemu.py` confirmou que o kernel abriu esse
-banco em QEMU com BIOS e UEFI. A autenticação das contas provisionadas
-e o início da sessão interativa seguem abertos.
+`scripts/test-persistence-qemu.py` exercita duas contas, valida senha
+incorreta, comprova a negação de leitura entre UIDs e do banco protegido,
+reinicia a VM para reler o arquivo e consulta o serviço UDP por um
+encaminhamento restrito ao loopback do host.
 
 **Incremento host (2026-11-15):** o VFS já aplica bits POSIX `rwx` por
 owner/group/other, grupos suplementares, `umask`, herança setgid, busca em
@@ -510,13 +525,30 @@ A revalidação em VM foi concluída. O aceite do bloco 4 segue aberto.
 do DHCP. O teste host cobre uma resposta com nome comprimido, transação
 incorreta, registro truncado e referência inválida. Os smokes locais em
 BIOS/UEFI passaram, com DHCPv4 e ARP, mas a consulta A terminou sem resposta
-válida. O código atende a registros A diretos durante o boot. A exposição
-ao runtime e o suporte a aliases CNAME seguem pendentes.
+válida. O parser agora segue aliases CNAME comprimidos dentro da resposta
+e limita a profundidade de resolução.
+
+Na sessão autenticada, `resolver NOME` consulta o DNS anunciado na concessão
+DHCP vigente. O driver usa uma espera de até dois segundos para a resposta,
+medida pelo PIT, e recicla descritores RX com erro. O relógio monotônico
+preserva a idade da concessão quando o watchdog é reinicializado. A captura
+QEMU mostrou o envio da consulta a `10.0.2.3:53` e um ICMP de porta
+inacessível. O teste de contas em BIOS e UEFI no NAS confirmou que a sessão
+retorna ao prompt após a falha do DNS e que o serviço UDP continua operável.
+Em QEMU local, um resolvedor isolado retornou `192.0.2.42` para `example.com`
+em BIOS e UEFI, com verificação exata por `--dns-address` no teste de contas.
+A exposição da resolução a processos segue pendente.
+
+O NAS usa uma interface física Realtek RTL8111/8168. A VM usa a Intel 82574L
+emulada, que tem suporte no driver atual. A validação física no NAS depende
+de um driver Realtek ou de uma interface suportada.
 
 **Pendências de aceite do bloco 4**
 
-- [ ] Contas protegidas em disco e disponíveis ao runtime.
-- [ ] Login interativo.
+- [x] Contas protegidas em disco disponíveis ao console serial.
+- [x] Login interativo no console serial com identidade POSIX.
+- [x] Serviço UDP de diagnóstico com início e parada.
+- [ ] Início de processos de usuário a partir da sessão autenticada.
 - [ ] Resolução DNS para aplicações.
 - [ ] Transporte de sockets (`accept`, `connect`, `send`, `recv`).
 - [ ] Serviço SSH/SFTP reiniciável.
@@ -663,6 +695,14 @@ disco de boot não são alterados. Só então publicar como beta instalável par
 avaliação. O uso como sistema base do NAS aguarda validação no hardware e
 backup restaurável dos dados.
 
+Para ensaio em VM, `scripts/install-virtual-image.py ISO DESTINO` mostra os
+caminhos, o tamanho e o SHA-256 da mídia. A opção `--apply --sha256 HASH`
+exige um hash previamente autenticado e a confirmação digitada do destino.
+Publica uma imagem raw nova após verificar a cópia. Cada versão pode ocupar
+um arquivo independente, permitindo selecionar a imagem anterior na VM.
+O instalador de discos físicos, Secure Boot e o rollback transacional da
+userland continuam pendentes.
+
 ## Itens fora do caminho crítico do primeiro beta
 
 - KDE Plasma/SDDM completos, Windows Mode/AD e agente corporativo em VM.
@@ -698,10 +738,10 @@ NT.
 com testes positivos/negativos. Ver
 [relatório da meta](../reports/fase-8-aplicacoes-windows-nativas.md).
 
-Incremento inicial: `src/userland/windows.rs` valida metadados PE32+ AMD64 com
-limites fixos e testes de formatos inválidos. Ele ainda não é carregador nem
-permite executar `.exe`; relocação, imports, mapeamento, APIs Win32/NT e
-integração com processos permanecem pendentes.
+Incremento atual: `src/userland/windows.rs` valida PE32+ AMD64 com limites
+fixos e prepara cabeçalhos e seções em memória, rejeitando sobreposições.
+Relocação, imports, mapeamento em CPL3, APIs Win32/NT e execução de `.exe`
+permanecem pendentes.
 
 Esses itens continuam objetivos possíveis, mas não devem atrasar armazenamento
 seguro, rede, userland Arch mínima e instalador confiável.

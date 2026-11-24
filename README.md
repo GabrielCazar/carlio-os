@@ -46,10 +46,11 @@ O splash serial e o comando `sobre` apresentam “carlIO OS | Criado por João G
 | 1. Contrato e hardware mínimo | Matriz de alvo, BIOS/UEFI, diagnóstico, PCI/AHCI mínimo | QEMU local e NAS/KVM BIOS/UEFI; 159 testes host; AHCI QEMU com recovery/COMRESET em imagem descartável. Drivers e boot físico seguem pendentes |
 | 2. Memória e execução | Até 32 GiB de RAM, VM x86-64, kernel SMP, CPL3, ELF64 e processos | Allocator cobre até 32 GiB; há prova de CPL3/CR3 e testes host. Revalidação atual do smoke QEMU falha no probe de processos: 1 CPU não aplica afinidade e 4 CPUs dá #PF de kernel; isolamento não está validado |
 | 3. Bloco e filesystems | BlockDevice, partições MBR/GPT e rootfs ext4/FAT32 | Aceite em VM concluído. BIOS/UEFI no NAS, 2 TiB, overlay persistente, replay nativo de metadados, timeout/COMRESET e retirada do disco SATA com o HBA presente. [Relatório](reports/fase-3-bloco-filesystems.md) |
-| 4. VFS, contas e rede | Namespace FHS, mounts, permissões efetivas e serviços headless | Rootfs pode ser lido por VFS/syscalls e o smoke executa um ELF do ext4 por `execve`. NICs são enumeradas e a Intel 82574L virtual tem DHCP em QEMU; drivers físicos, TCP/IP, DNS, login seguro e serviços pendentes |
-| 5. ABI Linux e Arch | Runtime Linux progressivo, userland Arch e pacman/ALPM | Planejada; depende de processos e syscalls |
-| 6. Desktop e agentes | SDDM/Plasma, catálogo executável, ChatGPT/Ollama | Planejada; não é gate inicial do NAS headless |
-| 7. ISO beta instalável | Instalador seguro, diagnóstico, recuperação, atualização e validação NAS | Planejada; entrega final após os gates anteriores |
+| 4. VFS, contas e rede | Namespace FHS, mounts, permissões efetivas e serviços headless | Rootfs pode ser lido por VFS/syscalls e o smoke executa um ELF do ext4 por `execve`. Login serial com identidade POSIX e diagnóstico UDP validados em QEMU/KVM no NAS. Processos da sessão, DNS e sockets para aplicações, SSH/SFTP, SMB e rede física na Realtek RTL8111/8168 seguem pendentes |
+| 5. ABI Linux e Arch | Runtime Linux progressivo, userland Arch e pacman/ALPM | ELF de teste em CPL3 e mmap privado de arquivos na fixture. A glibc real do Ubuntu ainda falha ao carregar |
+| 6. Desktop e agentes | SDDM/Plasma, catálogo executável, ChatGPT/Ollama | Diagnóstico serial validado em VM no NAS. Plasma, SDDM e agentes seguem pendentes |
+| 7. ISO beta instalável | Instalador seguro, diagnóstico, recuperação, atualização e validação NAS | Imagem virtual preparada com verificação SHA-256. Instalação e recuperação físicas no NAS seguem pendentes |
+| 8. Programas Windows | PE/COFF e APIs Win32/NT | Validação PE32+ AMD64 e preparação de seções em memória. Execução de programas pendente |
 
 Roadmap e critérios: [`docs/ROADMAP.md`](docs/ROADMAP.md). Há um relatório
 Markdown para cada fase em [`reports/`](reports/). Painel: [`progress/index.html`](progress/index.html).

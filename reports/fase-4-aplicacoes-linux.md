@@ -1,5 +1,80 @@
 # Relatório — Fase 4: aplicações e pacotes Linux
 
+### Bloco 5 — substituição de mapeamentos privados
+
+`MAP_FIXED` substitui páginas de regiões criadas por `mmap`, inclusive
+em pedidos anônimos. O kernel protege imagem, pilha e heap do processo
+contra essa substituição, aplica W^X e libera os frames antigos após
+instalar os novos. Uma falha de leitura antes da instalação preserva
+as páginas e permissões anteriores. O teste CPL3 substitui uma página
+privada modificada por dados novos do arquivo e depois por uma página
+anônima zerada.
+
+No primeiro teste BIOS no NAS, o watchdog disparou durante a invalidação
+das páginas. A versão seguinte registrou progresso após inicializar um
+frame de arquivo e após concluir a invalidação de TLB. O loader Ubuntu
+avançou além do mapeamento inicial da libc e reportou
+`libc.so.6: cannot map zero-fill pages`. A ABI do mapeamento anônimo
+passou a interpretar o descritor como `int` de 32 bits, inclusive
+`-1` escrito em `r8d`.
+
+A prova com esse descritor de 32 bits passou no NAS/KVM em BIOS e UEFI,
+incluindo `PT_INTERP`, o ELF em CPL3, a leitura/escrita pelo VFS e o
+diagnóstico serial. O boot seguinte com o executável Ubuntu voltou a
+disparar o watchdog enquanto aguardava ACK remoto de invalidação de TLB.
+Os 207 testes de biblioteca e o Clippy passaram.
+
+O backend xAPIC agora aguarda o fim do envio anterior antes de escrever
+um novo comando e mantém o ACK obrigatório antes de reutilizar frames.
+As provas BIOS e UEFI voltaram a passar no NAS após esse ajuste. Os logs
+de validação estão em `target/bloco678-tmp/nas-logs/fixed-icr-*.log`.
+O executável Ubuntu excedeu o limite de 110 segundos antes de concluir
+o runtime de boot. Nessa rodada, o último evento serial foi o início
+da prova de entrada CPL3. A execução do Ubuntu segue sem confirmação.
+A ISO padrão iniciou e concluiu o diagnóstico local em BIOS e UEFI.
+
+### Bloco 5 — mapeamento privado de arquivos
+
+`mmap(MAP_PRIVATE)` usa o descritor legível do processo e inicializa as
+páginas com dados do VFS, sem avançar a posição do descritor. A página
+parcial termina em zeros e as escritas no mapping ficam no espaço do
+processo. Em falha de leitura, o kernel libera os frames alocados e
+descarta a reserva virtual. A fixture CPL3 cobre offset desalinhado,
+leitura dos bytes, cauda zerada e isolamento da escrita privada.
+
+O kernel aceita `MAP_FIXED_NOREPLACE` para mappings privados anônimos
+e de arquivo. A reserva usa o endereço solicitado, exige alinhamento à
+página e retorna `EEXIST` em colisões. A fixture CPL3 verifica que a
+colisão preserva os dados e que o endereço pode ser reutilizado depois
+de `munmap`. A prova passou em QEMU local com BIOS e no NAS/KVM com
+BIOS e UEFI. Os 209 testes de host e o Clippy da biblioteca passaram.
+
+O mapeamento ainda é carregado integralmente. O primeiro `mmap` da glibc
+do Ubuntu solicita `0x211d90` bytes (530 páginas de 4 KiB) com `PROT_READ`
+e `MAP_PRIVATE | MAP_DENYWRITE`. Com a cota anterior de 128 folhas,
+retornava `ENOMEM`. O teste unitário preserva a cobertura da rejeição
+antes da inicialização e da reutilização do intervalo para um pedido menor.
+
+O registro de folhas agora usa um vetor alocado sob demanda no heap do
+kernel, compartilhado pela lógica de mapeamento e de ownership. A cota
+é de 768 folhas por processo. O `mmap` lê até uma página por chamada ao
+VFS diretamente no frame privado em inicialização. `read` e `pread64`
+mantêm seu buffer intermediário de 256 bytes.
+
+Com essas mudanças, o Ubuntu no NAS/KVM em BIOS concluiu o boot do
+CarlioOS e chegou a 599 folhas ativas no processo. O rastreio temporário
+em `/tmp/carlio-678.nb9G7Vcm/heap-vm-trace-ubuntu.log` registrou rejeição
+das flags `0x812` (`MAP_PRIVATE | MAP_DENYWRITE | MAP_FIXED`) seguida de
+`libc.so.6: failed to map segment from shared object`. Esse rastreio
+antecedeu a implementação de `MAP_FIXED`. `PROT_NONE`, mapeamentos
+compartilhados e `SIGBUS` além do EOF também seguem pendentes. A execução
+de aplicações reais e o aceite da userland Arch continuam em aberto.
+
+Passaram 205 testes de biblioteca e a fixture ext4 em BIOS e UEFI,
+localmente e no NAS/KVM. A fixture verifica execução CPL3, leitura,
+escrita no overlay e recuperação de frames após o processo sair. A ISO
+padrão recompilada sem o rastreio passou no teste de boot local em BIOS.
+
 ### Correção — ABI de arquivos para o carregador do Ubuntu — 2026-11-24
 
 O dispatcher rejeitava `openat(O_CLOEXEC)` e não oferecia `writev`

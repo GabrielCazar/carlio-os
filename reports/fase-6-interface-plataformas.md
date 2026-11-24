@@ -1,6 +1,7 @@
 # Relatório — Fase 6: interface e plataformas
 
-**Estado:** planejada; depende de memória, interrupções e drivers.
+**Estado:** diagnóstico serial disponível. Login gráfico, gerenciador de
+arquivos e agentes dependem da ABI Linux, entrada gráfica e rede.
 
 ## Escopo
 
@@ -37,6 +38,12 @@ gerenciador de arquivos; validação de cada protocolo e permissões; logs e
 relatórios para cada perfil.
 
 ## Estado comprovado
+
+No terminal serial, `diagnostico` mostra o tipo do sistema de arquivos raiz,
+o estado do log persistente, os frames livres de 4 KiB, a disponibilidade
+do framebuffer de firmware e o tempo desde a inicialização. A consulta usa
+apenas o estado do kernel e foi exercitada em NAS/KVM com BIOS e UEFI,
+com a saída do QEMU via serial.
 
 Não há interface gráfica, mouse, teclado, imagens, gerenciador de arquivos
 remoto ou suporte ARM64. Há framebuffer RGB de firmware com desenho por CPU e
