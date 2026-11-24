@@ -37,9 +37,9 @@ _start:
     syscall_nr 83                        # mkdir
     require 0
 
-    mov $-100, %rdi
-    lea path(%rip), %rsi
-    mov $0xc2, %edx                 # O_CREAT | O_EXCL | O_RDWR
+    mov $-100, %edi
+    lea relative_path(%rip), %rsi
+    mov $0x800c2, %edx              # O_CLOEXEC | O_CREAT | O_EXCL | O_RDWR
     mov $0640, %r10d
     syscall_nr 257                       # openat
     test %rax, %rax
@@ -47,10 +47,34 @@ _start:
     mov %rax, %r12
 
     mov %r12, %rdi
-    lea payload(%rip), %rsi
-    mov $3, %edx
-    syscall_nr 1                         # write
+    xor %esi, %esi
+    mov $1, %edx
+    syscall_nr 20                        # writev with an invalid vector pointer
+    require -14
+    sub $32, %rsp
+    lea payload(%rip), %rax
+    mov %rax, (%rsp)
+    movq $1, 8(%rsp)
+    inc %rax
+    mov %rax, 16(%rsp)
+    movq $2, 24(%rsp)
+    mov %rsp, %rsi
+    mov $2, %edx
+    syscall_nr 20
     require 3
+    add $32, %rsp
+    mov %rsp, %rsi
+    mov $2, %edx
+    mov $1, %r10d
+    syscall_nr 17                        # pread64 at offset 1
+    require 2
+    cmpw $0x5346, (%rsp)            # "FS"
+    jne failed
+    syscall_nr 0                         # read stays at offset 3
+    require 0
+    mov $-1, %r10
+    syscall_nr 17
+    require -22                    # EINVAL for a negative offset
     mov $0600, %esi
     syscall_nr 91                        # fchmod
     require 0
@@ -116,6 +140,7 @@ check_stat:
 
 directory: .asciz "/tmp/prova-abi-vfs"
 path: .asciz "/tmp/prova-abi-vfs/arquivo"
+relative_path: .asciz "tmp/prova-abi-vfs/arquivo"
 payload: .ascii "VFS"
 message:
     .ascii "execve: ELF do disco executado em CPL3\n"

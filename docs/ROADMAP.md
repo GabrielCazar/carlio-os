@@ -532,13 +532,16 @@ alterações em RAM. Backends mounted ext4/FAT32 ainda não estão conectados à
 syscalls Linux.
 
 **Evidência atual (2026-11-24):** a prova de `execve` a partir de ext4
-valida `mkdir/openat/write/fchmod/fsync/fstat/newfstatat/unlink/rmdir` e
+valida `mkdir/openat/writev/pread64/fchmod/fsync/fstat/newfstatat/unlink/rmdir` e
 retornos negativos da ABI em CPL3. A variante PIE executa um interpretador
 `PT_INTERP` de teste e verifica `AT_BASE` e `AT_ENTRY`. As duas variantes
 passaram em BIOS e UEFI local e no NAS/KVM. O bootstrap preparou Arch com
 zsh e Ubuntu Base no host com validação de origem. O aceite continua aberto
 para glibc, mapeamento de arquivos, ferramentas reais em CarlioOS e
 instalação de pacotes com isolamento e rollback no alvo.
+A prova CPL3 exercita também `O_CLOEXEC`, `AT_FDCWD` passado como `int`
+e a preservação da posição de leitura em `pread64`.
+[Resultados da ABI de arquivos](../reports/fase-4-aplicacoes-linux.md#correção--abi-de-arquivos-para-o-carregador-do-ubuntu--2026-11-24).
 [Evidências](../reports/fase-4-aplicacoes-linux.md#correção--abi-vfs-pt_interp-e-bootstrap-de-userlands--2026-11-24).
 
 O estado x87/SSE passou pela prova de reinicialização em `execve` e

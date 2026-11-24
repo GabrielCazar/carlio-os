@@ -1,5 +1,46 @@
 # Relatório — Fase 4: aplicações e pacotes Linux
 
+### Correção — ABI de arquivos para o carregador do Ubuntu — 2026-11-24
+
+O dispatcher rejeitava `openat(O_CLOEXEC)` e não oferecia `writev`
+nem `pread64`. `src/linux_abi.rs` agora interpreta `AT_FDCWD` pela
+largura de `int` da ABI, limita as transferências e valida os buffers.
+`src/main.rs` reutiliza a leitura do VFS para `pread64` sem avançar a
+posição do arquivo. `src/open_files.rs` fecha os descritores marcados do
+processo após o commit de `execve`, preservando os demais.
+
+- [x] A fixture CPL3 abriu um caminho relativo com `O_CLOEXEC`, escreveu
+  dois vetores, rejeitou um ponteiro nulo com `EFAULT` e leu dois bytes
+  com `pread64` sem alterar a posição de leitura. Um offset negativo
+  retornou `EINVAL`. Passou em [BIOS local](logs/fase5-writev/bios.log),
+  [UEFI local](logs/fase5-writev/uefi.log),
+  [BIOS NAS/KVM](logs/fase5-writev/nas-bios.log) e
+  [UEFI NAS/KVM](logs/fase5-writev/nas-uefi.log).
+- [x] `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` e
+  `cargo test --all-targets` passaram com 200 testes. O teste da tabela
+  de descritores cobre o fechamento seletivo por processo.
+  [Host](logs/fase5-writev/host.log).
+- [x] A ISO padrão passou com `CARLIO_TEST_PHASE=fase5-writev-padrao scripts/test-local-iso.sh`.
+  [Host](logs/fase5-writev/padrao-host.log),
+  [BIOS](logs/fase5-writev/padrao-bios.log) e
+  [UEFI](logs/fase5-writev/padrao-uefi.log).
+- [ ] O carregador real do Ubuntu 24.04.5 chegou ao mapeamento de segmentos
+  da `libc.so.6`. Antes de `pread64`, a serial registrava
+  `cannot read file data: Error 38`. Agora registra
+  `failed to map segment from shared object`. A execução de
+  `/usr/bin/true` e o teste em hardware físico seguem pendentes.
+  [Antes de pread64](logs/fase5-writev/ubuntu-bios.log) e
+  [depois de pread64](logs/fase5-writev/ubuntu-pread-bios.log).
+
+Reprodução das fixtures com `CARLIO_DISK_EXEC_TEST=1 scripts/build-iso.sh`
+e `scripts/test-disk-exec-qemu.sh ISO LOG`. A variante UEFI usa
+`CARLIO_TEST_EXEC_INTERP=1` e
+`--firmware /usr/share/edk2/x64/OVMF_CODE.4m.fd`. Os testes no NAS usam
+`--accel kvm` com mídia e logs em diretório temporário. A execução
+exploratória do Ubuntu usa a imagem descartável já provisionada com
+`true`, seu interpretador e a glibc, via
+`python scripts/qemu-smoke.py --iso ISO --disk-image DISCO --timeout 20 --log LOG`.
+
 ### Correção de `access()` no rootfs montado — 2026-11-24
 
 O carregador oficial do Ubuntu 24.04.5 parava em `access()`. O GDB

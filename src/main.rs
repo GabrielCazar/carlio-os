@@ -2976,6 +2976,7 @@ pub(crate) fn commit_exec_transition(transition: carlio_os::linux_abi::ExecTrans
             options(nostack, preserves_flags)
         );
     }
+    OPEN_FILES.lock().close_on_exec(transition.process_id);
     match process_vm_slot(transition.old_resource_slot) {
         Some(storage)
             if destroy_process_vm(
@@ -2995,6 +2996,37 @@ struct KernelLinuxSyscallIo {
 
 #[cfg(target_os = "none")]
 impl KernelLinuxSyscallIo {
+    fn read_open_file(
+        &self,
+        file: carlio_os::open_files::OpenFile,
+        offset: u64,
+        destination: &mut [u8],
+    ) -> Result<usize, u16> {
+        if !file.readable {
+            return Err(carlio_os::linux_abi::EBADF);
+        }
+        let path = file.path_str().ok_or(carlio_os::linux_abi::EIO)?;
+        let mut scratch = [0u8; 256];
+        let chunk = destination.len().min(scratch.len());
+        let context = self.process.security.access_context();
+        let inline_offset = usize::try_from(offset).map_err(|_| carlio_os::linux_abi::EINVAL)?;
+        let inline = PROCESS_VFS.lock().read_file_range_as(
+            path,
+            context,
+            inline_offset,
+            &mut scratch[..chunk],
+        );
+        let amount = match inline {
+            Ok(amount) => amount,
+            Err(carlio_os::vfs::VfsError::NotFound) => {
+                read_rootfs_file(path, context, offset, &mut scratch[..chunk]).map_err(vfs_errno)?
+            }
+            Err(error) => return Err(vfs_errno(error)),
+        };
+        destination[..amount].copy_from_slice(&scratch[..amount]);
+        Ok(amount)
+    }
+
     fn restore_user_range(&mut self, address: u64, length: u64) -> Result<(), u16> {
         if length == 0 || BOOT_SWAP.try_lock().is_some_and(|swap| swap.is_none()) {
             return Ok(());
@@ -3435,32 +3467,26 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
             .lock()
             .get(self.process.id, descriptor)
             .map_err(|_| carlio_os::linux_abi::EBADF)?;
-        if !file.readable {
-            return Err(carlio_os::linux_abi::EBADF);
-        }
-        let path = file.path_str().ok_or(carlio_os::linux_abi::EIO)?;
-        let mut scratch = [0u8; 256];
-        let chunk = destination.len().min(scratch.len());
-        let context = self.process.security.access_context();
-        let offset = usize::try_from(file.offset).map_err(|_| carlio_os::linux_abi::EINVAL)?;
-        let inline =
-            PROCESS_VFS
-                .lock()
-                .read_file_range_as(path, context, offset, &mut scratch[..chunk]);
-        let amount = match inline {
-            Ok(amount) => amount,
-            Err(carlio_os::vfs::VfsError::NotFound) => {
-                read_rootfs_file(path, context, file.offset, &mut scratch[..chunk])
-                    .map_err(vfs_errno)?
-            }
-            Err(error) => return Err(vfs_errno(error)),
-        };
-        destination[..amount].copy_from_slice(&scratch[..amount]);
+        let amount = self.read_open_file(file, file.offset, destination)?;
         OPEN_FILES
             .lock()
             .set_offset(self.process.id, descriptor, file.offset + amount as u64)
             .map_err(|_| carlio_os::linux_abi::EBADF)?;
-        Ok(usize::try_from(amount).map_err(|_| carlio_os::linux_abi::EOVERFLOW)?)
+        Ok(amount)
+    }
+
+    fn pread(
+        &mut self,
+        descriptor: u64,
+        offset: u64,
+        destination: &mut [u8],
+    ) -> Result<usize, u16> {
+        let descriptor = u32::try_from(descriptor).map_err(|_| carlio_os::linux_abi::EBADF)?;
+        let file = OPEN_FILES
+            .lock()
+            .get(self.process.id, descriptor)
+            .map_err(|_| carlio_os::linux_abi::EBADF)?;
+        self.read_open_file(file, offset, destination)
     }
 
     fn open(&mut self, path: &str, flags: u64, mode: u64) -> Result<u64, u16> {
@@ -3588,7 +3614,11 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
                     .map_err(|_| carlio_os::linux_abi::EBADF)?;
             }
             files
-                .commit(self.process.id, descriptor)
+                .commit_with_exec_flag(
+                    self.process.id,
+                    descriptor,
+                    flags & carlio_os::linux_abi::O_CLOEXEC != 0,
+                )
                 .map_err(|_| carlio_os::linux_abi::EBADF)
         })();
         if operation.is_err() {

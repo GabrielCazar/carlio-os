@@ -6,6 +6,8 @@
 //! continuam sendo conectados por etapas.
 
 pub const SYS_WRITE: u64 = 1;
+pub const SYS_PREAD64: u64 = 17;
+pub const SYS_WRITEV: u64 = 20;
 pub const SYS_CLOSE: u64 = 3;
 pub const SYS_FSYNC: u64 = 74;
 pub const SYS_LSEEK: u64 = 8;
@@ -92,6 +94,7 @@ const O_RDWR: u64 = 2;
 const O_CREAT: u64 = 0x40;
 const O_EXCL: u64 = 0x80;
 const O_TRUNC: u64 = 0x200;
+pub const O_CLOEXEC: u64 = 0x80000;
 const O_APPEND: u64 = 0x400;
 const AT_FDCWD: u64 = (-100i64) as u64;
 /// Limita o tempo máximo gasto em uma única chamada síncrona de console.
@@ -162,6 +165,14 @@ pub trait LinuxSyscallIo {
     }
     fn read(&mut self, _descriptor: u64, _destination: &mut [u8]) -> Result<usize, u16> {
         Err(EBADF)
+    }
+    fn pread(
+        &mut self,
+        _descriptor: u64,
+        _offset: u64,
+        _destination: &mut [u8],
+    ) -> Result<usize, u16> {
+        Err(ENOSYS)
     }
     fn open(&mut self, _path: &str, _flags: u64, _mode: u64) -> Result<u64, u16> {
         Err(ENOSYS)
@@ -272,7 +283,14 @@ pub fn dispatch<I: LinuxSyscallIo>(
 ) -> SyscallOutcome {
     match number {
         SYS_EXECVE => execve_syscall(arguments[0], arguments[1], arguments[2], io),
-        SYS_READ => read_syscall(arguments[0], arguments[1], arguments[2], io),
+        SYS_READ => read_syscall(arguments[0], arguments[1], arguments[2], None, io),
+        SYS_PREAD64 => read_syscall(
+            arguments[0],
+            arguments[1],
+            arguments[2],
+            Some(arguments[3]),
+            io,
+        ),
         SYS_OPEN => open_syscall(AT_FDCWD, arguments[0], arguments[1], arguments[2], io),
         SYS_FSTAT => fstat_syscall(arguments[0], arguments[1], io),
         SYS_ACCESS => access_syscall(arguments[0], arguments[1], io),
@@ -341,7 +359,7 @@ pub fn dispatch<I: LinuxSyscallIo>(
             } else {
                 let mut path = [0u8; PATH_BUFFER_SIZE];
                 match read_rooted_path(arguments[1], &mut path, io) {
-                    Ok((path, absolute)) if arguments[0] == AT_FDCWD || absolute => {
+                    Ok((path, absolute)) if arguments[0] as i32 == AT_FDCWD as i32 || absolute => {
                         let operation = if arguments[3] & AT_REMOVEDIR != 0 {
                             io.rmdir(path)
                         } else {
@@ -369,6 +387,7 @@ pub fn dispatch<I: LinuxSyscallIo>(
         SYS_EXIT | SYS_EXIT_GROUP => SyscallOutcome::Exit {
             status: arguments[0] as u8,
         },
+        SYS_WRITEV => writev_syscall(arguments[0], arguments[1], arguments[2], io),
         SYS_WRITE => write_syscall(arguments[0], arguments[1], arguments[2], io),
         _ => errno(ENOSYS),
     }
@@ -426,7 +445,7 @@ fn newfstatat_syscall<I: LinuxSyscallIo>(
         Ok(path) => path,
         Err(error) => return errno(error),
     };
-    if directory != AT_FDCWD && !absolute {
+    if directory as i32 != AT_FDCWD as i32 && !absolute {
         return errno(EBADF);
     }
     let stat = match io.stat(path) {
@@ -550,7 +569,7 @@ fn fchownat_syscall<I: LinuxSyscallIo>(
     };
     let mut path = [0u8; PATH_BUFFER_SIZE];
     match read_rooted_path(path_address, &mut path, io) {
-        Ok((path, absolute)) if directory == AT_FDCWD || absolute => {
+        Ok((path, absolute)) if directory as i32 == AT_FDCWD as i32 || absolute => {
             result(io.chown(path, uid, gid).map(|_| 0))
         }
         Ok(_) => errno(EBADF),
@@ -574,7 +593,7 @@ fn fchmodat_syscall<I: LinuxSyscallIo>(
     };
     let mut path = [0u8; PATH_BUFFER_SIZE];
     match read_rooted_path(path_address, &mut path, io) {
-        Ok((path, absolute)) if directory == AT_FDCWD || absolute => {
+        Ok((path, absolute)) if directory as i32 == AT_FDCWD as i32 || absolute => {
             result(io.chmod(path, mode).map(|_| 0))
         }
         Ok(_) => errno(EBADF),
@@ -701,7 +720,7 @@ fn open_syscall<I: LinuxSyscallIo>(
     mode: u64,
     io: &mut I,
 ) -> SyscallOutcome {
-    let allowed = O_ACCMODE | O_CREAT | O_EXCL | O_TRUNC | O_APPEND;
+    let allowed = O_ACCMODE | O_CREAT | O_EXCL | O_TRUNC | O_APPEND | O_CLOEXEC;
     if flags & !allowed != 0 || flags & O_ACCMODE == 3 {
         return errno(EOPNOTSUPP);
     }
@@ -717,7 +736,7 @@ fn open_syscall<I: LinuxSyscallIo>(
         Ok(path) => path,
         Err(error) => return errno(error),
     };
-    if dirfd != AT_FDCWD && !absolute {
+    if dirfd as i32 != AT_FDCWD as i32 && !absolute {
         return errno(EBADF);
     }
     result(io.open(path, flags, mode))
@@ -871,8 +890,12 @@ fn read_syscall<I: LinuxSyscallIo>(
     descriptor: u64,
     address: u64,
     requested: u64,
+    offset: Option<u64>,
     io: &mut I,
 ) -> SyscallOutcome {
+    if offset.is_some_and(|offset| offset > i64::MAX as u64) {
+        return errno(EINVAL);
+    }
     let count = requested.min(MAX_WRITE_BYTES as u64) as usize;
     if count == 0 {
         return SyscallOutcome::Return(0);
@@ -884,7 +907,17 @@ fn read_syscall<I: LinuxSyscallIo>(
     let mut read = 0usize;
     while read < count {
         let chunk = (count - read).min(buffer.len());
-        let amount = match io.read(descriptor, &mut buffer[..chunk]) {
+        let operation = match offset {
+            Some(offset) => {
+                let position = offset + read as u64;
+                if position > i64::MAX as u64 {
+                    return partial_or_error(read, EOVERFLOW);
+                }
+                io.pread(descriptor, position, &mut buffer[..chunk])
+            }
+            None => io.read(descriptor, &mut buffer[..chunk]),
+        };
+        let amount = match operation {
             Ok(0) => break,
             Ok(amount) if amount <= chunk => amount,
             Ok(_) => return partial_or_error(read, EIO),
@@ -931,6 +964,41 @@ fn getgroups_syscall<I: LinuxSyscallIo>(
         return errno(EFAULT);
     }
     SyscallOutcome::Return(group_count as u64)
+}
+
+fn writev_syscall<I: LinuxSyscallIo>(
+    descriptor: u64,
+    address: u64,
+    vector_count: u64,
+    io: &mut I,
+) -> SyscallOutcome {
+    if vector_count > 1024 {
+        return errno(EINVAL);
+    }
+    let mut written = 0;
+    for index in 0..vector_count {
+        let Some(vector_address) = address.checked_add(index * 16) else {
+            return partial_or_error(written, EFAULT);
+        };
+        let mut vector = [0; 16];
+        if io.copy_from_user(vector_address, &mut vector).is_err() {
+            return partial_or_error(written, EFAULT);
+        }
+        let base = u64::from_le_bytes(vector[..8].try_into().unwrap());
+        let length = u64::from_le_bytes(vector[8..].try_into().unwrap());
+        let count = length.min((MAX_WRITE_BYTES - written) as u64);
+        let SyscallOutcome::Return(value) = write_syscall(descriptor, base, count, io) else {
+            return partial_or_error(written, EIO);
+        };
+        if (value as i64) < 0 {
+            return partial_or_error(written, (-(value as i64)) as u16);
+        }
+        written += value as usize;
+        if value < length || written == MAX_WRITE_BYTES {
+            break;
+        }
+    }
+    SyscallOutcome::Return(written as u64)
 }
 
 fn write_syscall<I: LinuxSyscallIo>(

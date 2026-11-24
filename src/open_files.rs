@@ -14,6 +14,7 @@ pub struct OpenFile {
     pub readable: bool,
     pub writable: bool,
     pub append: bool,
+    close_on_exec: bool,
     ready: bool,
 }
 
@@ -32,6 +33,7 @@ const EMPTY: OpenFile = OpenFile {
     readable: false,
     writable: false,
     append: false,
+    close_on_exec: false,
     ready: false,
 };
 
@@ -94,12 +96,22 @@ impl<const N: usize> OpenFileTable<N> {
             readable,
             writable,
             append,
+            close_on_exec: false,
             ready: false,
         };
         Ok(descriptor)
     }
 
     pub fn commit(&mut self, process_id: u64, descriptor: u32) -> Result<(), OpenFileError> {
+        self.commit_with_exec_flag(process_id, descriptor, false)
+    }
+
+    pub fn commit_with_exec_flag(
+        &mut self,
+        process_id: u64,
+        descriptor: u32,
+        close_on_exec: bool,
+    ) -> Result<(), OpenFileError> {
         let entry = self
             .entries
             .iter_mut()
@@ -107,6 +119,7 @@ impl<const N: usize> OpenFileTable<N> {
                 entry.process_id == process_id && entry.descriptor == descriptor && !entry.ready
             })
             .ok_or(OpenFileError::BadDescriptor)?;
+        entry.close_on_exec = close_on_exec;
         entry.ready = true;
         Ok(())
     }
@@ -152,6 +165,14 @@ impl<const N: usize> OpenFileTable<N> {
         Ok(())
     }
 
+    pub fn close_on_exec(&mut self, process_id: u64) {
+        for entry in &mut self.entries {
+            if entry.process_id == process_id && entry.close_on_exec {
+                *entry = EMPTY;
+            }
+        }
+    }
+
     pub fn close_process(&mut self, process_id: u64) -> usize {
         if process_id == 0 {
             return 0;
@@ -183,6 +204,20 @@ pub enum OpenFileError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exec_closes_only_marked_descriptors_of_the_replaced_process() {
+        let mut files = OpenFileTable::<3>::new();
+        let inherited = files.open(7, "/keep", true, false, false).unwrap();
+        let marked = files.reserve(7, "/close", true, false, false).unwrap();
+        let unrelated = files.reserve(8, "/other", true, false, false).unwrap();
+        files.commit_with_exec_flag(7, marked, true).unwrap();
+        files.commit_with_exec_flag(8, unrelated, true).unwrap();
+        files.close_on_exec(7);
+        assert!(files.get(7, inherited).is_ok());
+        assert_eq!(files.get(7, marked), Err(OpenFileError::BadDescriptor));
+        assert!(files.get(8, unrelated).is_ok());
+    }
 
     #[test]
     fn descriptors_are_bounded_and_isolated_by_process() {
