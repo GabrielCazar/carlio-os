@@ -4,13 +4,17 @@ use std::{
     io::{self, IsTerminal, Read, Seek, SeekFrom, Write},
 };
 
-use argon2::{password_hash::SaltString, Block};
+use argon2::{Block, password_hash::SaltString};
 use carlio_os::{
     block::{BlockDevice, BlockError, SECTOR_SIZE},
     storage_reserve::StorageReserve,
     userland::{
-        accounts::{AccountDatabase, AccountError, ACCOUNT_PATH, DATABASE_BYTES},
+        accounts::{
+            ACCOUNT_GROUP_LIMIT, ACCOUNT_PATH, AccountDatabase, AccountError, DATABASE_BYTES,
+            LOGIN_MEMORY_KIB, RESERVED_TEST_ACCOUNT,
+        },
         kdf::derive_key_into,
+        login::PASSWORD_LIMIT,
     },
     vfs::{AccessContext, Credentials, Vfs, VfsError},
     vfs_store::VfsStore,
@@ -18,7 +22,8 @@ use carlio_os::{
 use zeroize::Zeroizing;
 
 type Overlay = Vfs<40>;
-const MEMORY_KIB: usize = 19 * 1024;
+static OVERLAY: std::sync::Mutex<Overlay> = std::sync::Mutex::new(Overlay::new());
+const MEMORY_KIB: usize = LOGIN_MEMORY_KIB;
 const PASSES: u32 = 2;
 
 struct Image(File, u64);
@@ -49,9 +54,14 @@ impl BlockDevice for Image {
 
 fn provision() -> Result<(), String> {
     let args: Vec<_> = std::env::args().skip(1).collect();
-    let [path, name, uid, gid] = args.as_slice() else {
-        return Err("Uso: carlio-account IMAGEM USUÁRIO UID GID < senha".into());
+    let [path, name, uid, gid, groups @ ..] = args.as_slice() else {
+        return Err(
+            "Uso: carlio-account IMAGEM USUÁRIO UID GID [GID_SUPLEMENTAR ...] < senha".into(),
+        );
     };
+    if name == RESERVED_TEST_ACCOUNT {
+        return Err("Nome reservado ao teste de boot.".into());
+    }
     let parse_id = |id: &str| {
         id.parse::<u32>()
             .ok()
@@ -62,6 +72,19 @@ fn provision() -> Result<(), String> {
         uid: parse_id(uid)?,
         gid: parse_id(gid)?,
     };
+    let mut supplementary = Vec::new();
+    for group in groups {
+        let group = parse_id(group)?;
+        if supplementary.len() == ACCOUNT_GROUP_LIMIT
+            || group == credentials.gid
+            || supplementary.contains(&group)
+        {
+            return Err(
+                "Informe até oito grupos suplementares distintos do grupo primário.".into(),
+            );
+        }
+        supplementary.push(group);
+    }
     let root = Credentials { uid: 0, gid: 0 };
     let root_context = AccessContext::new(root, &[], 0);
     let error = |error: &dyn std::fmt::Debug| format!("{error:?}");
@@ -83,13 +106,13 @@ fn provision() -> Result<(), String> {
     let region = reserve.vfs(image).map_err(|e| error(&e))?;
     let mut snapshot = vec![0; Overlay::SNAPSHOT_MAX];
     let (mut store, len) = VfsStore::open(region, &mut snapshot).map_err(|e| error(&e))?;
-    let mut vfs = if len == 0 {
-        let mut vfs = Overlay::new();
+    let mut vfs = OVERLAY.lock().map_err(|e| error(&e))?;
+    if len == 0 {
         vfs.create_fhs_layout().map_err(|e| error(&e))?;
-        vfs
     } else {
-        Overlay::decode_snapshot(&snapshot[..len]).map_err(|e| error(&e))?
-    };
+        vfs.restore_snapshot(&snapshot[..len])
+            .map_err(|e| error(&e))?;
+    }
 
     let mut database = match AccountDatabase::load_protected(&vfs) {
         Ok(database) => database,
@@ -103,7 +126,7 @@ fn provision() -> Result<(), String> {
     if io::stdin().is_terminal() {
         return Err("Forneça a senha por um pipe com a entrada do terminal sem eco.".into());
     }
-    let mut password = Zeroizing::new([0; 1026]);
+    let mut password = Zeroizing::new([0; PASSWORD_LIMIT + 2]);
     let mut input = io::stdin().lock();
     let mut length = 0;
     while length < password.len() {
@@ -116,8 +139,12 @@ fn provision() -> Result<(), String> {
     if password[..length].last() == Some(&b'\n') {
         length -= 1;
     }
-    if !(12..=1024).contains(&length) || password[..length].contains(&b'\n') {
-        return Err("Informe uma senha de 12 a 1024 bytes em uma única linha.".into());
+    if !(12..=PASSWORD_LIMIT).contains(&length)
+        || password[..length]
+            .iter()
+            .any(|&byte| byte < 32 || byte == 127)
+    {
+        return Err("Informe uma senha de 12 a 1024 bytes sem caracteres de controle.".into());
     }
     let mut salt = [0; 16];
     File::open("/dev/urandom")
@@ -138,7 +165,7 @@ fn provision() -> Result<(), String> {
     let output = argon2::password_hash::Output::new(&output).map_err(|e| error(&e))?;
     let hash = format!("$argon2id$v=19$m={MEMORY_KIB},t={PASSES},p=1${salt}${output}");
     database
-        .add(name, credentials, &[], hash.as_bytes())
+        .add(name, credentials, &supplementary, hash.as_bytes())
         .map_err(|e| error(&e))?;
     let mut bytes = [0; DATABASE_BYTES];
     let len = database.encode(&mut bytes).map_err(|e| error(&e))?;

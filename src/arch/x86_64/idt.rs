@@ -1317,9 +1317,8 @@ pub unsafe fn start_watchdog() {
         super::out(0x43, 0x36);
         super::out(0x40, divisor as u8);
         super::out(0x40, (divisor >> 8) as u8);
-        TICKS.store(0, Ordering::Relaxed);
         LAST_HEARTBEAT.store(HEARTBEAT.load(Ordering::Relaxed), Ordering::Relaxed);
-        LAST_PROGRESS_TICK.store(0, Ordering::Relaxed);
+        LAST_PROGRESS_TICK.store(TICKS.load(Ordering::Relaxed), Ordering::Relaxed);
         asm!("sti", options(nomem, nostack));
     }
 }

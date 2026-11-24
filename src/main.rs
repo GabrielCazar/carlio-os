@@ -295,7 +295,7 @@ static AP_PROCESS_SCHEDULING: AtomicBool = AtomicBool::new(false);
 #[cfg(target_os = "none")]
 static PAGE_TABLE_PROBE_PENDING: AtomicBool = AtomicBool::new(false);
 #[cfg(target_os = "none")]
-const PROCESS_VM_PAGE_CAPACITY: usize = 128;
+const PROCESS_VM_PAGE_CAPACITY: usize = 768;
 #[cfg(target_os = "none")]
 const PROCESS_VM_REGION_CAPACITY: usize = 64;
 #[cfg(target_os = "none")]
@@ -527,6 +527,7 @@ impl PageTableAccess for BootPageTableAccess {
                 asm!("invlpg [{}]", in(reg) virtual_address, options(nostack, preserves_flags))
             };
         }
+        idt::heartbeat();
     }
 }
 
@@ -1028,6 +1029,18 @@ pub extern "C" fn _start() -> ! {
         unsafe { lapic::start_scheduler_timer() };
     }
     AP_PROCESS_SCHEDULING.store(true, Ordering::Release);
+    if let Some(lease) = console_session::current_lease().filter(|lease| lease.dns_server.is_some())
+    {
+        match e1000::resolve_dns_a(lease, "example.com") {
+            Ok(Some(_)) => write("DNS IPv4: resposta A valida para example.com.\r\n"),
+            Ok(None) => write("DNS IPv4: sem resposta A valida.\r\n"),
+            Err(error) => {
+                write("DNS IPv4: ");
+                write(error.message());
+                write(".\r\n");
+            }
+        }
+    }
     boot_progress(100, "shell disponível");
     write("Watchdog PIT ativo: prazo de 5 s sem progresso.\r\n");
     write("Digite 'ajuda' para ver os comandos.\r\n\r\n");
@@ -1359,45 +1372,23 @@ fn filesystem_metadata_probe(cut: bool) -> Option<()> {
 }
 
 #[cfg(target_os = "none")]
+mod console_session;
+
+#[cfg(target_os = "none")]
 fn shell() -> ! {
     let mut line = [0u8; INPUT_LIMIT];
+    let mut console = console_session::Console::new();
     loop {
         flush_persistent_errors();
-        write("carlio> ");
-        let mut len = 0;
-        let mut overflowed = false;
-        loop {
-            let byte = match serial_read() {
-                Ok(byte) => byte,
-                Err(_) => continue,
-            };
-            match byte {
-                b'\r' | b'\n' => {
-                    write("\r\n");
-                    break;
-                }
-                8 | 127 if len > 0 => {
-                    len -= 1;
-                    write("\x08 \x08");
-                }
-                32..=126 => {
-                    if len < INPUT_LIMIT {
-                        line[len] = byte;
-                        len += 1;
-                        serial_write(byte);
-                    } else if !overflowed {
-                        overflowed = true;
-                        record_error(KernelError::InputTooLong);
-                    }
-                }
-                _ => {}
-            }
-        }
-        if overflowed {
+        write(console.prompt());
+        let Some(len) = console.read_line(&mut line, true) else {
             write("Entrada descartada por exceder o limite.\r\n");
             continue;
-        }
+        };
         let command = core::str::from_utf8(&line[..len]).unwrap_or("");
+        if console.handle(command) {
+            continue;
+        }
         #[cfg(feature = "storage-test")]
         if matches!(command, "contas-teste-gravar" | "contas-teste-login") {
             if accounts_storage_probe(command == "contas-teste-gravar").is_err() {
@@ -1579,7 +1570,7 @@ fn shell() -> ! {
         }
         match parse_command(command) {
             Command::Help => write(
-                "Comandos: ajuda, sobre, usuario, permissoes, erros, logs, limpar, parar.\r\n",
+                "Comandos: ajuda, sobre, usuario, permissoes, erros, logs, limpar, parar.\r\nDiagnóstico: digite diagnostico.\r\nContas: login NOME. Rede: rede-status iniciar|parar.\r\n",
             ),
             Command::About => {
                 write("carlIO OS | Criado por João G.R.Santos\r\n");
@@ -1594,6 +1585,10 @@ fn shell() -> ! {
             Command::Logs => report_errors_markdown(),
             #[cfg(not(target_os = "none"))]
             Command::Logs => {}
+            #[cfg(target_os = "none")]
+            Command::Diagnosis => report_system_diagnosis(),
+            #[cfg(not(target_os = "none"))]
+            Command::Diagnosis => {}
             Command::Clear => write("\x1b[2J\x1b[H"),
             Command::Halt => {
                 write("Processador parado.\r\n");
@@ -1606,6 +1601,32 @@ fn shell() -> ! {
             Command::Unknown => write("Comando desconhecido. Digite 'ajuda'.\r\n"),
         }
     }
+}
+
+#[cfg(target_os = "none")]
+fn report_system_diagnosis() {
+    let rootfs = match ROOTFS_BACKEND.lock().as_ref() {
+        Some(BootRootfs::Ext4(_)) => "ext4",
+        Some(BootRootfs::Fat32(_)) => "FAT32",
+        None => "RAM",
+    };
+    let persistent_log = PERSISTENT_ERRORS.lock().is_some();
+    let free_frames = FRAME_ALLOCATOR.lock().free_frames();
+    write("Diagnóstico do sistema (somente leitura)\r\nRaiz: ");
+    write(rootfs);
+    write("\r\nLog persistente: ");
+    write(if persistent_log { "ativo" } else { "inativo" });
+    write("\r\nFrames livres de 4 KiB: ");
+    write_usize(free_frames);
+    write("\r\nFramebuffer de firmware: ");
+    write(if FRAMEBUFFER_ACTIVE.load(Ordering::Acquire) {
+        "ativo"
+    } else {
+        "indisponível"
+    });
+    write("\r\nTempo desde o boot (s): ");
+    write_u64(idt::uptime_ticks() / idt::TICK_RATE_HZ);
+    write("\r\n");
 }
 
 #[cfg(target_os = "none")]
@@ -3094,29 +3115,39 @@ impl KernelLinuxSyscallIo {
         offset: u64,
         destination: &mut [u8],
     ) -> Result<usize, u16> {
+        // Keep filesystem I/O in kernel memory before copying to the caller.
+        let mut scratch = [0u8; 256];
+        let chunk = destination.len().min(scratch.len());
+        let amount = Self::read_file_for(self.process, file, offset, &mut scratch[..chunk])?;
+        destination[..amount].copy_from_slice(&scratch[..amount]);
+        Ok(amount)
+    }
+
+    fn read_file_for(
+        process: carlio_os::process::Process,
+        file: carlio_os::open_files::OpenFile,
+        offset: u64,
+        destination: &mut [u8],
+    ) -> Result<usize, u16> {
         if !file.readable {
             return Err(carlio_os::linux_abi::EBADF);
         }
         let path = file.path_str().ok_or(carlio_os::linux_abi::EIO)?;
-        let mut scratch = [0u8; 256];
-        let chunk = destination.len().min(scratch.len());
-        let context = self.process.security.access_context();
+        let context = process.security.access_context();
         let inline_offset = usize::try_from(offset).map_err(|_| carlio_os::linux_abi::EINVAL)?;
         let inline = PROCESS_VFS.lock().read_file_range_as(
             path,
             context,
             inline_offset,
-            &mut scratch[..chunk],
+            destination,
         );
-        let amount = match inline {
-            Ok(amount) => amount,
+        match inline {
+            Ok(amount) => Ok(amount),
             Err(carlio_os::vfs::VfsError::NotFound) => {
-                read_rootfs_file(path, context, offset, &mut scratch[..chunk]).map_err(vfs_errno)?
+                read_rootfs_file(path, context, offset, destination).map_err(vfs_errno)
             }
-            Err(error) => return Err(vfs_errno(error)),
-        };
-        destination[..amount].copy_from_slice(&scratch[..amount]);
-        Ok(amount)
+            Err(error) => Err(vfs_errno(error)),
+        }
     }
 
     fn restore_user_range(&mut self, address: u64, length: u64) -> Result<(), u16> {
@@ -3365,13 +3396,89 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
         descriptor: u64,
         offset: u64,
     ) -> Result<u64, u16> {
+        use carlio_os::linux_abi::{EACCES, EBADF, EINVAL, EOPNOTSUPP};
+        use carlio_os::vma::{MAP_FIXED, MAP_FIXED_NOREPLACE};
+
+        const MAP_PRIVATE: u64 = 0x02;
+        const MAP_ANONYMOUS: u64 = 0x20;
+        const MAP_DENYWRITE: u64 = 0x0800;
+        const MAP_EXECUTABLE: u64 = 0x1000;
+        let process = self.process;
+        let file = if flags & MAP_ANONYMOUS == 0 {
+            if flags & !(MAP_DENYWRITE | MAP_EXECUTABLE | MAP_FIXED | MAP_FIXED_NOREPLACE)
+                != MAP_PRIVATE
+            {
+                return Err(EOPNOTSUPP);
+            }
+            if flags & (MAP_FIXED | MAP_FIXED_NOREPLACE) == MAP_FIXED | MAP_FIXED_NOREPLACE
+                || protection & !7 != 0
+                || !offset.is_multiple_of(carlio_os::vma::PAGE_SIZE)
+                || offset
+                    .checked_add(length)
+                    .is_none_or(|end| end > i64::MAX as u64)
+            {
+                return Err(EINVAL);
+            }
+            let descriptor = u32::try_from(descriptor).map_err(|_| EBADF)?;
+            let file = OPEN_FILES
+                .lock()
+                .get(process.id, descriptor)
+                .map_err(|_| EBADF)?;
+            if !file.readable {
+                return Err(EACCES);
+            }
+            Some(file)
+        } else {
+            None
+        };
         let owner = self.process.thread_group_id;
         self.with_process_vm(|vm| {
             if let Some(page) = vm.swapped_address() {
                 restore_vm_page(vm, owner, page)?;
             }
-            vm.mmap_linux(address, length, protection, flags, descriptor, offset)
-                .map_err(process_vm_errno)
+            let Some(file) = file else {
+                return vm
+                    .mmap_linux(address, length, protection, flags, descriptor, offset)
+                    .map_err(process_vm_errno);
+            };
+            let mut read_error = None;
+            let initialize = |page, physical| {
+                // The frame is zeroed and private until initialization succeeds.
+                let bytes = unsafe { &mut *swap_frame_ptr(physical)? };
+                let mut filled = 0;
+                while filled < bytes.len() {
+                    match Self::read_file_for(
+                        process,
+                        file,
+                        offset + page + filled as u64,
+                        &mut bytes[filled..],
+                    ) {
+                        Ok(0) => break,
+                        Ok(amount) => filled += amount,
+                        Err(errno) => {
+                            read_error = Some(errno);
+                            return Err(FrameError::InvalidPhysicalAddress);
+                        }
+                    }
+                }
+                idt::heartbeat();
+                Ok(())
+            };
+            let mapping = if flags & MAP_FIXED != 0 {
+                vm.mmap_replace(address, length, protection as u8, initialize)
+            } else {
+                vm.mmap_initialized_at(
+                    address,
+                    length,
+                    protection as u8,
+                    flags & MAP_FIXED_NOREPLACE != 0,
+                    initialize,
+                )
+            };
+            mapping.map_err(|error| match error {
+                carlio_os::vma::ProcessVmError::RollbackFailed => process_vm_errno(error),
+                _ => read_error.unwrap_or_else(|| process_vm_errno(error)),
+            })
         })
     }
 
@@ -4042,7 +4149,8 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
 fn process_vm_errno(error: carlio_os::vma::ProcessVmError) -> u16 {
     use carlio_os::vma::{ProcessVmError as E, VmaError as V};
     match error {
-        E::Vma(V::InvalidRange | V::Overlap) => carlio_os::linux_abi::EINVAL,
+        E::Vma(V::InvalidRange) => carlio_os::linux_abi::EINVAL,
+        E::Vma(V::Overlap) => carlio_os::linux_abi::EEXIST,
         E::Vma(V::Capacity | V::HeapCollision) | E::Memory(FrameError::CapacityExceeded) => {
             carlio_os::linux_abi::ENOMEM
         }
@@ -5686,6 +5794,7 @@ fn report_pci_function(function: PciFunction) {
                 write("; envio/recepcao polling disponiveis.\r\n");
                 match e1000::request_dhcp_lease() {
                     Ok(Some(lease)) => {
+                        console_session::configure_network(lease);
                         write("DHCP IPv4: concessao recebida ");
                         for (index, octet) in lease.address.iter().enumerate() {
                             if index != 0 {
@@ -5706,19 +5815,6 @@ fn report_pci_function(function: PciFunction) {
                                 Ok(None) => write("ARP IPv4: gateway sem resposta.\r\n"),
                                 Err(error) => {
                                     write("ARP IPv4: ");
-                                    write(error.message());
-                                    write(".\r\n");
-                                }
-                            }
-                        }
-                        if lease.dns_server.is_some() {
-                            match e1000::resolve_dns_a_boot(lease, "example.com") {
-                                Ok(Some(_)) => {
-                                    write("DNS IPv4: resposta A valida para example.com.\r\n")
-                                }
-                                Ok(None) => write("DNS IPv4: sem resposta A valida.\r\n"),
-                                Err(error) => {
-                                    write("DNS IPv4: ");
                                     write(error.message());
                                     write(".\r\n");
                                 }

@@ -5,15 +5,17 @@ import argparse
 import os
 import selectors
 import shutil
+import socket
 import subprocess
 import tempfile
 import time
+from ipaddress import IPv4Address
 from pathlib import Path
 
 from provision_storage import provision
 
 
-def boot(qemu, command, marker, timeout, log, cut=False, swap_disabled=False):
+def boot(qemu, command, marker, timeout, log, cut=False, swap_disabled=False, steps=(), verify=None):
     process = subprocess.Popen(
         qemu, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT, bufsize=0,
@@ -21,6 +23,8 @@ def boot(qemu, command, marker, timeout, log, cut=False, swap_disabled=False):
     output = bytearray()
     sent_probe = False
     sent_command = False
+    steps = iter(steps)
+    offset = 0
     deadline = time.monotonic() + timeout
     try:
         with selectors.DefaultSelector() as selector:
@@ -38,11 +42,19 @@ def boot(qemu, command, marker, timeout, log, cut=False, swap_disabled=False):
                 if not sent_command and b"carlio> " in output:
                     process.stdin.write(command + b"\r")
                     sent_command = True
-                if marker in output:
+                if marker in output[offset:]:
+                    step = next(steps, None)
+                    if step is not None:
+                        payload, marker = step
+                        offset = len(output)
+                        process.stdin.write(payload + b"\r\n")
+                        continue
                     if swap_disabled and b"Swap: reserva experimental habilitada." in output:
                         break
                     if command == b"log-teste-gravar" and "Swap VM: page fault CPL3 restaurado.".encode() not in output:
                         break
+                    if verify:
+                        verify()
                     return
                 if b"teste falhou." in output:
                     break
@@ -61,6 +73,74 @@ def boot(qemu, command, marker, timeout, log, cut=False, swap_disabled=False):
         process.stdin.close()
         process.stdout.close()
         log.write_bytes(output)
+
+
+def check_udp(port, expected):
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client:
+        client.settimeout(0.75)
+        client.connect(("127.0.0.1", port))
+        client.send(b"STATUS")
+        try:
+            reply = client.recv(32)
+        except TimeoutError:
+            reply = None
+        if reply != expected:
+            raise SystemExit(f"Resposta UDP inesperada: {reply!r}; esperada: {expected!r}")
+
+
+def check_provisioned_accounts(qemu, image, args, mode):
+    password = b"senha-descartavel-da-vm"
+    for name, identity, groups in (("operador", "1000", ["42"]), ("visitante", "1001", [])):
+        subprocess.run(
+            [str(args.account_provisioner.resolve()), str(image), name, identity, identity, *groups],
+            input=password + b"\n", check=True,
+        )
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as reserve:
+        reserve.bind(("127.0.0.1", 0))
+        port = reserve.getsockname()[1]
+    qemu += ["-netdev", f"user,id=net,hostfwd=udp:127.0.0.1:{port}-:7704",
+             "-device", "e1000e,netdev=net"]
+
+    def stop_service():
+        check_udp(port, None)
+
+    def active_service():
+        check_udp(port, b"OK")
+
+    dns_result = b"DNS IPv4: "
+    if args.dns_address:
+        dns_result += str(args.dns_address).encode() + b"\r\n"
+    log = args.log_dir / f"bloco4-conta-provisionada-{mode}.log"
+    boot(qemu, b"login operador", b"Senha: ", args.timeout, log, verify=active_service, steps=[
+        (b"senha-incorreta-da-vm", "Credenciais inválidas".encode()),
+        (b"login operador", b"Senha: "),
+        (password, b"sessao> "),
+        (b"id", b"uid=1000 gid=1000 grupo=42"),
+        (b"resolver example.com", dns_result),
+        (b"ler /etc/carlio-accounts.db", b"errno 13"),
+        (b"criar /tmp/operador.txt", "VFS: alteração gravada.".encode()),
+        (b"gravar /tmp/operador.txt texto-privado", "VFS: alteração gravada.".encode()),
+        (b"sair", b"carlio> "),
+        (b"login visitante", b"Senha: "),
+        (password, b"sessao> "),
+        (b"id", b"uid=1001 gid=1001"),
+        (b"ler /tmp/operador.txt", b"errno 13"),
+        (b"sair", b"carlio> "),
+        (b"rede-status iniciar", b"status UDP ativo"),
+    ])
+    reboot_log = args.log_dir / f"bloco4-conta-provisionada-{mode}-reboot.log"
+    boot(qemu, b"login operador", b"Senha: ", args.timeout, reboot_log, verify=stop_service, steps=[
+        (password, b"sessao> "),
+        (b"ler /tmp/operador.txt", b"texto-privado"),
+        (b"sair", b"carlio> "),
+        (b"rede-status iniciar", b"status UDP ativo"),
+        (b"rede-status parar", b"status UDP parado"),
+    ])
+    for path in (log, reboot_log):
+        serial = path.read_bytes()
+        if password in serial or b"senha-incorreta-da-vm" in serial:
+            raise SystemExit(f"Senha apareceu na saída serial. Consulte {path}.")
+    print(f"{mode}: login persistente, isolamento POSIX, comando DNS e status UDP verificados")
 
 
 
@@ -164,11 +244,15 @@ def main():
     scenario.add_argument("--accounts", action="store_true")
     scenario.add_argument("--account-provisioner", type=Path)
     parser.add_argument("--metadata", action="store_true")
+    parser.add_argument("--dns-address", type=IPv4Address,
+                        help="Resposta A esperada para example.com no teste de conta")
     parser.add_argument("--accel", choices=["tcg", "kvm"], default="tcg")
     parser.add_argument("--timeout", type=int, default=45)
     args = parser.parse_args()
     if args.metadata and not args.filesystem:
         parser.error("--metadata requer --filesystem")
+    if args.dns_address and not args.account_provisioner:
+        parser.error("--dns-address requer --account-provisioner")
     args.log_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="carlioos-persistence-") as directory:
         image = Path(directory) / "data.raw"
@@ -195,14 +279,7 @@ def main():
             ])
         mode = "uefi" if args.firmware else "bios"
         if args.account_provisioner:
-            subprocess.run(
-                [str(args.account_provisioner.resolve()), str(image), "operador", "1000", "1000"],
-                input=b"senha-descartavel-da-vm\n",
-                check=True,
-            )
-            boot(qemu, b"", "Contas: banco protegido validado no overlay persistente.".encode(),
-                 args.timeout, args.log_dir / f"bloco4-conta-provisionada-{mode}.log")
-            print(f"{mode}: kernel abriu o banco provisionado fora da VM")
+            check_provisioned_accounts(qemu, image, args, mode)
             return
         if args.accounts:
             for action, marker in (

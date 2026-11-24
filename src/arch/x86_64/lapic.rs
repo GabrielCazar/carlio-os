@@ -16,6 +16,7 @@ const APIC_TIMER_INITIAL: usize = 0x380;
 const APIC_TIMER_DIVIDE: usize = 0x3e0;
 const APIC_ICR_LOW: usize = 0x300;
 const APIC_ICR_HIGH: usize = 0x310;
+const APIC_ICR_DELIVERY_PENDING: u32 = 1 << 12;
 pub const TLB_IPI_VECTOR: u8 = 0xf1;
 pub const SCHEDULER_TIMER_VECTOR: u8 = 0x40;
 const APIC_ENABLE: u64 = 1 << 11;
@@ -37,6 +38,7 @@ pub enum LapicError {
     X2ApicActive,
     InvalidBase,
     AcknowledgementTimeout,
+    DeliveryTimeout,
 }
 
 /// Ativa o xAPIC nesta CPU e o mapeia pelo HHDM. Chamado pelo BSP e por cada AP.
@@ -172,6 +174,16 @@ pub fn invalidate_all(_root: u64, virtual_address: u64) {
         SHOOTDOWN_LOCK.store(false, Ordering::Release);
         return;
     }
+    // The xAPIC ICR cannot accept a new command while the previous
+    // submission is pending, even if its remote handlers have acknowledged.
+    let mut spins = 0;
+    while read(APIC_ICR_LOW) & APIC_ICR_DELIVERY_PENDING != 0 {
+        if spins == SPIN_LIMIT {
+            fatal(LapicError::DeliveryTimeout);
+        }
+        wait_for_shootdown_progress();
+        spins += 1;
+    }
     REMOTE_ACKS.store(0, Ordering::Release);
     write(APIC_ICR_HIGH, 0);
     // Fixed delivery, shorthand all-excluding-self (bits 19:18 = 11).
@@ -235,6 +247,7 @@ fn fatal(error: LapicError) -> ! {
     crate::write("LAPIC: falha fatal no shootdown remoto: ");
     match error {
         LapicError::AcknowledgementTimeout => crate::write("ACK remoto expirou.\r\n"),
+        LapicError::DeliveryTimeout => crate::write("envio anterior permaneceu pendente.\r\n"),
         LapicError::X2ApicActive => crate::write("x2APIC ativo.\r\n"),
         LapicError::InvalidBase => crate::write("mapeamento MMIO inválido.\r\n"),
     }

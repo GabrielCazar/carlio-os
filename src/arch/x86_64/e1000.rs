@@ -4,15 +4,15 @@
 use carlio_os::{
     errors::KernelError,
     net::{
-        dns_a_answer, dns_a_query, encode_ipv4_udp, ipv4_next_hop, ArpPacket, EthernetFrame,
-        Ipv4Packet, UdpDatagram,
+        ArpPacket, EthernetFrame, Ipv4Packet, UdpDatagram, dns_a_answer, dns_a_query,
+        encode_ipv4_udp, ipv4_next_hop,
     },
     pci::PciFunction,
 };
 use core::{
     arch::asm,
     ptr,
-    sync::atomic::{compiler_fence, Ordering},
+    sync::atomic::{Ordering, compiler_fence},
 };
 
 const RX_COUNT: usize = 16;
@@ -44,7 +44,7 @@ const TX_DD: u8 = 1;
 const TX_CMD_EOP_IFCS_RS: u8 = 0x0b;
 const DHCP_POLL_LIMIT: usize = 20_000_000;
 const ARP_POLL_LIMIT: usize = 2_000_000;
-const DNS_POLL_LIMIT: usize = 200_000;
+const DNS_TIMEOUT_TICKS: u64 = 2 * super::idt::TICK_RATE_HZ;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DhcpLease {
@@ -285,17 +285,13 @@ pub fn receive(output: &mut [u8]) -> Result<Option<usize>, KernelError> {
     }
     let length = unsafe { ptr::read_volatile(ptr::addr_of!((*descriptor).length)) } as usize;
     let errors = unsafe { ptr::read_volatile(ptr::addr_of!((*descriptor).errors)) };
-    if status & RX_EOP == 0
-        || errors != 0
-        || length < 14
-        || length > BUFFER_SIZE
-        || output.len() < length
-    {
-        return Err(KernelError::ControllerError);
-    }
-    let source = unsafe { ptr::addr_of!(DMA.rx_buffers[index]).cast::<u8>() };
-    unsafe {
-        ptr::copy_nonoverlapping(source, output.as_mut_ptr(), length);
+    let valid = status & RX_EOP != 0
+        && errors == 0
+        && (14..=BUFFER_SIZE).contains(&length)
+        && output.len() >= length;
+    if valid {
+        let source = unsafe { ptr::addr_of!(DMA.rx_buffers[index]).cast::<u8>() };
+        unsafe { ptr::copy_nonoverlapping(source, output.as_mut_ptr(), length) };
     }
     unsafe {
         ptr::write_volatile(ptr::addr_of_mut!((*descriptor).status), 0);
@@ -307,7 +303,11 @@ pub fn receive(output: &mut [u8]) -> Result<Option<usize>, KernelError> {
     unsafe {
         NIC = Some(nic);
     }
-    Ok(Some(length))
+    if valid {
+        Ok(Some(length))
+    } else {
+        Err(KernelError::ControllerError)
+    }
 }
 
 /// Executa DHCPv4 DORA em polling e retorna somente após DHCPACK.
@@ -341,6 +341,27 @@ pub fn resolve_gateway(lease: DhcpLease) -> Result<Option<[u8; 6]>, KernelError>
         return Ok(None);
     };
     resolve_neighbor(lease.address, gateway)
+}
+
+/// The console owns the controller once the boot probes have finished.
+pub fn poll_status(lease: DhcpLease) {
+    let (Some(nic), Some(mask)) = (unsafe { NIC }, lease.subnet_mask) else {
+        return;
+    };
+    let mut frame = [0; BUFFER_SIZE];
+    let mut reply = [0; 60];
+    for _ in 0..RX_COUNT {
+        let Ok(Some(length)) = receive(&mut frame) else {
+            break;
+        };
+        if let Some(length) =
+            carlio_os::net::status_reply(&frame[..length], nic.mac, lease.address, mask, &mut reply)
+        {
+            if transmit(&reply[..length]).is_err() {
+                break;
+            }
+        }
+    }
 }
 
 fn resolve_neighbor(
@@ -387,10 +408,9 @@ fn resolve_neighbor(
     Ok(None)
 }
 
-/// Resolve uma consulta A direta durante a inicialização, com a interface em polling.
-pub fn resolve_dns_a_boot(lease: DhcpLease, name: &str) -> Result<Option<[u8; 4]>, KernelError> {
+/// Consulta o DNS do DHCP. O chamador deve ser o dono da interface e manter o PIT ativo.
+pub fn resolve_dns_a(lease: DhcpLease, name: &str) -> Result<Option<[u8; 4]>, KernelError> {
     let mut query = [0; 271];
-    // O diagnóstico roda uma vez, no BSP, antes de expor a interface a processos.
     let stamp = unsafe { core::arch::x86_64::_rdtsc() };
     let source_port = 49152 | ((stamp >> 16) as u16 & 0x3fff);
     let query_len =
@@ -421,30 +441,39 @@ pub fn resolve_dns_a_boot(lease: DhcpLease, name: &str) -> Result<Option<[u8; 4]
     )
     .map_err(|_| KernelError::ControllerError)?;
     transmit(&frame[..(14 + length).max(60)])?;
-    for _ in 0..DNS_POLL_LIMIT {
-        let Some(length) = receive(&mut frame)? else {
-            core::hint::spin_loop();
-            continue;
-        };
-        let Ok(ethernet) = EthernetFrame::parse(&frame[..length]) else {
-            continue;
-        };
-        if ethernet.ethertype != 0x0800 || ethernet.destination != nic.mac {
-            continue;
-        }
-        let Ok(ip) = Ipv4Packet::parse(ethernet.payload) else {
-            continue;
-        };
-        if ip.protocol != 17 || ip.source != server || ip.destination != lease.address {
-            continue;
-        }
-        let Ok(udp) = UdpDatagram::parse(ip.payload, ip.source, ip.destination) else {
-            continue;
-        };
-        if udp.source_port == 53 && udp.destination_port == source_port {
+    for _ in 0..DNS_TIMEOUT_TICKS {
+        for _ in 0..RX_COUNT {
+            let Some(length) = receive(&mut frame)? else {
+                break;
+            };
+            let Ok(ethernet) = EthernetFrame::parse(&frame[..length]) else {
+                continue;
+            };
+            if ethernet.ethertype != 0x0800 || ethernet.destination != nic.mac {
+                continue;
+            }
+            let Ok(ip) = Ipv4Packet::parse(ethernet.payload) else {
+                continue;
+            };
+            if ip.protocol != 17
+                || ip.ttl == 0
+                || ip.source != server
+                || ip.destination != lease.address
+            {
+                continue;
+            }
+            let Ok(udp) = UdpDatagram::parse(ip.payload, ip.source, ip.destination) else {
+                continue;
+            };
+            if udp.source_port != 53 || udp.destination_port != source_port {
+                continue;
+            }
             if let Some(address) = dns_a_answer(query, udp.payload) {
                 return Ok(Some(address));
             }
+        }
+        if !super::idt::wait_ticks(1) {
+            break;
         }
     }
     Ok(None)
@@ -457,7 +486,7 @@ fn build_dhcp_frame(
     server: Option<[u8; 4]>,
     frame: &mut [u8; BUFFER_SIZE],
 ) -> Result<usize, KernelError> {
-    use carlio_os::net::{checksum, ETHERNET_HEADER_LEN};
+    use carlio_os::net::{ETHERNET_HEADER_LEN, checksum};
     let bootp = 42;
     frame.fill(0);
     frame[..6].fill(0xff);

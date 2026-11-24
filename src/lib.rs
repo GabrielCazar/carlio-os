@@ -11,6 +11,7 @@ pub enum Command {
     Halt,
     Errors,
     Logs,
+    Diagnosis,
     Unknown,
 }
 
@@ -24,6 +25,7 @@ pub fn parse_command(line: &str) -> Command {
         "parar" => Command::Halt,
         "erros" => Command::Errors,
         "logs" => Command::Logs,
+        "diagnostico" => Command::Diagnosis,
         _ => Command::Unknown,
     }
 }

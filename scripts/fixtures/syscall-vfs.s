@@ -90,6 +90,61 @@ _start:
     mov $-1, %r10
     syscall_nr 17
     require -22                    # EINVAL for a negative offset
+
+    xor %edi, %edi
+    mov $4096, %esi
+    mov $3, %edx                   # PROT_READ | PROT_WRITE
+    mov $2, %r10d                  # MAP_PRIVATE
+    mov %r12, %r8
+    mov $1, %r9d
+    syscall_nr 9
+    require -22                    # Unaligned file offset
+    xor %r9d, %r9d
+    syscall_nr 9
+    test %rax, %rax
+    jle failed
+    mov %rax, %rdi
+    mov $0x100002, %r10d           # MAP_PRIVATE | MAP_FIXED_NOREPLACE
+    syscall_nr 9
+    require -17                    # EEXIST, preserving the original mapping
+    cmpl $0x00534656, (%rdi)       # "VFS" and zero-filled tail
+    jne failed
+    cmpb $0, 4095(%rdi)
+    jne failed
+    movb $0, (%rdi)
+    mov $0x12, %r10d              # MAP_PRIVATE | MAP_FIXED
+    syscall_nr 9
+    cmp %rdi, %rax
+    jne failed
+    cmpl $0x00534656, (%rdi)       # Fresh contents replace the dirty page
+    jne failed
+    mov $0x32, %r10d              # MAP_PRIVATE | MAP_FIXED | MAP_ANONYMOUS
+    mov $-1, %r8d                # The fd argument is a Linux int
+    syscall_nr 9
+    cmp %rdi, %rax
+    jne failed
+    cmpl $0, (%rdi)
+    jne failed
+    syscall_nr 11                  # munmap
+    require 0
+    mov $0x100002, %r10d
+    mov %r12, %r8
+    syscall_nr 9                   # The same address is now available
+    cmp %rdi, %rax
+    jne failed
+    cmpl $0x00534656, (%rdi)
+    jne failed
+    syscall_nr 11
+    require 0
+    mov %r12, %rdi
+    mov %rsp, %rsi
+    mov $1, %edx
+    xor %r10d, %r10d
+    syscall_nr 17
+    require 1
+    cmpb $'V', (%rsp)              # Private writes never reach the file
+    jne failed
+
     mov $0600, %esi
     syscall_nr 91                        # fchmod
     require 0

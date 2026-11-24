@@ -16,6 +16,8 @@ const RECORD_BYTES: usize =
     ACCOUNT_NAME_BYTES + 8 + 2 + PASSWORD_HASH_BYTES + ACCOUNT_GROUP_LIMIT * 4;
 pub const DATABASE_BYTES: usize = HEADER_BYTES + ACCOUNT_LIMIT * RECORD_BYTES;
 pub const ACCOUNT_PATH: &str = "/etc/carlio-accounts.db";
+pub const LOGIN_MEMORY_KIB: usize = 19 * 1024;
+pub const RESERVED_TEST_ACCOUNT: &str = "probe";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AccountError {
@@ -132,7 +134,7 @@ impl AccountDatabase {
         }
         if self.entries[..self.count]
             .iter()
-            .any(|entry| entry.username() == username)
+            .any(|entry| entry.username() == username || entry.credentials.uid == credentials.uid)
         {
             return Err(AccountError::Duplicate);
         }

@@ -3,6 +3,76 @@
 pub const ETHERNET_HEADER_LEN: usize = 14;
 pub const IPV4_MIN_HEADER_LEN: usize = 20;
 pub const UDP_HEADER_LEN: usize = 8;
+pub const STATUS_PORT: u16 = 7704;
+
+/// Bounded, opt-in LAN health check. Replies cannot exceed the request size.
+pub fn status_reply(
+    frame: &[u8],
+    mac: [u8; 6],
+    address: [u8; 4],
+    mask: [u8; 4],
+    output: &mut [u8; 60],
+) -> Option<usize> {
+    let ethernet = EthernetFrame::parse(frame).ok()?;
+    if ethernet.source == [0; 6] || ethernet.source == mac || ethernet.source[0] & 1 != 0 {
+        return None;
+    }
+    output.fill(0);
+    output[..6].copy_from_slice(&ethernet.source);
+    output[6..12].copy_from_slice(&mac);
+    output[12..14].copy_from_slice(&ethernet.ethertype.to_be_bytes());
+    match ethernet.ethertype {
+        0x0806 if ethernet.destination == [0xff; 6] || ethernet.destination == mac => {
+            let arp = ArpPacket::parse(ethernet.payload).ok()?;
+            if arp.operation != 1 || arp.target_ipv4 != address || arp.sender_mac != ethernet.source
+            {
+                return None;
+            }
+            output[14..22].copy_from_slice(&[0, 1, 8, 0, 6, 4, 0, 2]);
+            output[22..28].copy_from_slice(&mac);
+            output[28..32].copy_from_slice(&address);
+            output[32..38].copy_from_slice(&arp.sender_mac);
+            output[38..42].copy_from_slice(&arp.sender_ipv4);
+        }
+        0x0800 if ethernet.destination == mac => {
+            let ip = Ipv4Packet::parse(ethernet.payload).ok()?;
+            let mask = u32::from_be_bytes(mask);
+            let host_mask = !mask;
+            let address_bits = u32::from_be_bytes(address);
+            let source_bits = u32::from_be_bytes(ip.source);
+            if ip.destination != address
+                || ip.protocol != 17
+                || ip.ttl == 0
+                || ip.source[0] == 0
+                || ip.source[0] == 127
+                || ip.source[0] >= 224
+                || mask == 0
+                || host_mask & host_mask.wrapping_add(1) != 0
+                || source_bits & mask != address_bits & mask
+                || source_bits == address_bits
+                || source_bits & host_mask == 0
+                || source_bits & host_mask == host_mask
+            {
+                return None;
+            }
+            let udp = UdpDatagram::parse(ip.payload, ip.source, ip.destination).ok()?;
+            if udp.destination_port != STATUS_PORT || udp.payload != b"STATUS" {
+                return None;
+            }
+            encode_ipv4_udp(
+                address,
+                ip.source,
+                STATUS_PORT,
+                udp.source_port,
+                b"OK",
+                &mut output[14..],
+            )
+            .ok()?;
+        }
+        _ => return None,
+    }
+    Some(output.len())
+}
 
 /// Monta uma consulta recursiva A/IN para um nome ASCII.
 pub fn dns_a_query(name: &str, id: u16, output: &mut [u8; 271]) -> Result<usize, NetworkError> {
@@ -33,7 +103,7 @@ pub fn dns_a_query(name: &str, id: u16, output: &mut [u8; 271]) -> Result<usize,
     Ok(cursor + 5)
 }
 
-/// Extrai o primeiro A/IN do nome consultado em uma resposta completa.
+/// Extrai um A/IN do nome consultado ou de uma cadeia CNAME/IN na resposta.
 pub fn dns_a_answer(query: &[u8], reply: &[u8]) -> Option<[u8; 4]> {
     if query.len() < 17
         || reply.len() < query.len()
@@ -45,20 +115,37 @@ pub fn dns_a_answer(query: &[u8], reply: &[u8]) -> Option<[u8; 4]> {
     {
         return None;
     }
-    let mut cursor = query.len();
-    for _ in 0..u16::from_be_bytes([reply[6], reply[7]]) {
-        let mut owner = [0; 255];
-        let (next, owner_len) = dns_name(reply, cursor, &mut owner)?;
-        let header = reply.get(next..next + 10)?;
-        let length = usize::from(u16::from_be_bytes([header[8], header[9]]));
-        let data = reply.get(next + 10..next + 10 + length)?;
-        if header[..4] == [0, 1, 0, 1]
-            && length == 4
-            && owner[..owner_len].eq_ignore_ascii_case(&query[12..query.len() - 4])
-        {
-            return data.try_into().ok();
+    let original = &query[12..query.len() - 4];
+    let mut target = [0; 255];
+    target.get_mut(..original.len())?.copy_from_slice(original);
+    let mut target_len = original.len();
+    let answers = u16::from_be_bytes([reply[6], reply[7]]);
+    for _ in 0..=8 {
+        let mut alias = None;
+        let mut cursor = query.len();
+        for _ in 0..answers {
+            let mut owner = [0; 255];
+            let (next, owner_len) = dns_name(reply, cursor, &mut owner)?;
+            let header = reply.get(next..next + 10)?;
+            let length = usize::from(u16::from_be_bytes([header[8], header[9]]));
+            let data_start = next + 10;
+            cursor = data_start + length;
+            let data = reply.get(data_start..cursor)?;
+            if !owner[..owner_len].eq_ignore_ascii_case(&target[..target_len]) {
+                continue;
+            }
+            match header[..4] {
+                [0, 1, 0, 1] if length == 4 => return data.try_into().ok(),
+                [0, 5, 0, 1] => alias = Some((data_start, cursor)),
+                _ => {}
+            }
         }
-        cursor = next + 10 + length;
+        let (start, end) = alias?;
+        let (next, length) = dns_name(reply, start, &mut target)?;
+        if next != end {
+            return None;
+        }
+        target_len = length;
     }
     None
 }
@@ -66,7 +153,7 @@ pub fn dns_a_answer(query: &[u8], reply: &[u8]) -> Option<[u8; 4]> {
 fn dns_name(packet: &[u8], mut cursor: usize, name: &mut [u8; 255]) -> Option<(usize, usize)> {
     let mut next = None;
     let mut length = 0;
-    loop {
+    for _ in 0..255 {
         let label = *packet.get(cursor)?;
         if label & 0xc0 == 0xc0 {
             let target = (usize::from(label & 0x3f) << 8) | usize::from(*packet.get(cursor + 1)?);
@@ -90,6 +177,7 @@ fn dns_name(packet: &[u8], mut cursor: usize, name: &mut [u8; 255]) -> Option<(u
         }
         cursor = end;
     }
+    None
 }
 
 /// Seleciona o destino ARP para uma rota unicast diretamente conectada
@@ -711,6 +799,23 @@ mod tests {
         reply[1] ^= 1;
         reply[length + 1] = length as u8;
         assert_eq!(dns_a_answer(query, reply), None);
+    }
+
+    #[test]
+    fn dns_follows_compressed_alias_even_when_its_address_appears_first() {
+        let mut query = [0; 271];
+        let length = dns_a_query("example.test", 42, &mut query).unwrap();
+        let query = &query[..length];
+        let mut reply = query.to_vec();
+        reply[2..4].copy_from_slice(&[0x81, 0x80]);
+        reply[7] = 2;
+        reply.extend_from_slice(&[
+            3, b'w', b'w', b'w', 0xc0, 20, 0, 1, 0, 1, 0, 0, 0, 30, 0, 4, 192, 0, 2, 1,
+        ]);
+        reply.extend_from_slice(&[0xc0, 12, 0, 5, 0, 1, 0, 0, 0, 30, 0, 2, 0xc0, length as u8]);
+        assert_eq!(dns_a_answer(query, &reply), Some([192, 0, 2, 1]));
+        *reply.last_mut().unwrap() = 12;
+        assert_eq!(dns_a_answer(query, &reply), None);
     }
 
     #[test]

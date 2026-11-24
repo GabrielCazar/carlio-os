@@ -5,9 +5,13 @@
 //! space. Separar as duas operações permite que falhas de alocação de frames
 //! desfaçam a reserva sem deixar regiões parcialmente publicadas.
 
+extern crate alloc;
+
 use crate::elf::USER_TOP;
 
 pub const PAGE_SIZE: u64 = 4096;
+pub const MAP_FIXED_NOREPLACE: u64 = 0x100000;
+pub const MAP_FIXED: u64 = 0x10;
 pub const MMAP_BASE: u64 = 0x0000_4000_0000_0000;
 pub const USER_HEAP_BASE: u64 = 0x0000_3000_0000_0000;
 
@@ -154,24 +158,58 @@ impl<A: crate::memory::PageTableAccess, const PAGES: usize, const REGIONS: usize
         length: u64,
         protection: u8,
     ) -> Result<u64, ProcessVmError> {
+        self.mmap_initialized(hint, length, protection, |_, _| Ok(()))
+    }
+
+    /// Popula cada frame antes de instalar sua entrada na tabela de páginas.
+    pub fn mmap_initialized(
+        &mut self,
+        hint: u64,
+        length: u64,
+        protection: u8,
+        initialize: impl FnMut(u64, u64) -> Result<(), crate::memory::FrameError>,
+    ) -> Result<u64, ProcessVmError> {
+        self.mmap_initialized_at(hint, length, protection, false, initialize)
+    }
+
+    pub fn mmap_initialized_at(
+        &mut self,
+        hint: u64,
+        length: u64,
+        protection: u8,
+        fixed_noreplace: bool,
+        mut initialize: impl FnMut(u64, u64) -> Result<(), crate::memory::FrameError>,
+    ) -> Result<u64, ProcessVmError> {
         if protection == 0 {
             // x86 page-table support here cannot represent PROT_NONE while
             // retaining a present, user-owned leaf safely.
             return Err(ProcessVmError::UnsupportedMapping);
         }
         let mut staged = self.vmas;
-        let address = staged
-            .mmap(hint, length, protection)
-            .map_err(ProcessVmError::Vma)?;
+        let address = if fixed_noreplace {
+            staged.mmap_fixed_noreplace(hint, length, protection)
+        } else {
+            staged.mmap(hint, length, protection)
+        }
+        .map_err(ProcessVmError::Vma)?;
         let end = staged
             .regions()
             .find(|region| region.start == address && region.kind == RegionKind::Mmap)
             .ok_or(ProcessVmError::Vma(VmaError::NotMapped))?
             .end;
+        let pages = (end - address) / PAGE_SIZE;
+        if pages > (PAGES - self.owned_user_pages()) as u64 {
+            return Err(ProcessVmError::Memory(
+                crate::memory::FrameError::CapacityExceeded,
+            ));
+        }
         let flags = page_flags(protection);
         let mut page = address;
         while page < end {
-            if let Err(error) = self.address_space.map_zeroed(page, flags) {
+            if let Err(error) = self
+                .address_space
+                .map_initialized(page, flags, |physical| initialize(page - address, physical))
+            {
                 let mut rollback = address;
                 while rollback < page {
                     if self.address_space.unmap(rollback).is_err() {
@@ -188,8 +226,137 @@ impl<A: crate::memory::PageTableAccess, const PAGES: usize, const REGIONS: usize
         Ok(address)
     }
 
-    /// Atende apenas `MAP_PRIVATE | MAP_ANONYMOUS`; arquivo, compartilhamento
-    /// e endereço fixo dependem de backends que ainda não existem.
+    pub fn mmap_replace(
+        &mut self,
+        address: u64,
+        length: u64,
+        protection: u8,
+        mut initialize: impl FnMut(u64, u64) -> Result<(), crate::memory::FrameError>,
+    ) -> Result<u64, ProcessVmError> {
+        use crate::memory::FrameError;
+
+        if protection == 0 || self.swapped.is_some() {
+            return Err(ProcessVmError::UnsupportedMapping);
+        }
+        let mut region = VmaMap::<1>::new(0, 0);
+        region
+            .mmap_fixed_noreplace(address, length, protection)
+            .map_err(ProcessVmError::Vma)?;
+        let replacement = region
+            .regions()
+            .next()
+            .ok_or(ProcessVmError::Vma(VmaError::InvalidRange))?;
+        // Stage the region splits before touching the active page mappings.
+        let mut staged = VmaMap {
+            regions: [None; REGIONS],
+            count: 0,
+            ..self.vmas
+        };
+        let mut replaced = 0;
+        for existing in self.vmas.regions() {
+            if existing.end <= replacement.start || existing.start >= replacement.end {
+                staged.insert(existing).map_err(ProcessVmError::Vma)?;
+                continue;
+            }
+            if existing.kind != RegionKind::Mmap {
+                return Err(ProcessVmError::Vma(VmaError::Overlap));
+            }
+            replaced +=
+                (existing.end.min(replacement.end) - existing.start.max(address)) / PAGE_SIZE;
+            if existing.start < address {
+                staged
+                    .insert(Region {
+                        end: address,
+                        ..existing
+                    })
+                    .map_err(ProcessVmError::Vma)?;
+            }
+            if existing.end > replacement.end {
+                staged
+                    .insert(Region {
+                        start: replacement.end,
+                        ..existing
+                    })
+                    .map_err(ProcessVmError::Vma)?;
+            }
+        }
+        staged.insert(replacement).map_err(ProcessVmError::Vma)?;
+        let count = (replacement.end - address) / PAGE_SIZE;
+        if count - replaced > (PAGES - self.owned_user_pages()) as u64 {
+            return Err(ProcessVmError::Memory(FrameError::CapacityExceeded));
+        }
+        let mut frames = alloc::vec::Vec::new();
+        frames
+            .try_reserve_exact(count as usize)
+            .map_err(|_| ProcessVmError::Memory(FrameError::CapacityExceeded))?;
+        let flags = page_flags(protection);
+        let prepare = (|| {
+            for offset in (0..replacement.end - address).step_by(PAGE_SIZE as usize) {
+                let page = address + offset;
+                let old = match self.address_space.mapping(page) {
+                    Ok(mapping) => Some(mapping),
+                    Err(FrameError::NotMapped) => None,
+                    Err(error) => return Err(error),
+                };
+                let physical = self.address_space.allocate_frame()?;
+                frames.push((page, physical, old));
+                initialize(offset, physical)?;
+            }
+            Ok(())
+        })();
+        let mut installed = 0;
+        let result = prepare.and_then(|()| {
+            for &(page, physical, old) in &frames {
+                if old.is_some() {
+                    self.address_space.replace_frame(page, physical, flags)?;
+                } else {
+                    self.address_space.map_owned_frame(page, physical, flags)?;
+                }
+                installed += 1;
+            }
+            Ok(())
+        });
+        if let Err(error) = result {
+            let mut rollback_failed = false;
+            for (index, (page, physical, old)) in frames.into_iter().enumerate().rev() {
+                if index < installed {
+                    if let Some(old) = old {
+                        let permissions = old.flags & page_flags(0b010);
+                        if self
+                            .address_space
+                            .replace_frame(page, old.physical, permissions)
+                            .is_err()
+                        {
+                            rollback_failed = true;
+                            continue;
+                        }
+                    } else {
+                        rollback_failed |= self.address_space.unmap(page).is_err();
+                        continue;
+                    }
+                }
+                rollback_failed |= self.address_space.release_frame(physical).is_err();
+            }
+            return Err(if rollback_failed {
+                ProcessVmError::RollbackFailed
+            } else {
+                ProcessVmError::Memory(error)
+            });
+        }
+        self.vmas = staged;
+        let mut release_failed = false;
+        for (_, _, old) in frames {
+            if let Some(old) = old {
+                release_failed |= self.address_space.release_frame(old.physical).is_err();
+            }
+        }
+        if release_failed {
+            return Err(ProcessVmError::RollbackFailed);
+        }
+        Ok(address)
+    }
+
+    /// Atende mapeamentos anônimos privados, inclusive endereço exato sem substituição.
     pub fn mmap_linux(
         &mut self,
         hint: u64,
@@ -200,17 +367,30 @@ impl<A: crate::memory::PageTableAccess, const PAGES: usize, const REGIONS: usize
         offset: u64,
     ) -> Result<u64, ProcessVmError> {
         const MAP_PRIVATE: u64 = 0x02;
-        const MAP_FIXED: u64 = 0x10;
         const MAP_ANONYMOUS: u64 = 0x20;
-        if protection & !0x7 != 0 || flags & MAP_FIXED != 0 {
+        if protection & !0x7 != 0
+            || flags & (MAP_FIXED | MAP_FIXED_NOREPLACE) == MAP_FIXED | MAP_FIXED_NOREPLACE
+        {
             return Err(ProcessVmError::Vma(VmaError::InvalidRange));
         }
-        if flags != MAP_PRIVATE | MAP_ANONYMOUS || descriptor != u64::MAX || offset != 0 {
+        if flags & !(MAP_FIXED | MAP_FIXED_NOREPLACE) != MAP_PRIVATE | MAP_ANONYMOUS
+            || descriptor as u32 != u32::MAX
+            || offset != 0
+        {
             return Err(ProcessVmError::UnsupportedMapping);
         }
         let protection =
             u8::try_from(protection).map_err(|_| ProcessVmError::Vma(VmaError::InvalidRange))?;
-        self.mmap_anonymous(hint, length, protection)
+        if flags & MAP_FIXED != 0 {
+            return self.mmap_replace(hint, length, protection, |_, _| Ok(()));
+        }
+        self.mmap_initialized_at(
+            hint,
+            length,
+            protection,
+            flags & MAP_FIXED_NOREPLACE != 0,
+            |_, _| Ok(()),
+        )
     }
 
     pub fn munmap(&mut self, address: u64, length: u64) -> Result<(), ProcessVmError> {
@@ -529,6 +709,25 @@ impl<const N: usize> VmaMap<N> {
 
     pub const fn program_break(&self) -> u64 {
         self.heap_end
+    }
+
+    fn mmap_fixed_noreplace(
+        &mut self,
+        start: u64,
+        length: u64,
+        protection: u8,
+    ) -> Result<u64, VmaError> {
+        let length = page_ceil(length).ok_or(VmaError::InvalidRange)?;
+        if start < PAGE_SIZE || protection & !0b111 != 0 || protection & 0b110 == 0b110 {
+            return Err(VmaError::InvalidRange);
+        }
+        self.insert(Region {
+            start,
+            end: start.checked_add(length).ok_or(VmaError::InvalidRange)?,
+            kind: RegionKind::Mmap,
+            protection,
+        })?;
+        Ok(start)
     }
 
     /// Reserva um intervalo alinhado em first-fit circular a partir do cursor.
@@ -853,6 +1052,110 @@ mod tests {
         vm.munmap(base, PAGE_SIZE * 2).unwrap();
         assert_eq!(vm.mapping(base), Err(crate::memory::FrameError::NotMapped));
         assert_eq!(vm.mmap_anonymous(base, PAGE_SIZE, 0b001), Ok(base));
+    }
+
+    #[test]
+    fn process_vm_discards_initialized_pages_after_a_read_failure() {
+        use crate::memory::FrameError;
+
+        let mut vm = process_vm::<8>();
+        let result = vm.mmap_initialized(MMAP_BASE, PAGE_SIZE * 2, 0b001, |offset, _| {
+            if offset == PAGE_SIZE {
+                return Err(FrameError::InvalidPhysicalAddress);
+            }
+            Ok(())
+        });
+        assert_eq!(
+            result,
+            Err(ProcessVmError::Memory(FrameError::InvalidPhysicalAddress))
+        );
+        assert_eq!(vm.owned_user_pages(), 0);
+        assert_eq!(vm.mapping(MMAP_BASE), Err(FrameError::NotMapped));
+        assert_eq!(
+            vm.mmap_anonymous(MMAP_BASE, PAGE_SIZE * 2, 0b001),
+            Ok(MMAP_BASE)
+        );
+    }
+
+    #[test]
+    fn file_mapping_over_leaf_budget_keeps_existing_pages_and_the_requested_range() {
+        use crate::memory::FrameError;
+
+        let mut vm = process_vm::<8>();
+        let existing = vm.mmap_anonymous(0, PAGE_SIZE, 0b011).unwrap();
+        let existing_mapping = vm.mapping(existing).unwrap();
+        let requested = existing + PAGE_SIZE;
+
+        assert_eq!(
+            vm.mmap_initialized_at(requested, PAGE_SIZE * 7 + 1, 0b001, true, |_, _| {
+                panic!("the quota must be checked before reading the file");
+            }),
+            Err(ProcessVmError::Memory(FrameError::CapacityExceeded))
+        );
+        assert_eq!(vm.owned_user_pages(), 1);
+        assert_eq!(vm.mapping(existing), Ok(existing_mapping));
+        assert_eq!(
+            vm.mmap_initialized_at(requested, PAGE_SIZE * 7, 0b001, true, |_, _| Ok(())),
+            Ok(requested)
+        );
+    }
+
+    #[test]
+    fn fixed_replacement_preserves_neighbors_and_rolls_back_failed_initialization() {
+        use crate::memory::{FrameError, PAGE_FLAG_WRITABLE};
+
+        let mut vm = process_vm::<3>();
+        let start = vm.mmap_anonymous(0, PAGE_SIZE * 3, 3).unwrap();
+        let middle = start + PAGE_SIZE;
+        let end = middle + PAGE_SIZE;
+        let before = [start, middle, end].map(|page| vm.mapping(page).unwrap());
+        assert_eq!(
+            vm.mmap_replace(middle, PAGE_SIZE * 2, 5, |offset, _| {
+                if offset == PAGE_SIZE {
+                    return Err(FrameError::InvalidPhysicalAddress);
+                }
+                Ok(())
+            }),
+            Err(ProcessVmError::Memory(FrameError::InvalidPhysicalAddress))
+        );
+        assert_eq!(
+            [start, middle, end].map(|page| vm.mapping(page).unwrap()),
+            before
+        );
+        assert_eq!(
+            vm.mmap_replace(middle, PAGE_SIZE, 5, |_, _| Ok(())),
+            Ok(middle)
+        );
+        assert_eq!(vm.owned_user_pages(), 3);
+        assert_eq!(vm.mapping(start), Ok(before[0]));
+        assert_eq!(vm.mapping(end), Ok(before[2]));
+        let mapped = vm.mapping(middle).unwrap();
+        assert_ne!(mapped.physical, before[1].physical);
+        assert_eq!(mapped.flags & PAGE_FLAG_WRITABLE, 0);
+    }
+
+    #[test]
+    fn fixed_noreplace_keeps_the_existing_mapping_and_refuses_unaligned_addresses() {
+        use crate::memory::PAGE_FLAG_WRITABLE;
+
+        let mut vm = process_vm::<8>();
+        let fixed_anonymous = 0x22 | MAP_FIXED_NOREPLACE;
+        assert_eq!(
+            vm.mmap_linux(MMAP_BASE + 1, PAGE_SIZE, 3, fixed_anonymous, u64::MAX, 0),
+            Err(ProcessVmError::Vma(VmaError::InvalidRange))
+        );
+        assert_eq!(
+            vm.mmap_linux(MMAP_BASE, PAGE_SIZE, 3, fixed_anonymous, u64::MAX, 0),
+            Ok(MMAP_BASE)
+        );
+        assert_eq!(
+            vm.mmap_initialized_at(MMAP_BASE, PAGE_SIZE, 1, true, |_, _| {
+                panic!("a collision must be detected before reading the file");
+            }),
+            Err(ProcessVmError::Vma(VmaError::Overlap))
+        );
+        assert_eq!(vm.owned_user_pages(), 1);
+        assert_ne!(vm.mapping(MMAP_BASE).unwrap().flags & PAGE_FLAG_WRITABLE, 0);
     }
 
     #[test]

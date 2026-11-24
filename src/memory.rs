@@ -1,5 +1,9 @@
 //! Conversões de endereços fornecidas pelo protocolo Limine.
 
+extern crate alloc;
+
+use alloc::vec::Vec;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct KernelAddress {
     pub physical_base: u64,
@@ -154,24 +158,20 @@ impl<A: PageTableAccess, S: TlbShootdown> SmpPageTableManager<A, S> {
 pub struct AddressSpace<A, const MAPPINGS: usize> {
     tables: PageTableManager<A>,
     root: u64,
-    user_mappings: [u64; MAPPINGS],
-    user_mapping_count: usize,
+    // Keep the bookkeeping off the kernel stack even when MAPPINGS is large.
+    user_mappings: Vec<u64>,
 }
 
 /// Espaço de usuário que também possui os frames das folhas mapeadas por ele.
 /// O dono não pode liberar um frame enquanto ele estiver mapeado.
 pub struct OwnedAddressSpace<A, const PAGES: usize> {
     space: AddressSpace<A, PAGES>,
-    frames: [(u64, u64); PAGES], // (VA, PA)
-    frame_count: usize,
 }
 
 impl<A: PageTableAccess, const PAGES: usize> OwnedAddressSpace<A, PAGES> {
     pub fn new(access: A, kernel_root: u64) -> Result<Self, FrameError> {
         Ok(Self {
             space: AddressSpace::new(access, kernel_root)?,
-            frames: [(0, 0); PAGES],
-            frame_count: 0,
         })
     }
 
@@ -181,7 +181,7 @@ impl<A: PageTableAccess, const PAGES: usize> OwnedAddressSpace<A, PAGES> {
 
     /// Número de folhas user owned neste espaço de endereços.
     pub const fn owned_user_pages(&self) -> usize {
-        self.frame_count
+        self.space.user_mappings.len()
     }
 
     /// Tabelas privadas alcançáveis pela metade user, incluindo a raiz.
@@ -201,27 +201,43 @@ impl<A: PageTableAccess, const PAGES: usize> OwnedAddressSpace<A, PAGES> {
         flags: u64,
         initialize: impl FnOnce(u64) -> Result<(), FrameError>,
     ) -> Result<u64, FrameError> {
-        if self.frames[..self.frame_count]
-            .iter()
-            .any(|(address, _)| *address == virtual_address)
-        {
+        if self.space.user_mappings.contains(&virtual_address) {
             return Err(FrameError::AlreadyMapped);
         }
-        if self.frame_count == PAGES {
+        if self.owned_user_pages() == PAGES {
             return Err(FrameError::CapacityExceeded);
         }
+        let physical = self.allocate_frame()?;
+        if let Err(error) = initialize(physical)
+            .and_then(|()| self.map_owned_frame(virtual_address, physical, flags))
+        {
+            let _ = self.release_frame(physical);
+            return Err(error);
+        }
+        Ok(physical)
+    }
+
+    pub(crate) fn allocate_frame(&mut self) -> Result<u64, FrameError> {
         let physical = self.space.tables.access.allocate_user_frame()?;
         if physical % PAGE_SIZE != 0 || physical & !ENTRY_ADDRESS_MASK != 0 {
             let _ = self.space.tables.access.release_user_frame(physical);
             return Err(FrameError::InvalidPhysicalAddress);
         }
-        if let Err(error) = initialize(physical)
-            .and_then(|()| self.map_owned_frame(virtual_address, physical, flags))
-        {
-            let _ = self.space.tables.access.release_user_frame(physical);
-            return Err(error);
-        }
         Ok(physical)
+    }
+
+    pub(crate) fn release_frame(&mut self, physical: u64) -> Result<(), FrameError> {
+        self.space.tables.access.release_user_frame(physical)
+    }
+
+    pub(crate) fn replace_frame(
+        &mut self,
+        address: u64,
+        physical: u64,
+        flags: u64,
+    ) -> Result<(), FrameError> {
+        self.space.mapping(address)?;
+        self.space.tables.update_user(address, flags, Some(physical))
     }
 
     /// Transfere para o espaço ownership de um frame já alocado pelo chamador.
@@ -231,19 +247,10 @@ impl<A: PageTableAccess, const PAGES: usize> OwnedAddressSpace<A, PAGES> {
         physical: u64,
         flags: u64,
     ) -> Result<(), FrameError> {
-        if self.frame_count == PAGES {
-            return Err(FrameError::CapacityExceeded);
-        }
-        if self.frames[..self.frame_count]
-            .iter()
-            .any(|(address, _)| *address == virtual_address)
-        {
+        if self.space.user_mappings.contains(&virtual_address) {
             return Err(FrameError::AlreadyMapped);
         }
-        self.space.map_user(virtual_address, physical, flags)?;
-        self.frames[self.frame_count] = (virtual_address, physical);
-        self.frame_count += 1;
-        Ok(())
+        self.space.map_user(virtual_address, physical, flags)
     }
 
     pub fn mapping(&self, virtual_address: u64) -> Result<PageMapping, FrameError> {
@@ -252,12 +259,6 @@ impl<A: PageTableAccess, const PAGES: usize> OwnedAddressSpace<A, PAGES> {
 
     /// Ajusta permissões de uma página própria mantendo seu frame sob ownership.
     pub fn protect(&mut self, virtual_address: u64, flags: u64) -> Result<(), FrameError> {
-        if !self.frames[..self.frame_count]
-            .iter()
-            .any(|(va, _)| *va == virtual_address)
-        {
-            return Err(FrameError::NotMapped);
-        }
         self.space.protect_user(virtual_address, flags)
     }
 
@@ -267,10 +268,6 @@ impl<A: PageTableAccess, const PAGES: usize> OwnedAddressSpace<A, PAGES> {
 
     /// Desmapeia e devolve o frame de dados ao allocator.
     pub fn unmap(&mut self, virtual_address: u64) -> Result<(), FrameError> {
-        let slot = self.frames[..self.frame_count]
-            .iter()
-            .position(|(address, _)| *address == virtual_address)
-            .ok_or(FrameError::NotMapped)?;
         let mapping = self.space.mapping(virtual_address)?;
         let physical = self.space.unmap_user(virtual_address)?;
         if let Err(error) = self.space.tables.access.release_user_frame(physical) {
@@ -281,17 +278,13 @@ impl<A: PageTableAccess, const PAGES: usize> OwnedAddressSpace<A, PAGES> {
                 .map_user(virtual_address, physical, mapping.flags);
             return Err(restore.err().unwrap_or(error));
         }
-        self.frames.copy_within(slot + 1..self.frame_count, slot);
-        self.frame_count -= 1;
-        self.frames[self.frame_count] = (0, 0);
         Ok(())
     }
 
     /// Libera folhas, tabelas user e a raiz. Em falha retorna o objeto para
     /// retry, preservando os frames ainda pertencentes ao espaço.
     pub fn try_destroy(mut self) -> Result<A, (Self, FrameError)> {
-        while self.frame_count != 0 {
-            let address = self.frames[self.frame_count - 1].0;
+        while let Some(&address) = self.space.user_mappings.last() {
             if let Err(error) = self.unmap(address) {
                 return Err((self, error));
             }
@@ -341,8 +334,7 @@ impl<A: PageTableAccess, const MAPPINGS: usize> AddressSpace<A, MAPPINGS> {
         Ok(Self {
             tables,
             root,
-            user_mappings: [0; MAPPINGS],
-            user_mapping_count: 0,
+            user_mappings: Vec::new(),
         })
     }
 
@@ -356,39 +348,39 @@ impl<A: PageTableAccess, const MAPPINGS: usize> AddressSpace<A, MAPPINGS> {
         physical: u64,
         flags: u64,
     ) -> Result<(), FrameError> {
-        if self.user_mapping_count == MAPPINGS {
+        if self.user_mappings.len() == MAPPINGS {
             return Err(FrameError::CapacityExceeded);
         }
+        self.user_mappings
+            .try_reserve(1)
+            .map_err(|_| FrameError::CapacityExceeded)?;
         self.tables.map_user(virtual_address, physical, flags)?;
-        self.user_mappings[self.user_mapping_count] = virtual_address;
-        self.user_mapping_count += 1;
+        self.user_mappings.push(virtual_address);
         Ok(())
     }
 
     /// Desmapeia somente folhas registradas por este espaço; não libera o frame
     /// de dados para permitir ownership explícito pelo allocator do processo.
     pub fn unmap_user(&mut self, virtual_address: u64) -> Result<u64, FrameError> {
-        let slot = self.user_mappings[..self.user_mapping_count]
+        let slot = self
+            .user_mappings
             .iter()
             .position(|address| *address == virtual_address)
             .ok_or(FrameError::NotMapped)?;
         let physical = self.tables.unmap(virtual_address)?;
-        self.user_mappings
-            .copy_within(slot + 1..self.user_mapping_count, slot);
-        self.user_mapping_count -= 1;
-        self.user_mappings[self.user_mapping_count] = 0;
+        self.user_mappings.swap_remove(slot);
         Ok(physical)
     }
 
     pub fn mapping(&self, virtual_address: u64) -> Result<PageMapping, FrameError> {
-        if !self.user_mappings[..self.user_mapping_count].contains(&virtual_address) {
+        if !self.user_mappings.contains(&virtual_address) {
             return Err(FrameError::NotMapped);
         }
         self.tables.mapping(virtual_address)
     }
 
     pub fn protect_user(&mut self, virtual_address: u64, flags: u64) -> Result<(), FrameError> {
-        if !self.user_mappings[..self.user_mapping_count].contains(&virtual_address) {
+        if !self.user_mappings.contains(&virtual_address) {
             return Err(FrameError::NotMapped);
         }
         self.tables.protect_user(virtual_address, flags)
@@ -397,8 +389,7 @@ impl<A: PageTableAccess, const MAPPINGS: usize> AddressSpace<A, MAPPINGS> {
     /// Libera tabelas user e o PML4. Se uma operação falhar, devolve o espaço
     /// ainda disponível para que o chamador trate o erro/retry sem perder o CR3.
     pub fn try_destroy(mut self) -> Result<A, (Self, FrameError)> {
-        while self.user_mapping_count != 0 {
-            let address = self.user_mappings[self.user_mapping_count - 1];
+        while let Some(&address) = self.user_mappings.last() {
             if let Err(error) = self.unmap_user(address) {
                 return Err((self, error));
             }
@@ -696,6 +687,15 @@ impl<A: PageTableAccess> PageTableManager<A> {
     }
 
     fn protect_user(&mut self, virtual_address: u64, flags: u64) -> Result<(), FrameError> {
+        self.update_user(virtual_address, flags, None)
+    }
+
+    fn update_user(
+        &mut self,
+        virtual_address: u64,
+        flags: u64,
+        physical: Option<u64>,
+    ) -> Result<(), FrameError> {
         let protection_mask = ENTRY_PRESENT | ENTRY_USER | ENTRY_WRITABLE | PAGE_FLAG_NO_EXECUTE;
         if !virtual_address.is_multiple_of(PAGE_SIZE)
             || flags & !protection_mask != 0
@@ -722,7 +722,7 @@ impl<A: PageTableAccess> PageTableManager<A> {
         self.access.write_entry(
             table,
             indices[3],
-            (entry & ENTRY_ADDRESS_MASK) | flags | ENTRY_USER,
+            physical.unwrap_or(entry & ENTRY_ADDRESS_MASK) | flags,
         )?;
         self.access.invalidate_page(virtual_address);
         Ok(())

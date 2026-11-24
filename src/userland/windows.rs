@@ -1,7 +1,7 @@
 //! Validação bounded de imagens PE32+ x86_64 para a futura userland Windows.
 //!
-//! Este módulo não mapeia nem executa a imagem. Relocações, imports, TLS,
-//! exceções e APIs Win32/NT ainda precisam ser implementados antes da execução.
+//! A preparação da imagem escreve em um buffer comum. A execução exige
+//! integração com o espaço de usuário e a camada Win32/NT.
 
 pub const PE_MACHINE_AMD64: u16 = 0x8664;
 pub const PE_OPTIONAL_MAGIC_64: u16 = 0x20b;
@@ -22,6 +22,7 @@ pub enum PeError {
     TooManySections,
     InvalidSection,
     InvalidEntryPoint,
+    ImageBufferTooSmall,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -44,6 +45,28 @@ pub struct PeImage<const N: usize> {
 }
 
 impl<const N: usize> PeImage<N> {
+    /// Prepara o layout virtual no endereço preferido. A saída só é alterada
+    /// após validar todo o arquivo e o tamanho do destino.
+    pub fn materialize(file: &[u8], output: &mut [u8]) -> Result<Self, PeError> {
+        let image = Self::parse(file)?;
+        let output = output
+            .get_mut(..image.image_size as usize)
+            .ok_or(PeError::ImageBufferTooSmall)?;
+        output.fill(0);
+        let headers = image.headers_size as usize;
+        output[..headers].copy_from_slice(&file[..headers]);
+        for section in image.sections() {
+            if section.raw_size == 0 {
+                continue;
+            }
+            let start = section.virtual_address as usize;
+            let raw = section.raw_offset as usize;
+            let size = section.raw_size as usize;
+            output[start..start + size].copy_from_slice(&file[raw..raw + size]);
+        }
+        Ok(image)
+    }
+
     /// Valida PE32+ AMD64 sem alocar memória e conserva apenas metadados.
     /// Rejeita intervalos que estouram, seções fora do arquivo e entry point
     /// que não pertença a uma seção executável.
@@ -112,7 +135,7 @@ impl<const N: usize> PeImage<N> {
         }
         let mut sections = [PeSection::default(); N];
         let mut entry_is_executable = false;
-        for (index, section) in sections.iter_mut().take(section_count).enumerate() {
+        for index in 0..section_count {
             let offset = optional_end + index * SECTION_HEADER_SIZE;
             let virtual_size = read_u32(file, offset + 8)?;
             let virtual_address = read_u32(file, offset + 12)?;
@@ -130,6 +153,11 @@ impl<const N: usize> PeImage<N> {
                 || virtual_address < headers_size
                 || virtual_end > image_size
                 || (raw_size != 0 && (raw_offset < headers_size || raw_end as usize > file.len()))
+                || sections[..index].iter().any(|previous| {
+                    let start = previous.virtual_address;
+                    let end = start + previous.virtual_size.max(previous.raw_size);
+                    virtual_address < end && start < virtual_end
+                })
             {
                 return Err(PeError::InvalidSection);
             }
@@ -139,7 +167,7 @@ impl<const N: usize> PeImage<N> {
             {
                 entry_is_executable = true;
             }
-            *section = PeSection {
+            sections[index] = PeSection {
                 virtual_address,
                 virtual_size,
                 raw_offset,
@@ -224,6 +252,43 @@ mod tests {
         assert_eq!(image.entry_rva, 0x1000);
         assert_eq!(image.image_base, 0x0001_4000_0000);
         assert_eq!(image.sections().len(), 1);
+    }
+
+    #[test]
+    fn materializes_headers_data_and_zero_filled_virtual_tail() {
+        let mut file = fixture();
+        file[0x200] = 0x90;
+        let section = 0x84 + COFF_HEADER_SIZE + 240;
+        file[section + 8..section + 12].copy_from_slice(&0x400u32.to_le_bytes());
+        let mut destination = [0xff; 0x2001];
+        PeImage::<8>::materialize(&file, &mut destination).unwrap();
+        assert_eq!(&destination[..0x200], &file[..0x200]);
+        assert_eq!(destination[0x1000], 0x90);
+        assert!(destination[0x1200..0x2000].iter().all(|byte| *byte == 0));
+        assert_eq!(destination[0x2000], 0xff);
+        let mut short = [0xff; 16];
+        assert_eq!(
+            PeImage::<8>::materialize(&file, &mut short),
+            Err(PeError::ImageBufferTooSmall)
+        );
+        assert_eq!(short, [0xff; 16]);
+    }
+
+    #[test]
+    fn rejects_overlapping_virtual_sections_before_writing() {
+        let mut file = fixture();
+        file[0x86..0x88].copy_from_slice(&2u16.to_le_bytes());
+        let section = 0x84 + COFF_HEADER_SIZE + 240;
+        file.copy_within(
+            section..section + SECTION_HEADER_SIZE,
+            section + SECTION_HEADER_SIZE,
+        );
+        let mut destination = [0xff; 0x2000];
+        assert_eq!(
+            PeImage::<8>::materialize(&file, &mut destination),
+            Err(PeError::InvalidSection)
+        );
+        assert!(destination.iter().all(|byte| *byte == 0xff));
     }
 
     #[test]

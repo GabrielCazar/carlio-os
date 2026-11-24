@@ -1,6 +1,7 @@
 use crate::vfs::Credentials;
 
 const GROUPS_MAX: usize = 8;
+pub const PASSWORD_LIMIT: usize = 1024;
 
 pub const LOGIN_PROMPT: &str = "CarlioOS — entrar\nUsuário: ";
 pub const PASSWORD_PROMPT: &str = "Senha: ";
@@ -55,7 +56,7 @@ impl<V: CredentialVerifier> LoginManager<V> {
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
             || password.is_empty()
-            || password.len() > 128
+            || password.len() > PASSWORD_LIMIT
         {
             return Err(LoginError::InvalidInput);
         }

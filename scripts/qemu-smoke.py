@@ -14,7 +14,9 @@ from pathlib import Path
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--iso", required=True, type=Path)
+    boot = parser.add_mutually_exclusive_group(required=True)
+    boot.add_argument("--iso", type=Path)
+    boot.add_argument("--boot-image", type=Path, help="disco raw inicializável, em snapshot")
     parser.add_argument("--accel", default="tcg", choices=("tcg", "kvm"))
     parser.add_argument("--firmware", type=Path, help="Imagem OVMF para testar UEFI")
     parser.add_argument("--log", required=True, type=Path)
@@ -60,14 +62,18 @@ def main() -> int:
         "-nic", "none",
         "-netdev", "user,id=net0",
         "-device", "e1000e,netdev=net0",
-        "-cdrom", str(args.iso.resolve()),
-        "-boot", "d",
         "-serial", "stdio",
         "-monitor", "none",
         "-display", "none",
         "-no-reboot",
         "-no-shutdown",
     ]
+    if args.iso:
+        command.extend(("-cdrom", str(args.iso.resolve()), "-boot", "d"))
+    else:
+        image = args.boot_image.resolve()
+        drive_path = str(image).replace(",", ",,")
+        command.extend(("-drive", f"if=ide,format=raw,file={drive_path},snapshot=on", "-boot", "c"))
     vars_copy = None
     if args.firmware:
         code_image = args.firmware.resolve()
@@ -112,7 +118,8 @@ def main() -> int:
     serial_probe_sent = False
     checks = (
         (b"Digite 'ajuda'", b"ajuda\r"),
-        ("Comandos: ajuda, sobre, usuario, permissoes, erros, logs, limpar, parar.".encode(), b"erros\r"),
+        ("Comandos: ajuda, sobre, usuario, permissoes, erros, logs, limpar, parar.".encode(), b"diagnostico\r"),
+        (b"Tempo desde o boot (s):", b"erros\r"),
         (b"Erros registrados:", b"logs\r"),
         (b"# Eventos do kernel (buffer vol\xc3\xa1til)", b"sobre\r"),
         ("carlIO OS | Criado por João G.R.Santos".encode(), None),
@@ -194,6 +201,7 @@ def main() -> int:
         b"ARP IPv4: gateway respondeu",
         b"Ring 3: GDT, TSS, RSP0 e seletores de usu\xc3\xa1rio configurados; CPL continua 0.",
         "Framebuffer Limine: RGB ativo; renderização de pixels validada.".encode(),
+        b"Framebuffer de firmware: ativo",
         "Criado por João G.R.Santos".encode(),
         "Login de teste: senha incorreta negada e sessão Argon2id emitida.".encode(),
         b"ABI Linux: read(0) CPL3 recebeu entrada serial.",
@@ -213,8 +221,8 @@ def main() -> int:
         f"SMP trabalho: CPUs AP={args.cpus - 1}, tarefas concluídas={args.cpus - 1}, resultados válidos={args.cpus - 1}; despacho de prova concluído.".encode(),
     )
     expected_signatures += (
-        (b" 2/4/6/128/513 2/4/6/128/513." if args.expect_disk_exec
-         else "Memória user por processo (folhas/tabelas/total/limite-folhas/limite-total): 2/4/6/128/513 2/4/6/128/513 2/4/6/128/513.".encode()),
+        (b" 2/4/6/768/3073 2/4/6/768/3073." if args.expect_disk_exec
+         else "Memória user por processo (folhas/tabelas/total/limite-folhas/limite-total): 2/4/6/768/3073 2/4/6/768/3073 2/4/6/768/3073.".encode()),
     )
     if args.expect_runtime_stress:
         expected_signatures += (
