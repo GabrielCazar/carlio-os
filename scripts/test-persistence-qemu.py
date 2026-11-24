@@ -13,7 +13,7 @@ from pathlib import Path
 from provision_storage import provision
 
 
-def boot(qemu, command, marker, timeout, log, cut=False):
+def boot(qemu, command, marker, timeout, log, cut=False, swap_disabled=False):
     process = subprocess.Popen(
         qemu, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT, bufsize=0,
@@ -39,6 +39,8 @@ def boot(qemu, command, marker, timeout, log, cut=False):
                     process.stdin.write(command + b"\r")
                     sent_command = True
                 if marker in output:
+                    if swap_disabled and b"Swap: reserva experimental habilitada." in output:
+                        break
                     if command == b"log-teste-gravar" and "Swap VM: page fault CPL3 restaurado.".encode() not in output:
                         break
                     return
@@ -171,7 +173,7 @@ def main():
         if args.filesystem:
             filesystem_fixture(image, directory, args.filesystem, args.metadata)
         else:
-            provision(image, 16, vfs=args.vfs)
+            provision(image, 16, vfs=args.vfs, swap_pages=0 if args.vfs else 1)
         qemu = [
             "qemu-system-x86_64", "-machine", "q35", "-accel", args.accel,
             "-cpu", "host" if args.accel == "kvm" else "max", "-m", "512M", "-smp", "4",
@@ -196,7 +198,7 @@ def main():
                 ("alterar", "VFS: segunda geração confirmada."),
             ):
                 boot(qemu, f"vfs-teste-{action}".encode(), marker.encode(), args.timeout,
-                     args.log_dir / f"fase3-vfs-{mode}-{action}.log")
+                     args.log_dir / f"fase3-vfs-{mode}-{action}.log", swap_disabled=True)
             with image.open("r+b") as disk:
                 # Generation 3 is bank 0. Simulate a torn commit header.
                 disk.seek(4096 * 512 + 24)
@@ -230,6 +232,12 @@ def main():
             log = args.log_dir / f"fase3-persistencia-{mode}-{step}.log"
             boot(qemu, f"log-teste-{step}".encode(), marker.encode() + b"\r\n",
                  args.timeout, log, cut=step == "corte")
+            if step == "gravar":
+                with image.open("rb") as disk:
+                    disk.seek(4096 * 512)
+                    ciphertext = disk.read(4096)
+                if ciphertext in (bytes(4096), bytes([0x6a]) * 4096):
+                    raise SystemExit(f"Página cifrada não encontrada na imagem. Consulte {log}.")
             if step == "corte":
                 with image.open("rb") as disk:
                     disk.seek(2049 * 512)

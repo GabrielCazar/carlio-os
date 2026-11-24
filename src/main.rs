@@ -4594,6 +4594,9 @@ fn initialize_persistent_storage() {
         write("Log persistente: reserva do coletor recusada.\r\n");
     }
 
+    if !reserve.has_swap() {
+        return;
+    }
     let Some((key, session)) = entropy::swap_credentials() else {
         return;
     };
@@ -4603,12 +4606,14 @@ fn initialize_persistent_storage() {
             .map_err(|_| KernelError::DeviceInitFailed)
     }) {
         use carlio_os::block::BlockDevice;
-        let count = (region.sector_count() / 8).min(64) as usize;
+        let count = (region.sector_count() * carlio_os::block::SECTOR_SIZE as u64
+            / carlio_os::swap::PAGE_SIZE as u64) as usize;
         let slots = alloc::boxed::Box::leak(
             alloc::vec![carlio_os::swap::SwapSlot::default(); count].into_boxed_slice(),
         );
         if let Ok(swap) = KernelSwap::new(region, key, session, slots) {
             *BOOT_SWAP.lock() = Some(swap);
+            write("Swap: reserva experimental habilitada.\r\n");
         }
     }
 }
