@@ -199,7 +199,7 @@ pub fn invalidate_all(_root: u64, virtual_address: u64) {
 /// Briefly enable interrupts while waiting, then restore the kernel's masked
 /// state before touching shared shootdown state again.
 #[inline(always)]
-fn wait_for_shootdown_progress() {
+pub(crate) fn wait_for_shootdown_progress() {
     let flags: u64;
     unsafe { asm!("pushfq", "pop {}", out(reg) flags) };
     if flags & (1 << 9) != 0 {

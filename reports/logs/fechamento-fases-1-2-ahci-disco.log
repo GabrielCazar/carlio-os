@@ -1,0 +1,3 @@
+
+--- mensagens do QEMU ---
+qemu-system-x86_64: -drive file=/tmp/carlio-ahci-disposable-f_b8al67.img,format=raw,if=ide,index=0,snapshot=on: Could not open temporary file '/var/tmp/vl.VYM8Y3': Read-only file system

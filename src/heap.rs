@@ -66,6 +66,15 @@ impl<const REGIONS: usize> KernelHeapSet<REGIONS> {
         Ok(())
     }
 
+    /// Arena size sufficient for one allocation regardless of the arena address.
+    pub fn arena_size_for(layout: Layout) -> Option<usize> {
+        size_of::<Block>()
+            .checked_add(size_of::<usize>())?
+            .checked_add(layout.align().max(align_of::<Block>()) - 1)?
+            .checked_add(layout.size().max(1))?
+            .checked_add(align_of::<Block>() - 1)
+    }
+
     pub fn allocate(&mut self, layout: Layout) -> Option<NonNull<u8>> {
         self.regions[..self.region_count]
             .iter_mut()

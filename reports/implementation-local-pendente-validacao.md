@@ -1,4 +1,7 @@
-# Implementações locais aguardando validação
+# Implementações locais e estado da validação
+
+O inventário abaixo registra o estado histórico de novembro de 2026. A
+[revalidação de 23/11](#revalidação-local--2026-11-23) registra os resultados novos.
 
 Estado: implementação local em andamento, sem validação desta rodada. O pedido
 atual prioriza itens que dependam de confirmação do usuário; não foi encontrado
@@ -218,3 +221,71 @@ execução runtime ocorreu durante a suspensão dos gates.
   ainda não foi feito.
 - A correção do retorno `usize` de `read` e do avanço `u64` de `write` está
   somente no workspace e ainda não foi commitada.
+
+## Revalidação local — 2026-11-23
+
+- Formatação, build do kernel, build da libc freestanding e 190 testes host passaram.
+  [Testes host](logs/fechamento-andamento-host-20261123-230106.txt)
+- QEMU TCG com quatro CPUs passou em BIOS e UEFI. O BSP preservou o CR3 do
+  kernel, a barreira recebeu três ACKs e a contagem de frames voltou ao
+  baseline. Cada um dos dois APs de teste completou 512 ciclos de mmap/munmap.
+  [BIOS](logs/fechamento-andamento-qemu-bios-20261123-230106.log) ·
+  [UEFI](logs/fechamento-andamento-qemu-uefi-20261123-230106.log)
+- QEMU BIOS passou com dois discos descartáveis em modo snapshot, cada um com
+  uma partição MBR. O VFS montou ext4 e FAT32 em `/` para leitura. O volume
+  ext4 de teste foi formatado com `flex_bg`, `metadata_csum_seed` e
+  `orphan_file` desabilitados. A prova CPL3 de negação POSIX passou com os
+  dois volumes montados.
+  [ext4](logs/fechamento-andamento-ext4-qemu-bios.log) ·
+  [FAT32](logs/fechamento-andamento-fat32-qemu-bios.log)
+- NAS/KVM ainda sem resultado. SSH retornou falta de rota por Wi-Fi e
+  expirou pelo endereço cabeado. O Clippy com `-D warnings` segue falhando
+  em `while_let_on_iterator` em `src/ext4.rs` e `result_unit_err` em
+  `src/userland/kdf.rs`.
+- Execução de `execve` a partir de um arquivo do disco, stress sustentado,
+  persistência em disco, validação física e os gates das userlands completas
+  permanecem em aberto.
+
+### Clippy, SMP ampliado e nova tentativa no NAS
+
+- `cargo clippy --all-targets -- -D warnings` passou após ajustar a iteração
+  do leitor ext4 e tipar os erros da derivação Argon2id. Os 190 testes host
+  passaram novamente.
+- Em QEMU TCG, `CARLIO_SMP_STRESS_TEST=1 ./scripts/build-iso.sh` amplia de
+  512 para 8.192 os ciclos de mmap/munmap em cada AP de teste. Para rodar o
+  smoke da imagem, passe `--smp-cycles 8192 --timeout 40` a
+  `scripts/qemu-smoke.py`. Os logs registram o retorno ao baseline de frames.
+  A primeira execução UEFI expirou aguardando o byte serial; a repetição
+  passou. [BIOS](logs/smp-stress-qemu-bios-20261123.log) ·
+  [UEFI](logs/smp-stress-qemu-uefi-20261123.log)
+- SSH continuou indisponível por Wi-Fi, cabo e pelo alias remoto. O endereço
+  cabeado configurado no alias está fora das sub-redes da interface local.
+  O vizinho detectado no enlace recusou conexão na porta SSH.
+- A inspeção local não encontrou mídia removível para teste de boot físico.
+  `execve` de disco, persistência e execução das userlands completas seguem
+  abertos.
+
+## Execução de ELF estático em ext4
+
+- O probe opt-in chama `execve("/carlio-disk-exec", NULL, NULL)` por SYSCALL.
+  O ELF mora em uma partição MBR/ext4 descartável. Sua entrada confere o
+  `argc` da nova pilha, escreve o marcador via syscall e encerra em CPL3.
+- O leitor ext4 preenche com zeros blocos esparsos e extents não inicializados.
+  O carregador exige a leitura integral do arquivo executável montado e
+  propaga erros de resolução e acesso do VFS.
+- O registro de VMs usa aquisição sem espera para pular slots em uso por
+  outros CPUs durante shootdown. A verificação de memória segue o slot
+  registrado no processo depois da troca de imagem.
+- As pilhas de kernel por tarefa passaram de 64 para 128 KiB. O watermark
+  observou 78.856 bytes no teste; a contagem de frames após o reaper voltou
+  exatamente ao baseline.
+- O smoke QEMU TCG com quatro CPUs passou em
+  [BIOS](logs/disk-exec-ext4-qemu-bios.log) e
+  [UEFI](logs/disk-exec-ext4-qemu-uefi.log). Esta prova usa um ELF estático
+  dentro do limite de 16 KiB por imagem do carregador atual. A ISO padrão
+  recompilada também passou no smoke BIOS e UEFI.
+- Formatação, 191 testes host e Clippy com `-D warnings` passaram.
+
+Para reproduzir, execute `CARLIO_DISK_EXEC_TEST=1 ./scripts/build-iso.sh` e
+`scripts/test-disk-exec-qemu.sh build/carlio-os.iso /tmp/disk-exec.log`.
+Para UEFI, acrescente `--firmware` com o arquivo OVMF CODE correspondente.

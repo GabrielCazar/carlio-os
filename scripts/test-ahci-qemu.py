@@ -98,7 +98,7 @@ def main() -> int:
                             and serial.count(fs_pass_marker) >= 2):
                         passed = True
                         return 0
-                    absent_line = "AHCI QEMU indisponível: dispositivo nao encontrado.\r\n".encode()
+                    absent_line = "AHCI indisponível: dispositivo nao encontrado.\r\n".encode()
                     if (args.without_disk and absent_line in serial and
                             b"Digite 'ajuda' para ver os comandos.\r\n" in serial):
                         passed = True

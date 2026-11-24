@@ -137,8 +137,7 @@ impl<D: BlockDevice> Ext4Volume<D> {
 
     fn resolve_inode(&mut self, path: &str) -> Result<Inode, Ext4Error> {
         let mut inode_number = 2u32;
-        let mut components = path.split('/').filter(|part| !part.is_empty());
-        while let Some(component) = components.next() {
+        for component in path.split('/').filter(|part| !part.is_empty()) {
             let directory = self.read_inode(inode_number)?;
             if directory.mode & 0xf000 != 0x4000 {
                 return Err(Ext4Error::NotFound);
@@ -177,14 +176,15 @@ impl<D: BlockDevice> Ext4Volume<D> {
         let mut block_offset = (offset % block_size) as usize;
         let mut written = 0usize;
         while written < count {
-            let physical = self
-                .extent_block(inode, logical)?
-                .ok_or(Ext4Error::CorruptMetadata)?;
-            let mut block = [0u8; MAX_BLOCK_SIZE];
-            self.read_block(physical, &mut block[..self.block_size])?;
             let used = (count - written).min(self.block_size - block_offset);
-            output[written..written + used]
-                .copy_from_slice(&block[block_offset..block_offset + used]);
+            let destination = &mut output[written..written + used];
+            if let Some(physical) = self.extent_block(inode, logical)? {
+                let mut block = [0u8; MAX_BLOCK_SIZE];
+                self.read_block(physical, &mut block[..self.block_size])?;
+                destination.copy_from_slice(&block[block_offset..block_offset + used]);
+            } else {
+                destination.fill(0);
+            }
             written += used;
             block_offset = 0;
             logical = logical.checked_add(1).ok_or(Ext4Error::CorruptMetadata)?;
@@ -293,11 +293,24 @@ impl<D: BlockDevice> Ext4Volume<D> {
                 for index in 0..entries {
                     let at = 12 + index * 12;
                     let first = u32le(&node, at);
-                    let length = u16le(&node, at + 4) & 0x7fff;
+                    let encoded_length = u16le(&node, at + 4);
+                    let unwritten = encoded_length > 32_768;
+                    let length = if unwritten {
+                        encoded_length - 32_768
+                    } else {
+                        encoded_length
+                    };
+                    if length == 0 {
+                        return Err(Ext4Error::CorruptMetadata);
+                    }
                     let physical =
                         u32le(&node, at + 8) as u64 | ((u16le(&node, at + 6) as u64) << 32);
                     if logical >= first && (logical as u64) < first as u64 + length as u64 {
-                        return Ok(Some(physical + (logical - first) as u64));
+                        let block = physical + (logical - first) as u64;
+                        if block >= self.blocks_count {
+                            return Err(Ext4Error::CorruptMetadata);
+                        }
+                        return Ok((!unwritten).then_some(block));
                     }
                 }
                 return Ok(None);
@@ -312,7 +325,9 @@ impl<D: BlockDevice> Ext4Volume<D> {
                     break;
                 }
             }
-            let block = selected.ok_or(Ext4Error::CorruptMetadata)?;
+            let Some(block) = selected else {
+                return Ok(None);
+            };
             if block >= self.blocks_count {
                 return Err(Ext4Error::CorruptMetadata);
             }
@@ -504,6 +519,24 @@ mod tests {
         let mut output = [0u8; 8];
         assert_eq!(volume.read_path("/hello", &mut output), Ok(5));
         assert_eq!(&output[..5], b"world");
+    }
+
+    #[test]
+    fn reads_holes_and_unwritten_extents_as_zeroes() {
+        let mut disk = fixture();
+        let inode = &mut disk.0[10][256..384];
+        put32(inode, 4, 3 * 1024);
+        put16(inode, 42, 2);
+        put32(inode, 64, 2);
+        put16(inode, 68, 32_769);
+        put32(inode, 72, 8);
+        disk.0[16].fill(0xff);
+
+        let mut volume = Ext4Volume::mount(disk, 0).unwrap();
+        let mut output = [0xff; 3 * 1024];
+        assert_eq!(volume.read_path("/hello", &mut output), Ok(output.len()));
+        assert_eq!(&output[..5], b"world");
+        assert!(output[1024..].iter().all(|&byte| byte == 0));
     }
 
     #[test]

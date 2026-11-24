@@ -107,8 +107,6 @@ carlio_syscall_entry:
         call carlio_syscall_dispatch
         cli
         movq %rax, 72(%rsp)
-        movq %gs:0, %rdi
-        call carlio_measure_syscall_stack
         movq 24(%rsp), %r9
         movq 32(%rsp), %r8
         movq 40(%rsp), %r10
@@ -188,6 +186,16 @@ exception_common:
         # scheduler frame switch can still return through the same epilogue.
         cmpq $32, 120(%rsp)
         jb 2f
+        cmpq $128, 120(%rsp)
+        jne 4f
+        movq %rsp, %r12
+        andq $-16, %rsp
+        call carlio_is_scheduled_int80
+        movq %r12, %rsp
+        movq %rsp, %rdi
+        testb %al, %al
+        jnz 2f
+    4:
         movq %rsp, %r12
         andq $-16, %rsp
         call carlio_irq_stack_enter
@@ -864,20 +872,6 @@ extern "C" fn exception_dispatch(frame: *mut ExceptionFrame) -> *mut ExceptionFr
     let cpu = crate::lapic::local_id()
         .and_then(crate::cpu_index_for_lapic)
         .unwrap_or(0);
-    if frame.vector == 128
-        && frame.cs & 3 == 3
-        && frame.rax == carlio_os::syscall::SYS_EXIT
-        && crate::process_probe_is_active()
-        && crate::scheduler_has_current_process(cpu)
-    {
-        if let Some(next) = crate::process_probe_exit(frame.rdi) {
-            return next.cast();
-        }
-        if crate::is_secondary_cpu(cpu) {
-            prepare_ap_idle_resume(frame);
-            return frame;
-        }
-    }
     if frame.vector == 128 && frame.cs & 3 == 3 && crate::scheduler_has_current_process(cpu) {
         if let Some(outcome) = crate::dispatch_linux_syscall(
             frame.rax,
@@ -885,6 +879,7 @@ extern "C" fn exception_dispatch(frame: *mut ExceptionFrame) -> *mut ExceptionFr
                 frame.rdi, frame.rsi, frame.rdx, frame.r10, frame.r8, frame.r9,
             ],
             cpu,
+            true,
         ) {
             match outcome {
                 carlio_os::linux_abi::SyscallOutcome::Return(value) => {
@@ -905,14 +900,14 @@ extern "C" fn exception_dispatch(frame: *mut ExceptionFrame) -> *mut ExceptionFr
                     return (user as *mut UserInterruptFrame).cast();
                 }
                 carlio_os::linux_abi::SyscallOutcome::Exit { status } => {
-                    if let Some(next) = crate::process_probe_exit(status as u64) {
+                    if let Some(next) = crate::process_runtime_exit(status as u64) {
                         return next.cast();
                     }
-                    if crate::is_secondary_cpu(cpu) {
-                        prepare_ap_idle_resume(frame);
-                    } else if crate::process_probe_is_active() {
+                    if !crate::is_secondary_cpu(cpu) && crate::process_probe_is_active() {
                         let result = crate::process_probe_result();
                         resume_ring3_probe(frame, result);
+                    } else {
+                        prepare_ap_idle_resume(frame);
                     }
                     return frame;
                 }
@@ -922,7 +917,7 @@ extern "C" fn exception_dispatch(frame: *mut ExceptionFrame) -> *mut ExceptionFr
     if frame.vector == 128 && frame.cs & 3 == 3 && RING3_PROBE_ACTIVE.load(Ordering::Acquire) {
         if frame.rax == carlio_os::syscall::SYS_EXIT && crate::process_probe_is_active() {
             super::write("Syscall: tarefa solicitou encerramento.\r\n");
-            if let Some(next) = crate::process_probe_exit(frame.rdi) {
+            if let Some(next) = crate::process_runtime_exit(frame.rdi) {
                 return next.cast();
             }
             let result = crate::process_probe_result();
@@ -942,10 +937,7 @@ extern "C" fn exception_dispatch(frame: *mut ExceptionFrame) -> *mut ExceptionFr
     }
     // Qualquer exceção síncrona em CPL3 pertencente a uma tarefa do scheduler
     // encerra apenas essa tarefa; o handler de prova não é política do fault.
-    if frame.cs & 3 == 3
-        && frame.vector < 32
-        && (crate::process_probe_is_active() || crate::scheduler_has_current_process(cpu))
-    {
+    if frame.cs & 3 == 3 && frame.vector < 32 && crate::scheduler_has_current_process(cpu) {
         let cr2 = if frame.vector == 14 {
             let address: u64;
             unsafe {
@@ -955,15 +947,15 @@ extern "C" fn exception_dispatch(frame: *mut ExceptionFrame) -> *mut ExceptionFr
         } else {
             0
         };
-        if let Some(next) = crate::process_runtime_fault(frame.vector, frame.error_code, cr2) {
+        if let Some(next) = crate::process_runtime_fault(cpu, frame.vector, frame.error_code, cr2) {
             return next.cast();
         }
-        if crate::is_secondary_cpu(cpu) {
+        if !crate::is_secondary_cpu(cpu) && crate::process_probe_is_active() {
+            let result = crate::process_probe_result();
+            resume_ring3_probe(frame, result);
+        } else {
             prepare_ap_idle_resume(frame);
-            return frame;
         }
-        let result = crate::process_probe_result();
-        resume_ring3_probe(frame, result);
         return frame;
     }
     if RING3_PROBE_ACTIVE.load(Ordering::Acquire)
@@ -1126,6 +1118,15 @@ fn record_iret_target(cpu: usize, frame: *mut UserInterruptFrame) {
 }
 
 #[no_mangle]
+extern "C" fn carlio_is_scheduled_int80(raw: *const ExceptionFrame) -> bool {
+    let frame = unsafe { &*raw };
+    let cpu = crate::lapic::local_id()
+        .and_then(crate::cpu_index_for_lapic)
+        .unwrap_or(0);
+    frame.cs & 3 == 3 && crate::scheduler_has_current_process(cpu)
+}
+
+#[no_mangle]
 extern "C" fn carlio_syscall_dispatch(raw: *const LinuxSyscallFrame) -> u64 {
     let frame = unsafe { &*raw };
     if frame.user_rip < carlio_os::user_memory::PAGE_SIZE
@@ -1141,7 +1142,7 @@ extern "C" fn carlio_syscall_dispatch(raw: *const LinuxSyscallFrame) -> u64 {
     let arguments = [
         frame.rdi, frame.rsi, frame.rdx, frame.r10, frame.r8, frame.r9,
     ];
-    match crate::dispatch_linux_syscall(frame.number, arguments, cpu) {
+    match crate::dispatch_linux_syscall(frame.number, arguments, cpu, false) {
         Some(carlio_os::linux_abi::SyscallOutcome::Return(value)) => value,
         Some(carlio_os::linux_abi::SyscallOutcome::Exec(transition)) => {
             let frame = unsafe { &mut *(raw as *mut LinuxSyscallFrame) };
@@ -1158,25 +1159,21 @@ extern "C" fn carlio_syscall_dispatch(raw: *const LinuxSyscallFrame) -> u64 {
             0
         }
         Some(carlio_os::linux_abi::SyscallOutcome::Exit { status }) => {
-            if let Some(next) = crate::process_probe_exit(status as u64) {
-                unsafe { enter_user_frame(next) }
-            }
-            if crate::is_secondary_cpu(cpu) {
-                loop {
-                    unsafe {
-                        asm!("sti; hlt", options(nomem, nostack));
-                    }
-                }
-            }
-            if crate::process_probe_is_active() {
-                let result = crate::process_probe_result();
-                unsafe { carlio_resume_ring3_after_syscall(result) }
-            }
-            loop {
+            if let Some(next) = crate::process_runtime_exit(status as u64) {
                 unsafe {
-                    asm!("sti; hlt", options(nomem, nostack));
+                    asm!("cli; swapgs", options(nomem, nostack));
+                    enter_user_frame(next)
                 }
             }
+            if !crate::is_secondary_cpu(cpu) && crate::process_probe_is_active() {
+                let result = crate::process_probe_result();
+                unsafe {
+                    asm!("swapgs", options(nomem, nostack));
+                    carlio_resume_ring3_after_syscall(result)
+                }
+            }
+            unsafe { asm!("cli; swapgs", options(nomem, nostack)) };
+            crate::carlio_ap_idle_resume()
         }
         None => (-(carlio_os::linux_abi::ENOSYS as i64)) as u64,
     }

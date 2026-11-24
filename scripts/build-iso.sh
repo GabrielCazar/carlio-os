@@ -26,6 +26,12 @@ fi
 if [[ ${CARLIO_STACK_WATERMARK:-0} == 1 ]]; then
   features+=(stack-watermark)
 fi
+if [[ ${CARLIO_SMP_STRESS_TEST:-0} == 1 ]]; then
+  features+=(smp-stress-test)
+fi
+if [[ ${CARLIO_DISK_EXEC_TEST:-0} == 1 ]]; then
+  features+=(disk-exec-test)
+fi
 if ((${#features[@]})); then
   feature_list=$(IFS=,; echo "${features[*]}")
   build_args+=(--features "$feature_list")

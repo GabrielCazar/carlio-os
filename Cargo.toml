@@ -13,6 +13,8 @@ resolver = "2"
 crash-test = []
 storage-test = []
 stack-watermark = []
+smp-stress-test = []
+disk-exec-test = []
 graphics = ["dep:embedded-graphics"]
 
 [lib]

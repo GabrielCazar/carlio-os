@@ -2,6 +2,29 @@
 #![cfg_attr(target_os = "none", no_main)]
 
 #[cfg(target_os = "none")]
+extern crate alloc;
+
+#[cfg(target_os = "none")]
+struct KernelGlobalAllocator;
+
+#[cfg(target_os = "none")]
+#[global_allocator]
+static GLOBAL_ALLOCATOR: KernelGlobalAllocator = KernelGlobalAllocator;
+
+#[cfg(target_os = "none")]
+unsafe impl core::alloc::GlobalAlloc for KernelGlobalAllocator {
+    unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
+        kernel_heap_allocate(layout).map_or(core::ptr::null_mut(), core::ptr::NonNull::as_ptr)
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, _layout: core::alloc::Layout) {
+        if let Some(ptr) = core::ptr::NonNull::new(ptr) {
+            let _ = unsafe { KERNEL_HEAP.lock().deallocate(ptr) };
+        }
+    }
+}
+
+#[cfg(target_os = "none")]
 use carlio_os::errors::{ErrorLog, KernelError};
 #[cfg(target_os = "none")]
 use carlio_os::heap::KernelHeapSet;
@@ -13,7 +36,9 @@ use carlio_os::memory::{
 #[cfg(target_os = "none")]
 use carlio_os::pci::PciFunction;
 #[cfg(target_os = "none")]
-use carlio_os::process::{CpuContext, KernelStackPool, ReapBarrier, Scheduler};
+use carlio_os::process::{
+    CpuContext, KernelStackPool, OwnedProcessResource, ReapBarrier, Scheduler,
+};
 #[cfg(target_os = "none")]
 use carlio_os::sync::IrqSpinLock;
 #[cfg(target_os = "none")]
@@ -51,7 +76,7 @@ const MAX_BOOT_CPUS: usize = 64;
 #[cfg(target_os = "none")]
 const AP_STACK_SIZE: usize = 16 * 1024;
 #[cfg(target_os = "none")]
-const PROCESS_KERNEL_STACK_SIZE: usize = 64 * 1024;
+const PROCESS_KERNEL_STACK_SIZE: usize = 128 * 1024;
 
 #[cfg(target_os = "none")]
 static mut ERROR_LOG: ErrorLog<ERROR_LOG_CAPACITY> = ErrorLog::new();
@@ -65,10 +90,9 @@ static mut KERNEL_VIRTUAL_BASE: u64 = 0;
 static FRAME_ALLOCATOR: IrqSpinLock<PhysicalFrameAllocator<PHYSICAL_FRAME_BITMAP_WORDS>> =
     IrqSpinLock::new(PhysicalFrameAllocator::new());
 #[cfg(target_os = "none")]
-static PROCESS_SCHEDULER: Scheduler<64, MAX_BOOT_CPUS> = Scheduler::new();
+static PROCESS_SCHEDULER: Scheduler<64, MAX_BOOT_CPUS, RuntimeProcessVm> = Scheduler::new();
 #[cfg(target_os = "none")]
-// Linux syscall dispatch keeps several bounded VFS/exec buffers on-stack.
-// A 16 KiB stack overflowed during CPL3 mmap; reserve 64 KiB per process.
+// ELF parsing, VM ownership and mounted-filesystem I/O can nest under execve.
 static PROCESS_KERNEL_STACKS: KernelStackPool<64, PROCESS_KERNEL_STACK_SIZE> =
     KernelStackPool::new();
 #[cfg(target_os = "none")]
@@ -191,12 +215,10 @@ static AP_CPL3_OVERLAP_PASSED: AtomicBool = AtomicBool::new(false);
 static AP_CPL3_STOP: AtomicBool = AtomicBool::new(false);
 #[cfg(target_os = "none")]
 static AP_VM_STRESS_MUNMAPS: [AtomicUsize; 2] = [AtomicUsize::new(0), AtomicUsize::new(0)];
-#[cfg(target_os = "none")]
+#[cfg(all(target_os = "none", not(feature = "smp-stress-test")))]
 const AP_VM_STRESS_TARGET: usize = 512;
-#[cfg(target_os = "none")]
-static PROCESS_PROBE_BASE_FREE_FRAMES: AtomicUsize = AtomicUsize::new(0);
-#[cfg(target_os = "none")]
-static PROCESS_PROBE_BASELINE_SET: AtomicBool = AtomicBool::new(false);
+#[cfg(all(target_os = "none", feature = "smp-stress-test"))]
+const AP_VM_STRESS_TARGET: usize = 8192;
 #[cfg(target_os = "none")]
 static PROCESS_PROBE_FAULTS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(target_os = "none")]
@@ -224,16 +246,14 @@ const PROCESS_VM_PAGE_CAPACITY: usize = 128;
 #[cfg(target_os = "none")]
 const PROCESS_VM_REGION_CAPACITY: usize = 64;
 #[cfg(target_os = "none")]
-const PROCESS_VM_SLOT_CAPACITY: usize = 64;
-#[cfg(target_os = "none")]
 type RuntimeProcessVm = carlio_os::vma::ProcessVm<
     BootPageTableAccess,
     PROCESS_VM_PAGE_CAPACITY,
     PROCESS_VM_REGION_CAPACITY,
 >;
 #[cfg(target_os = "none")]
-static PROCESS_VM_SLOTS: [IrqSpinLock<Option<RuntimeProcessVm>>; PROCESS_VM_SLOT_CAPACITY] =
-    [const { IrqSpinLock::new(None) }; PROCESS_VM_SLOT_CAPACITY];
+type ProcessVmSlot = OwnedProcessResource<RuntimeProcessVm>;
+
 #[cfg(target_os = "none")]
 static mut KERNEL_HEAP_BOOT_REGION: KernelHeapBootRegion = KernelHeapBootRegion {
     _bytes: [0; 64 * 1024],
@@ -625,7 +645,7 @@ extern "C" fn carlio_ap_main(info: *mut LimineSmpInfo) -> ! {
                     unsafe { lapic::start_scheduler_timer() };
                     scheduler_timer_started = true;
                 }
-                if let Some(process) = PROCESS_SCHEDULER.schedule_local(index).ok().flatten() {
+                if let Some(process) = schedule_process_on_cpu(index).ok().flatten() {
                     if process.interrupt_frame != 0
                         && process.kernel_stack_top != 0
                         && unsafe {
@@ -654,7 +674,7 @@ extern "C" fn carlio_ap_main(info: *mut LimineSmpInfo) -> ! {
 
 #[cfg(target_os = "none")]
 #[no_mangle]
-extern "C" fn carlio_ap_idle_resume() -> ! {
+pub(crate) extern "C" fn carlio_ap_idle_resume() -> ! {
     let cpu = current_scheduler_cpu();
     let stack_top = unsafe {
         core::ptr::addr_of_mut!(CARLIO_AP_BOOT_STACKS.0[cpu])
@@ -689,11 +709,12 @@ extern "C" fn carlio_ap_scheduler_idle(cpu: usize) -> ! {
     {
         AP_CPL3_IDLE_MASK.fetch_or(1usize << cpu, Ordering::AcqRel);
     }
+    unsafe { asm!("sti", options(nomem, nostack)) };
     loop {
         if ap_acknowledge_process_quiescence(cpu) {
             continue;
         }
-        if let Some(process) = PROCESS_SCHEDULER.schedule_local(cpu).ok().flatten() {
+        if let Some(process) = schedule_process_on_cpu(cpu).ok().flatten() {
             if process.interrupt_frame != 0
                 && process.kernel_stack_top != 0
                 && unsafe {
@@ -1442,7 +1463,11 @@ extern "C" fn timer_process_switch(
     {
         PROCESS_PROBE_SWITCHES.fetch_add(1, Ordering::Relaxed);
     }
-    let next = PROCESS_SCHEDULER.preempt_frame_local(cpu, frame as u64);
+    let next = if PROCESS_PROBE_STARTED.load(Ordering::Acquire) {
+        PROCESS_SCHEDULER.preempt_frame_local(cpu, frame as u64)
+    } else {
+        PROCESS_SCHEDULER.preempt_frame(cpu, frame as u64)
+    };
     let Ok(Some(process)) = next else {
         if previous_is_ap_probe && frame_user_mode(frame) {
             mark_ap_cpl3_running(cpu);
@@ -1502,7 +1527,12 @@ fn mark_ap_cpl3_running(cpu: usize) {
     if cpu < MAX_BOOT_CPUS {
         let bit = 1usize << cpu;
         AP_CPL3_IDLE_MASK.fetch_and(!bit, Ordering::AcqRel);
-        AP_CPL3_RUNNING_MASK.fetch_or(bit, Ordering::Release);
+        let active = AP_CPL3_RUNNING_MASK.fetch_or(bit, Ordering::AcqRel);
+        let concurrent = active & secondary_cpu_mask() & !bit;
+        if concurrent != 0 {
+            AP_CPL3_CPU_MASK.fetch_or(bit | concurrent, Ordering::AcqRel);
+            AP_CPL3_OVERLAP_PASSED.store(true, Ordering::Release);
+        }
     }
 }
 
@@ -1530,9 +1560,10 @@ pub(crate) fn begin_process_switch_probe() -> Option<*mut idt::UserInterruptFram
     if PROCESS_PROBE_IDS
         .iter()
         .any(|process_id| process_id.load(Ordering::Acquire) != 0)
-        || PROCESS_VM_SLOTS
+        || PROCESS_SCHEDULER
+            .owned_resources()
             .iter()
-            .any(|storage| storage.lock().is_some())
+            .any(|storage| lock_process_vm_slot(storage).is_some())
     {
         write("Runtime: probe anterior ainda mantém recursos; nova execução bloqueada.\r\n");
         return None;
@@ -1540,8 +1571,6 @@ pub(crate) fn begin_process_switch_probe() -> Option<*mut idt::UserInterruptFram
     if PROCESS_PROBE_STARTED.swap(true, Ordering::AcqRel) {
         return None;
     }
-    PROCESS_PROBE_BASE_FREE_FRAMES.store(FRAME_ALLOCATOR.lock().free_frames(), Ordering::Release);
-    PROCESS_PROBE_BASELINE_SET.store(true, Ordering::Release);
     write("Runtime de processos: preparando tarefas CPL3.\r\n");
     PROCESS_PROBE_SWITCHES.store(0, Ordering::Relaxed);
     PROCESS_PROBE_CR3_SWITCHES.store(0, Ordering::Relaxed);
@@ -1560,10 +1589,9 @@ pub(crate) fn begin_process_switch_probe() -> Option<*mut idt::UserInterruptFram
     for count in &AP_VM_STRESS_MUNMAPS {
         count.store(0, Ordering::Relaxed);
     }
-    let mut root: u64;
-    unsafe { asm!("mov {}, cr3", out(reg) root, options(nomem, nostack, preserves_flags)) };
-    root &= 0x000f_ffff_ffff_f000;
-    PROCESS_KERNEL_CR3.store(root, Ordering::Release);
+    // O probe entra aqui sob um CR3 temporário. Use o CR3 que o BSP
+    // salvou antes de entrar em CPL3 para criar e recolher as tarefas.
+    let root = PROCESS_KERNEL_CR3.load(Ordering::Acquire);
     // CPL3 exercises write, identity getters, getgroups, getpid and exit.
     // The write buffer shares the read-only executable page, so the kernel
     // must validate/read it without requiring user write permission.
@@ -1595,9 +1623,7 @@ pub(crate) fn begin_process_switch_probe() -> Option<*mut idt::UserInterruptFram
         &["CARLIO_PROBE=1"],
     ) else {
         write("Runtime: falha ao criar espaço virtual B.\r\n");
-        if release_or_retain_unregistered_space(space_a) {
-            PROCESS_PROBE_BASELINE_SET.store(false, Ordering::Release);
-        }
+        let _ = release_or_retain_unregistered_space(space_a);
         PROCESS_PROBE_STARTED.store(false, Ordering::Release);
         return None;
     };
@@ -1609,11 +1635,8 @@ pub(crate) fn begin_process_switch_probe() -> Option<*mut idt::UserInterruptFram
         &["CARLIO_PROBE=1"],
     ) else {
         write("Runtime: falha ao criar espaço virtual C.\r\n");
-        let released_a = release_or_retain_unregistered_space(space_a);
-        let released_b = release_or_retain_unregistered_space(space_b);
-        if released_a && released_b {
-            PROCESS_PROBE_BASELINE_SET.store(false, Ordering::Release);
-        }
+        let _ = release_or_retain_unregistered_space(space_a);
+        let _ = release_or_retain_unregistered_space(space_b);
         PROCESS_PROBE_STARTED.store(false, Ordering::Release);
         return None;
     };
@@ -1639,50 +1662,38 @@ pub(crate) fn begin_process_switch_probe() -> Option<*mut idt::UserInterruptFram
         || vm_b.reserve_existing(CODE_VA, 2 * 4096).is_err()
         || vm_c.reserve_existing(CODE_VA, 2 * 4096).is_err()
     {
-        let released_a = release_or_retain_unregistered_vm(vm_a);
-        let released_b = release_or_retain_unregistered_vm(vm_b);
-        let released_c = release_or_retain_unregistered_vm(vm_c);
-        if released_a && released_b && released_c {
-            PROCESS_PROBE_BASELINE_SET.store(false, Ordering::Release);
-        }
+        let _ = release_or_retain_unregistered_vm(vm_a);
+        let _ = release_or_retain_unregistered_vm(vm_b);
+        let _ = release_or_retain_unregistered_vm(vm_c);
         PROCESS_PROBE_STARTED.store(false, Ordering::Release);
         return None;
     }
-    let slot_a = match store_process_probe_vm(vm_a) {
+    let slot_a = match store_process_vm(vm_a, None) {
         Ok(slot) => slot,
         Err(space) => {
-            let released_space = release_or_retain_unregistered_vm(space);
-            let released_b = release_or_retain_unregistered_vm(vm_b);
-            let released_c = release_or_retain_unregistered_vm(vm_c);
-            if released_space && released_b && released_c {
-                PROCESS_PROBE_BASELINE_SET.store(false, Ordering::Release);
-            }
+            let _ = release_or_retain_unregistered_vm(space);
+            let _ = release_or_retain_unregistered_vm(vm_b);
+            let _ = release_or_retain_unregistered_vm(vm_c);
             PROCESS_PROBE_STARTED.store(false, Ordering::Release);
             return None;
         }
     };
-    let slot_b = match store_process_probe_vm(vm_b) {
+    let slot_b = match store_process_vm(vm_b, None) {
         Ok(slot) => slot,
         Err(space) => {
-            let released_space = release_or_retain_unregistered_vm(space);
-            let released_a = destroy_process_probe_space_by_root(root_a);
-            let released_c = release_or_retain_unregistered_vm(vm_c);
-            if released_space && released_a && released_c {
-                PROCESS_PROBE_BASELINE_SET.store(false, Ordering::Release);
-            }
+            let _ = release_or_retain_unregistered_vm(space);
+            let _ = destroy_process_probe_space_by_root(root_a);
+            let _ = release_or_retain_unregistered_vm(vm_c);
             PROCESS_PROBE_STARTED.store(false, Ordering::Release);
             return None;
         }
     };
-    let slot_c = match store_process_probe_vm(vm_c) {
+    let slot_c = match store_process_vm(vm_c, None) {
         Ok(slot) => slot,
         Err(space) => {
-            let released_space = release_or_retain_unregistered_vm(space);
-            let released_a = destroy_process_probe_space_by_root(root_a);
-            let released_b = destroy_process_probe_space_by_root(root_b);
-            if released_space && released_a && released_b {
-                PROCESS_PROBE_BASELINE_SET.store(false, Ordering::Release);
-            }
+            let _ = release_or_retain_unregistered_vm(space);
+            let _ = destroy_process_probe_space_by_root(root_a);
+            let _ = destroy_process_probe_space_by_root(root_b);
             PROCESS_PROBE_STARTED.store(false, Ordering::Release);
             return None;
         }
@@ -1756,16 +1767,17 @@ pub(crate) fn begin_process_switch_probe() -> Option<*mut idt::UserInterruptFram
         (third, root_c, user_stack_c, slot_c),
     ];
     for (id, page_table, user_stack, slot) in bundles {
-        if PROCESS_SCHEDULER
-            .attach_resource_bundle(
-                id,
-                carlio_os::process::ProcessResourceBundle {
-                    slot,
-                    page_table,
-                    user_stack,
-                },
-            )
-            .is_err()
+        if !bind_process_vm(slot, id, page_table)
+            || PROCESS_SCHEDULER
+                .attach_resource_bundle(
+                    id,
+                    carlio_os::process::ProcessResourceBundle {
+                        slot,
+                        page_table,
+                        user_stack,
+                    },
+                )
+                .is_err()
         {
             let _ = abort_unstarted_process_probe([first, second, third], [root_a, root_b, root_c]);
             PROCESS_PROBE_STARTED.store(false, Ordering::Release);
@@ -1860,7 +1872,8 @@ fn make_process_probe_space(
         argv,
         env,
         AccessContext::new(Credentials { uid: 0, gid: 0 }, &[], 0),
-    )?;
+    )
+    .ok()?;
     Some((space, entry, stack))
 }
 
@@ -1873,17 +1886,24 @@ fn make_process_space(
     argv: &[&str],
     env: &[&str],
     context: AccessContext<'_>,
-) -> Option<(
-    OwnedAddressSpace<BootPageTableAccess, PROCESS_VM_PAGE_CAPACITY>,
-    u64,
-    u64,
-    [(u64, u64); 2],
-)> {
+) -> Result<
+    (
+        OwnedAddressSpace<BootPageTableAccess, PROCESS_VM_PAGE_CAPACITY>,
+        u64,
+        u64,
+        [(u64, u64); 2],
+    ),
+    u16,
+> {
+    use carlio_os::elf::{ElfError, VfsElfError};
+    use carlio_os::linux_abi::{E2BIG, ENOEXEC, ENOMEM};
+    let stack_length = (stack_pages as u64).checked_mul(4096).ok_or(E2BIG)?;
+    let stack_top = stack_va.checked_add(stack_length).ok_or(E2BIG)?;
     let mut target = match ElfAddressSpace::<PROCESS_VM_PAGE_CAPACITY>::new(kernel_root) {
         Ok(space) => space,
         Err(_) => {
             write("Runtime: nova raiz de paginação recusada.\r\n");
-            return None;
+            return Err(ENOMEM);
         }
     };
     let mut scratch = ELF_LOAD_SCRATCH.lock();
@@ -1919,15 +1939,19 @@ fn make_process_space(
         };
         match loaded {
             Ok(image) => image,
-            Err(_) => {
+            Err(error) => {
                 write("Runtime: ELF do VFS recusado por acesso, formato ou mapeamento.\r\n");
-                let _ = target.0.try_destroy();
-                return None;
+                let _ = release_or_retain_unregistered_space(target.0);
+                return Err(match error {
+                    VfsElfError::Vfs(error) => vfs_errno(error),
+                    VfsElfError::Elf(ElfError::MappingFailed) => ENOMEM,
+                    VfsElfError::Elf(_) => ENOEXEC,
+                });
             }
         }
     };
     for page in 0..stack_pages {
-        let address = stack_va.checked_add((page as u64).checked_mul(4096)?)?;
+        let address = stack_va + (page as u64) * 4096;
         if target
             .0
             .map_zeroed(
@@ -1937,16 +1961,15 @@ fn make_process_space(
             .is_err()
         {
             write("Runtime: falha ao mapear stack CPL3.\r\n");
-            let _ = target.0.try_destroy();
-            return None;
+            let _ = release_or_retain_unregistered_space(target.0);
+            return Err(ENOMEM);
         }
     }
-    let stack_top = stack_va.checked_add((stack_pages as u64).checked_mul(4096)?)?;
     let auxv = image.auxv();
     let stack = match carlio_os::elf::build_initial_user_stack_with_auxv_sized(
         &mut target,
         stack_top,
-        (stack_pages as u64).checked_mul(4096)?,
+        stack_length,
         argv,
         env,
         &auxv,
@@ -1954,16 +1977,16 @@ fn make_process_space(
         Ok(stack) => stack,
         Err(carlio_os::elf::ElfError::InvalidArguments) => {
             write("Runtime: argumentos excedem a stack inicial CPL3.\r\n");
-            let _ = target.0.try_destroy();
-            return None;
+            let _ = release_or_retain_unregistered_space(target.0);
+            return Err(E2BIG);
         }
         Err(_) => {
             write("Runtime: escrita da stack inicial CPL3 falhou.\r\n");
-            let _ = target.0.try_destroy();
-            return None;
+            let _ = release_or_retain_unregistered_space(target.0);
+            return Err(ENOMEM);
         }
     };
-    Some((
+    Ok((
         target.0,
         image.entry,
         stack.stack_pointer,
@@ -2038,10 +2061,12 @@ fn probe_elf_image(task: &[u8]) -> [u8; 1024] {
 }
 
 #[cfg(target_os = "none")]
-pub(crate) fn process_probe_exit(code: u64) -> Option<*mut idt::UserInterruptFrame> {
+pub(crate) fn process_runtime_exit(code: u64) -> Option<*mut idt::UserInterruptFrame> {
     let cpu = current_scheduler_cpu();
-    if PROCESS_SCHEDULER.exit(cpu, code as i64).is_err() {
-        return None;
+    let previous = PROCESS_SCHEDULER.current(cpu)?;
+    PROCESS_SCHEDULER.exit(cpu, code as i64).ok()?;
+    if is_ap_cpl3_probe_id(previous.id) {
+        AP_CPL3_RUNNING_MASK.fetch_and(!(1usize << cpu), Ordering::AcqRel);
     }
     let process = schedule_process_on_cpu(cpu).ok()??;
     if !unsafe {
@@ -2054,22 +2079,30 @@ pub(crate) fn process_probe_exit(code: u64) -> Option<*mut idt::UserInterruptFra
 
 #[cfg(target_os = "none")]
 pub(crate) fn process_runtime_fault(
+    cpu: usize,
     vector: u64,
     error_code: u64,
     cr2: u64,
 ) -> Option<*mut idt::UserInterruptFrame> {
+    let victim = PROCESS_SCHEDULER.current(cpu)?;
+    PROCESS_SCHEDULER
+        .fault(cpu, vector as u8, error_code, cr2)
+        .ok()?;
+    if is_ap_cpl3_probe_id(victim.id) {
+        AP_CPL3_RUNNING_MASK.fetch_and(!(1usize << cpu), Ordering::AcqRel);
+    }
+    if PROCESS_PROBE_STARTED.load(Ordering::Acquire) {
+        PROCESS_PROBE_FAULTS.fetch_add(1, Ordering::AcqRel);
+    }
     write("Runtime: fault CPL3 vetorizado=");
     write_u64(vector);
     if vector == 14 {
         write(" CR2=0x");
         write_hex_u64(cr2);
+        write(" erro=");
+        write_u64(error_code);
     }
     write("; encerrando somente a tarefa.\r\n");
-    PROCESS_PROBE_FAULTS.fetch_add(1, Ordering::AcqRel);
-    let cpu = current_scheduler_cpu();
-    PROCESS_SCHEDULER
-        .fault(cpu, vector as u8, error_code, cr2)
-        .ok()?;
     let process = schedule_process_on_cpu(cpu).ok()??;
     if !unsafe {
         idt::activate_cpu_process_address_space(cpu, process.page_table, process.kernel_stack_top)
@@ -2087,11 +2120,11 @@ fn linux_syscall_probe_task() -> ([u8; 1024], usize) {
     const PATH: &[u8] = b"/programas/probe\0";
     let mut code = [0u8; 1024];
     let mut length = 0usize;
-    // Pequena janela para os APs entrarem simultaneamente em CPL3. O contador
-    // anterior (67 milhões) podia exceder o watchdog de 5 s sob QEMU TCG antes
-    // de qualquer syscall e transformar lentidão previsível da fixture em falso
-    // travamento do kernel.
-    append_probe_bytes(&mut code, &mut length, &[0xb9, 0x00, 0x00, 0x10, 0x00]);
+    // Sample the scheduled compatibility entry before the native calls.
+    append_probe_bytes(&mut code, &mut length, &[0xb8, 39, 0, 0, 0, 0xcd, 0x80]);
+    // A fixture precisa permanecer em CPL3 por pelo menos um tick do PIT
+    // mesmo quando o QEMU executa rapidamente as demais instruções.
+    append_probe_bytes(&mut code, &mut length, &[0xb9, 0x00, 0x00, 0x00, 0x01]);
     append_probe_bytes(&mut code, &mut length, &[0xe2, 0xfe]); // loop
     append_probe_bytes(&mut code, &mut length, &[0xbf, 1, 0, 0, 0]); // write(1, ...)
     append_probe_bytes(&mut code, &mut length, &[0x48, 0xbe]);
@@ -2213,6 +2246,16 @@ fn linux_syscall_probe_task() -> ([u8; 1024], usize) {
     append_probe_bytes(&mut code, &mut length, &[0; 8]);
     append_probe_bytes(&mut code, &mut length, &[0x31, 0xd2]);
     append_probe_syscall(&mut code, &mut length, carlio_os::linux_abi::SYS_OPENAT);
+    let disk_path_pointer = if cfg!(feature = "disk-exec-test") {
+        append_probe_bytes(&mut code, &mut length, &[0x48, 0xbf]); // rdi = path
+        let pointer = length;
+        append_probe_bytes(&mut code, &mut length, &[0; 8]);
+        append_probe_bytes(&mut code, &mut length, &[0x31, 0xf6, 0x31, 0xd2]); // argv/envp
+        append_probe_syscall(&mut code, &mut length, carlio_os::linux_abi::SYS_EXECVE);
+        Some(pointer)
+    } else {
+        None
+    };
     append_probe_bytes(&mut code, &mut length, &[0x31, 0xff]);
     append_probe_syscall(&mut code, &mut length, carlio_os::linux_abi::SYS_EXIT);
     let message_offset = length;
@@ -2227,6 +2270,11 @@ fn linux_syscall_probe_task() -> ([u8; 1024], usize) {
         .copy_from_slice(&(CODE_VA + path_offset as u64).to_le_bytes());
     code[denied_path_pointer_offset..denied_path_pointer_offset + 8]
         .copy_from_slice(&(CODE_VA + denied_path_offset as u64).to_le_bytes());
+    if let Some(pointer) = disk_path_pointer {
+        let address = CODE_VA + length as u64;
+        append_probe_bytes(&mut code, &mut length, b"/carlio-disk-exec\0");
+        code[pointer..pointer + 8].copy_from_slice(&address.to_le_bytes());
+    }
     (code, length)
 }
 
@@ -2256,9 +2304,14 @@ fn process_vm_stress_task() -> ([u8; 1024], usize) {
             0xb8, 0x0b, 0x00, 0x00, 0x00, // munmap
             0x0f, 0x05, 0x41, 0xff, 0xcc, // dec r12d
             0x75, 0xc9, // jnz to mmap loop (-55 bytes)
-            0xeb, 0xfe, // remain in CPL3 until stop request
         ],
     );
+    if cfg!(feature = "smp-stress-test") {
+        // Read unmapped VA zero after the workload to exercise the real #PF path.
+        append_probe_bytes(&mut code, &mut length, &[0x31, 0xc0, 0x8a, 0x00]);
+    } else {
+        append_probe_bytes(&mut code, &mut length, &[0xeb, 0xfe]);
+    }
     (code, length)
 }
 
@@ -2292,7 +2345,7 @@ fn current_scheduler_cpu() -> usize {
 fn schedule_process_on_cpu(
     cpu: usize,
 ) -> Result<Option<carlio_os::process::Process>, carlio_os::process::ProcessError> {
-    if is_secondary_cpu(cpu) {
+    if is_secondary_cpu(cpu) && PROCESS_PROBE_STARTED.load(Ordering::Acquire) {
         PROCESS_SCHEDULER.schedule_local(cpu)
     } else {
         PROCESS_SCHEDULER.schedule(cpu)
@@ -2309,6 +2362,7 @@ pub(crate) fn dispatch_linux_syscall(
     number: u64,
     arguments: [u64; 6],
     cpu: usize,
+    via_int80: bool,
 ) -> Option<carlio_os::linux_abi::SyscallOutcome> {
     let process = PROCESS_SCHEDULER.current(cpu)?;
     let mut io = KernelLinuxSyscallIo { process, cpu };
@@ -2335,13 +2389,17 @@ pub(crate) fn dispatch_linux_syscall(
             }
         }
     }
+    let mut sample_stack = !cfg!(feature = "smp-stress-test") || !is_ap_cpl3_probe_id(process.id);
     if number == carlio_os::linux_abi::SYS_MUNMAP {
         if let carlio_os::linux_abi::SyscallOutcome::Return(value) = outcome {
             LINUX_MUNMAP_RESULT.store(value, Ordering::Release);
             if value == 0 {
                 for (counter, process_index) in AP_VM_STRESS_MUNMAPS.iter().zip([1usize, 2]) {
                     if process.id == PROCESS_PROBE_IDS[process_index].load(Ordering::Acquire) {
-                        counter.fetch_add(1, Ordering::AcqRel);
+                        if !cfg!(feature = "smp-stress-test") || heap_stress_cycle(process.id) {
+                            let completed = counter.fetch_add(1, Ordering::AcqRel) + 1;
+                            sample_stack |= completed == AP_VM_STRESS_TARGET;
+                        }
                     }
                 }
             }
@@ -2511,6 +2569,10 @@ pub(crate) fn dispatch_linux_syscall(
         }
         _ => {}
     }
+    // The cumulative mark on the stress tasks is read after the final cycle.
+    if sample_stack {
+        measure_process_syscall_stack(process.kernel_stack_top, via_int80);
+    }
     Some(outcome)
 }
 
@@ -2525,8 +2587,13 @@ pub(crate) fn commit_exec_transition(transition: carlio_os::linux_abi::ExecTrans
             options(nostack, preserves_flags)
         );
     }
-    match process_probe_vm_slot(transition.old_resource_slot) {
-        Some(storage) if destroy_process_probe_space(storage, transition.old_page_table) => {}
+    match process_vm_slot(transition.old_resource_slot) {
+        Some(storage)
+            if destroy_process_vm(
+                storage,
+                transition.old_page_table,
+                Some(transition.process_id),
+            ) => {}
         _ => write("execve: CR3 novo ativo; VM antigo preservado para retry.\r\n"),
     }
 }
@@ -2543,48 +2610,77 @@ impl KernelLinuxSyscallIo {
         &mut self,
         operation: impl FnOnce(&mut RuntimeProcessVm) -> Result<R, u16>,
     ) -> Result<R, u16> {
-        let bundle = self
-            .process
+        let owner = if self.process.is_thread() {
+            PROCESS_SCHEDULER
+                .process(self.process.thread_group_id)
+                .ok_or(carlio_os::linux_abi::EFAULT)?
+        } else {
+            self.process
+        };
+        let bundle = owner
             .resources
             .filter(|bundle| bundle.page_table == self.process.page_table)
             .ok_or(carlio_os::linux_abi::ENOMEM)?;
-        let slot = process_probe_vm_slot(bundle.slot).ok_or(carlio_os::linux_abi::ENOMEM)?;
-        let mut guard = slot.lock();
-        let vm = guard.as_mut().ok_or(carlio_os::linux_abi::ENOMEM)?;
-        if vm.root() != bundle.page_table {
+        let slot = process_vm_slot(bundle.slot).ok_or(carlio_os::linux_abi::ENOMEM)?;
+        let mut guard = lock_process_vm_slot(slot);
+        let entry = guard.as_mut().ok_or(carlio_os::linux_abi::ENOMEM)?;
+        if entry.owner != Some(owner.id) || entry.value.root() != bundle.page_table {
             return Err(carlio_os::linux_abi::EFAULT);
         }
-        operation(vm)
+        operation(&mut entry.value)
     }
 }
 
 #[cfg(target_os = "none")]
-fn process_probe_vm_slot(slot: u8) -> Option<&'static IrqSpinLock<Option<RuntimeProcessVm>>> {
-    PROCESS_VM_SLOTS.get(usize::from(slot))
+fn process_vm_slot(slot: u8) -> Option<&'static IrqSpinLock<Option<ProcessVmSlot>>> {
+    PROCESS_SCHEDULER.owned_resources().get(usize::from(slot))
 }
 
 #[cfg(target_os = "none")]
-fn store_process_probe_vm(space: RuntimeProcessVm) -> Result<u8, RuntimeProcessVm> {
-    let index = PROCESS_VM_SLOTS
-        .iter()
-        .enumerate()
-        .find_map(|(index, storage)| storage.lock().is_none().then_some(index));
-    let Some(index) = index else {
-        return Err(space);
-    };
-    let slot = match u8::try_from(index) {
-        Ok(slot) => slot,
-        Err(_) => return Err(space),
-    };
-    let Some(storage) = PROCESS_VM_SLOTS.get(index) else {
-        return Err(space);
-    };
-    let mut guard = storage.lock();
-    if guard.is_some() {
-        return Err(space);
+fn lock_process_vm_slot(
+    slot: &IrqSpinLock<Option<ProcessVmSlot>>,
+) -> carlio_os::sync::IrqSpinLockGuard<'_, Option<ProcessVmSlot>> {
+    loop {
+        if let Some(guard) = slot.try_lock() {
+            return guard;
+        }
+        // The owner may be waiting for a TLB acknowledgement from this CPU.
+        lapic::wait_for_shootdown_progress();
     }
-    *guard = Some(space);
-    Ok(slot)
+}
+
+#[cfg(target_os = "none")]
+fn bind_process_vm(slot: u8, id: u64, root: u64) -> bool {
+    let Some(storage) = process_vm_slot(slot) else {
+        return false;
+    };
+    let mut guard = lock_process_vm_slot(storage);
+    let Some(entry) = guard.as_mut() else {
+        return false;
+    };
+    if entry.owner.is_some() || entry.value.root() != root {
+        return false;
+    }
+    entry.owner = Some(id);
+    true
+}
+
+#[cfg(target_os = "none")]
+fn store_process_vm(space: RuntimeProcessVm, owner: Option<u64>) -> Result<u8, RuntimeProcessVm> {
+    // A VM operation on another CPU can hold its slot while waiting for our
+    // TLB shootdown acknowledgement. Skip contended slots with IRQs restored.
+    for (slot, storage) in (0u8..).zip(PROCESS_SCHEDULER.owned_resources()) {
+        if let Some(mut guard) = storage.try_lock() {
+            if guard.is_none() {
+                *guard = Some(ProcessVmSlot {
+                    owner,
+                    value: space,
+                });
+                return Ok(slot);
+            }
+        }
+    }
+    Err(space)
 }
 
 #[cfg(target_os = "none")]
@@ -2593,7 +2689,7 @@ fn release_or_retain_unregistered_vm(space: RuntimeProcessVm) -> bool {
         Ok(_access) => true,
         Err((space, _error)) => {
             write("Runtime: teardown pré-dispatch falhou; VM mantido no pool para retry.\r\n");
-            match store_process_probe_vm(space) {
+            match store_process_vm(space, None) {
                 Ok(_slot) => false,
                 Err(space) => {
                     write("Runtime: pool sem slot para preservar VM não liberado.\r\n");
@@ -2618,7 +2714,7 @@ fn release_or_retain_unregistered_space(
                 carlio_os::vma::USER_HEAP_BASE,
                 carlio_os::vma::USER_HEAP_BASE + 0x1000_0000,
             );
-            match store_process_probe_vm(vm) {
+            match store_process_vm(vm, None) {
                 Ok(_slot) => false,
                 Err(vm) => {
                     write("Runtime: pool sem slot para preservar espaço não liberado.\r\n");
@@ -2631,11 +2727,16 @@ fn release_or_retain_unregistered_space(
 }
 
 #[cfg(target_os = "none")]
-fn process_probe_vm_memory(slot: u8) -> Option<carlio_os::vma::ProcessMemoryUsage> {
-    let storage = process_probe_vm_slot(slot)?;
-    let guard = storage.lock();
-    let vm = guard.as_ref()?;
-    vm.memory_usage().ok()
+fn process_probe_vm_memory(process_id: u64) -> Option<carlio_os::vma::ProcessMemoryUsage> {
+    let process = PROCESS_SCHEDULER.process(process_id)?;
+    let bundle = process.resources?;
+    let storage = process_vm_slot(bundle.slot)?;
+    let guard = lock_process_vm_slot(storage);
+    let entry = guard.as_ref()?;
+    if entry.owner != Some(process.id) || entry.value.root() != process.page_table {
+        return None;
+    }
+    entry.value.memory_usage().ok()
 }
 
 #[cfg(target_os = "none")]
@@ -2752,8 +2853,7 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
             arguments,
             environment,
             context,
-        )
-        .ok_or(carlio_os::linux_abi::ENOEXEC)?;
+        )?;
         let mut new_vm = RuntimeProcessVm::new(
             space,
             carlio_os::vma::USER_HEAP_BASE,
@@ -2761,7 +2861,7 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
         );
         for (start, length) in image_ranges {
             if length != 0 && new_vm.reserve_existing(start, length).is_err() {
-                let _ = new_vm.try_destroy();
+                let _ = release_or_retain_unregistered_vm(new_vm);
                 return Err(carlio_os::linux_abi::ENOMEM);
             }
         }
@@ -2770,11 +2870,11 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
             .reserve_existing(stack_top - stack_length, stack_length)
             .is_err()
         {
-            let _ = new_vm.try_destroy();
+            let _ = release_or_retain_unregistered_vm(new_vm);
             return Err(carlio_os::linux_abi::ENOMEM);
         }
         let new_page_table = new_vm.root();
-        let new_slot = match store_process_probe_vm(new_vm) {
+        let new_slot = match store_process_vm(new_vm, Some(self.process.id)) {
             Ok(slot) => slot,
             Err(vm) => {
                 let _ = release_or_retain_unregistered_vm(vm);
@@ -2795,9 +2895,10 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
         ) {
             Ok(bundle) => bundle,
             Err(error) => {
-                let _ = destroy_process_probe_space(
-                    process_probe_vm_slot(new_slot).ok_or(carlio_os::linux_abi::ENOMEM)?,
+                let _ = destroy_process_vm(
+                    process_vm_slot(new_slot).ok_or(carlio_os::linux_abi::ENOMEM)?,
                     new_page_table,
+                    Some(self.process.id),
                 );
                 return Err(match error {
                     carlio_os::process::ProcessError::Busy => carlio_os::linux_abi::EBUSY,
@@ -2890,20 +2991,25 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
             if flags & 0x200 != 0 && !writable {
                 return Err(carlio_os::linux_abi::EACCES);
             }
-            let base_metadata = match rootfs_metadata(path, context) {
-                Ok(metadata) => Some(metadata),
-                Err(carlio_os::vfs::VfsError::NotFound | carlio_os::vfs::VfsError::NotMounted) => {
-                    None
-                }
-                Err(error) => return Err(vfs_errno(error)),
-            };
-            let mut vfs = PROCESS_VFS.lock();
-            let mut changed = false;
-            let overlay_metadata = match vfs.metadata(path, context) {
+            let metadata = PROCESS_VFS.lock().metadata(path, context);
+            let overlay_metadata = match metadata {
                 Ok(metadata) => Some(metadata),
                 Err(carlio_os::vfs::VfsError::NotFound) => None,
                 Err(error) => return Err(vfs_errno(error)),
             };
+            let base_metadata = if overlay_metadata.is_none() {
+                match rootfs_metadata(path, context) {
+                    Ok(metadata) => Some(metadata),
+                    Err(
+                        carlio_os::vfs::VfsError::NotFound | carlio_os::vfs::VfsError::NotMounted,
+                    ) => None,
+                    Err(error) => return Err(vfs_errno(error)),
+                }
+            } else {
+                None
+            };
+            let mut vfs = PROCESS_VFS.lock();
+            let mut changed = false;
             if flags & 0x80 != 0
                 && flags & 0x40 != 0
                 && (overlay_metadata.is_some() || base_metadata.is_some())
@@ -3349,11 +3455,13 @@ fn network_errno(error: carlio_os::net::NetworkError) -> u16 {
 fn vfs_errno(error: carlio_os::vfs::VfsError) -> u16 {
     use carlio_os::vfs::VfsError as V;
     match error {
-        V::NotFound => carlio_os::linux_abi::ENOENT,
+        V::NotFound | V::NotMounted => carlio_os::linux_abi::ENOENT,
         V::AlreadyExists => carlio_os::linux_abi::EEXIST,
         V::DirectoryNotEmpty => carlio_os::linux_abi::ENOTEMPTY,
         V::Busy => carlio_os::linux_abi::EBUSY,
-        V::PermissionDenied | V::NotOwner | V::MountDenied => carlio_os::linux_abi::EACCES,
+        V::PermissionDenied | V::NotOwner | V::MountDenied | V::NotExecutable => {
+            carlio_os::linux_abi::EACCES
+        }
         V::IsDirectory => carlio_os::linux_abi::EISDIR,
         V::FileTooLarge => carlio_os::linux_abi::EFBIG,
         V::Full | V::MountTableFull => carlio_os::linux_abi::ENFILE,
@@ -3372,21 +3480,33 @@ pub(crate) fn is_secondary_cpu(cpu: usize) -> bool {
 
 /// Assembly hook sampled after syscall dispatch, before restoring the user frame.
 #[cfg(target_os = "none")]
-#[no_mangle]
-extern "C" fn carlio_measure_syscall_stack(kernel_stack_top: u64) {
+fn measure_process_syscall_stack(top: u64, via_int80: bool) {
     #[cfg(feature = "stack-watermark")]
-    if let Some(bytes) = PROCESS_KERNEL_STACKS.high_water_bytes_for_top(kernel_stack_top) {
-        carlio_os::process::SYSCALL_STACK_HIGH_WATER.fetch_max(bytes, Ordering::Relaxed);
+    // Both entries dispatch on the task stack while the scheduler owns it on this CPU.
+    if let Some(bytes) = unsafe { PROCESS_KERNEL_STACKS.high_water_bytes_for_top(top) } {
+        let index = usize::from(via_int80);
+        SYSCALL_STACK_SAMPLES[index].fetch_add(1, Ordering::Relaxed);
+        SYSCALL_STACK_PEAK[index].fetch_max(bytes, Ordering::Relaxed);
     }
     #[cfg(not(feature = "stack-watermark"))]
-    let _ = kernel_stack_top;
+    let _ = (top, via_int80);
 }
+
+#[cfg(all(target_os = "none", feature = "stack-watermark"))]
+static SYSCALL_STACK_SAMPLES: [AtomicUsize; 2] = [const { AtomicUsize::new(0) }; 2];
+#[cfg(all(target_os = "none", feature = "stack-watermark"))]
+static SYSCALL_STACK_PEAK: [AtomicUsize; 2] = [const { AtomicUsize::new(0) }; 2];
 
 #[cfg(target_os = "none")]
 pub(crate) fn process_probe_result() -> u64 {
     let ap_mask = secondary_cpu_mask();
     let mut vm_stress_passed = false;
-    for _ in 0..1000 {
+    let wait_ticks = if cfg!(feature = "smp-stress-test") {
+        4500
+    } else {
+        1000
+    };
+    for _ in 0..wait_ticks {
         if AP_VM_STRESS_MUNMAPS
             .iter()
             .all(|count| count.load(Ordering::Acquire) >= AP_VM_STRESS_TARGET)
@@ -3398,7 +3518,10 @@ pub(crate) fn process_probe_result() -> u64 {
             break;
         }
     }
-    AP_CPL3_STOP.store(true, Ordering::Release);
+    AP_CPL3_STOP.store(
+        !cfg!(feature = "smp-stress-test") || !vm_stress_passed,
+        Ordering::Release,
+    );
     let mut ap_probe_passed = false;
     for _ in 0..200 {
         let active = AP_CPL3_CPU_MASK.load(Ordering::Acquire);
@@ -3406,7 +3529,9 @@ pub(crate) fn process_probe_result() -> u64 {
         if vm_stress_passed
             && AP_CPL3_OVERLAP_PASSED.load(Ordering::Acquire)
             && active.count_ones() >= 2
-            && idle & ap_mask == ap_mask
+            // Only the APs that ran these tasks have an idle transition to
+            // report. The reaper barrier checks every online AP separately.
+            && idle & active == active
             && AP_CPL3_RUNNING_MASK.load(Ordering::Acquire) & ap_mask == 0
         {
             ap_probe_passed = true;
@@ -3416,21 +3541,45 @@ pub(crate) fn process_probe_result() -> u64 {
             break;
         }
     }
-    let vm_pages = [
-        process_probe_vm_memory(0),
-        process_probe_vm_memory(1),
-        process_probe_vm_memory(2),
-    ];
-    let memory_accounting_passed = vm_pages.iter().all(|usage| {
+    let vm_pages = PROCESS_PROBE_IDS
+        .each_ref()
+        .map(|id| process_probe_vm_memory(id.load(Ordering::Acquire)));
+    let memory_accounting_passed = vm_pages.iter().enumerate().all(|(index, usage)| {
         usage.is_some_and(|usage| {
-            usage.owned_leaf_pages == 2
-                && usage.private_page_table_pages == 4
-                && usage.total_owned_pages == 6
+            let expected_pages = if cfg!(feature = "disk-exec-test") && index == 0 {
+                // The replacement has four stack pages plus the ELF segments.
+                usage.owned_leaf_pages >= 5 && usage.private_page_table_pages >= 4
+            } else {
+                usage.owned_leaf_pages == 2 && usage.private_page_table_pages == 4
+            };
+            expected_pages
+                && usage.total_owned_pages
+                    == usage.owned_leaf_pages + usage.private_page_table_pages
                 && usage.owned_leaf_pages <= usage.leaf_page_limit
                 && usage.total_owned_pages <= usage.maximum_owned_pages
         })
     });
     ap_probe_passed &= memory_accounting_passed;
+    if cfg!(feature = "smp-stress-test") {
+        let faults_match = PROCESS_PROBE_IDS[1..].iter().all(|id| {
+            PROCESS_SCHEDULER
+                .process(id.load(Ordering::Acquire))
+                .is_some_and(|process| {
+                    matches!(
+                        process.state,
+                        carlio_os::process::ProcessState::Faulted {
+                            vector: 14,
+                            error_code: 4,
+                            address: 0
+                        }
+                    )
+                })
+        });
+        ap_probe_passed &= faults_match;
+        if ap_probe_passed {
+            write("SMP CPL3: heap global concorrente e dois page faults isolados confirmados.\r\n");
+        }
+    }
     if !ap_probe_passed {
         write("SMP CPL3: stress/overlap/retorno a idle incompletos; mmap/munmap AP1=");
         write_usize(AP_VM_STRESS_MUNMAPS[0].load(Ordering::Acquire));
@@ -3461,9 +3610,20 @@ pub(crate) fn process_probe_result() -> u64 {
     write(".\r\n");
     #[cfg(feature = "stack-watermark")]
     {
-        write("Pilha kernel observada após syscalls (limite superior, 64 KiB): ");
-        write_usize(carlio_os::process::SYSCALL_STACK_HIGH_WATER.load(Ordering::Acquire));
-        write(" bytes; inclui a instrumentação de medição.\r\n");
+        for (index, entry) in ["SYSCALL", "int 0x80"].into_iter().enumerate() {
+            write("Pilha kernel observada após ");
+            write(entry);
+            write(" (marca acumulada): ");
+            let peak = SYSCALL_STACK_PEAK[index].load(Ordering::Acquire);
+            write_usize(peak);
+            write(" / ");
+            write_usize(PROCESS_KERNEL_STACK_SIZE);
+            write(" bytes; amostras=");
+            let samples = SYSCALL_STACK_SAMPLES[index].load(Ordering::Acquire);
+            write_usize(samples);
+            write(".\r\n");
+            ap_probe_passed &= samples != 0 && peak < PROCESS_KERNEL_STACK_SIZE;
+        }
     }
     if ap_probe_passed {
         write("SMP CPL3: mmap/munmap concluídos nos dois APs; sobreposição simultânea e retorno a idle confirmados.\r\n");
@@ -3571,58 +3731,42 @@ pub(crate) fn process_probe_is_done() -> bool {
 }
 
 #[cfg(target_os = "none")]
-fn reap_process_probe() -> bool {
+fn reap_terminal_processes() -> bool {
     let mut success = true;
-    for index in 0..3 {
-        let id = PROCESS_PROBE_IDS[index].load(Ordering::Acquire);
-        if id == 0 {
-            continue;
-        }
-        let result = PROCESS_SCHEDULER.reap_with(id, &PROCESS_KERNEL_STACKS, |process| {
-            let bundle = process.resources.ok_or(())?;
-            if bundle.page_table != process.page_table {
-                return Err(());
-            }
-            let storage = process_probe_vm_slot(bundle.slot).ok_or(())?;
-            if destroy_process_probe_space(storage, bundle.page_table) {
-                let closed_files = OPEN_FILES.lock().close_process(process.id);
-                let closed_sockets = NETWORK_SOCKETS.lock().close_process(process.id);
-                if closed_files != 0 || closed_sockets != 0 {
-                    write("Reaper: descritores e sockets do processo recolhidos.\r\n");
+    loop {
+        let mut progressed = false;
+        for id in PROCESS_SCHEDULER.reapable_ids().into_iter().flatten() {
+            let result = PROCESS_SCHEDULER.reap_with(id, &PROCESS_KERNEL_STACKS, |process| {
+                if let Some(bundle) = process.resources {
+                    if bundle.page_table != process.page_table {
+                        return Err(());
+                    }
+                    let storage = process_vm_slot(bundle.slot).ok_or(())?;
+                    if !destroy_process_vm(storage, bundle.page_table, Some(process.id)) {
+                        return Err(());
+                    }
+                } else if !process.is_thread() {
+                    return Err(());
+                }
+                if !process.is_thread() {
+                    OPEN_FILES.lock().close_process(process.id);
+                    NETWORK_SOCKETS.lock().close_process(process.id);
                 }
                 Ok(())
+            });
+            if result.is_ok() {
+                for probe_id in &PROCESS_PROBE_IDS {
+                    let _ = probe_id.compare_exchange(id, 0, Ordering::AcqRel, Ordering::Acquire);
+                }
+                progressed = true;
             } else {
-                Err(())
+                write("Reaper: cleanup do processo falhou; recursos preservados para retry.\r\n");
+                success = false;
             }
-        });
-        if result.is_ok() {
-            PROCESS_PROBE_IDS[index].store(0, Ordering::Release);
-        } else {
-            write("Reaper: cleanup do processo falhou; recursos preservados para retry.\r\n");
-            success = false;
         }
-    }
-    if success
-        && PROCESS_PROBE_BASELINE_SET.load(Ordering::Acquire)
-        && PROCESS_PROBE_IDS
-            .iter()
-            .all(|process_id| process_id.load(Ordering::Acquire) == 0)
-    {
-        let expected = PROCESS_PROBE_BASE_FREE_FRAMES.load(Ordering::Acquire);
-        let actual = FRAME_ALLOCATOR.lock().free_frames();
-        if actual == expected {
-            write("Allocator por processo: frames livres restaurados ao baseline=");
-            write_usize(actual);
-            write(".\r\n");
-        } else {
-            write("Allocator por processo: divergência de frames; baseline=");
-            write_usize(expected);
-            write(", atual=");
-            write_usize(actual);
-            write(".\r\n");
-            success = false;
+        if !progressed || !success {
+            break;
         }
-        PROCESS_PROBE_BASELINE_SET.store(false, Ordering::Release);
     }
     success
 }
@@ -3676,28 +3820,26 @@ fn release_process_probe_aps() {
 }
 
 #[cfg(target_os = "none")]
-fn destroy_process_probe_space(
-    storage: &IrqSpinLock<Option<RuntimeProcessVm>>,
+fn destroy_process_vm(
+    storage: &IrqSpinLock<Option<ProcessVmSlot>>,
     expected_root: u64,
+    expected_owner: Option<u64>,
 ) -> bool {
-    let space = {
-        let mut guard = storage.lock();
-        if guard
-            .as_ref()
-            .is_none_or(|space| space.root() != expected_root)
-        {
-            return false;
-        }
-        let Some(space) = guard.take() else {
-            return false;
-        };
-        space
+    let mut guard = lock_process_vm_slot(storage);
+    if guard.as_ref().is_none_or(|entry| {
+        entry.value.root() != expected_root
+            || expected_owner.is_some_and(|id| entry.owner != Some(id))
+    }) {
+        return false;
+    }
+    let Some(ProcessVmSlot { owner, value: vm }) = guard.take() else {
+        return false;
     };
-    match space.try_destroy() {
+    match vm.try_destroy() {
         Ok(_access) => true,
-        Err((space, _error)) => {
+        Err((vm, _error)) => {
             write("Reaper: teardown do espaço de usuário recusado.\r\n");
-            *storage.lock() = Some(space);
+            *guard = Some(ProcessVmSlot { owner, value: vm });
             false
         }
     }
@@ -3705,16 +3847,10 @@ fn destroy_process_probe_space(
 
 #[cfg(target_os = "none")]
 fn destroy_process_probe_space_by_root(expected_root: u64) -> bool {
-    for storage in &PROCESS_VM_SLOTS {
-        let matches_root = storage
-            .lock()
-            .as_ref()
-            .is_some_and(|space| space.root() == expected_root);
-        if matches_root {
-            return destroy_process_probe_space(storage, expected_root);
-        }
-    }
-    false
+    PROCESS_SCHEDULER
+        .owned_resources()
+        .iter()
+        .any(|storage| destroy_process_vm(storage, expected_root, None))
 }
 
 #[cfg(target_os = "none")]
@@ -3748,10 +3884,8 @@ fn abort_unstarted_process_probe(ids: [u64; 3], roots: [u64; 3]) -> bool {
             }
         }
     }
-    if success {
-        PROCESS_PROBE_BASELINE_SET.store(false, Ordering::Release);
-    } else {
-        write("Runtime: rollback da fixture CPL3 incompleto; baseline de memória preservado.\r\n");
+    if !success {
+        write("Runtime: rollback da fixture CPL3 incompleto.\r\n");
     }
     success
 }
@@ -4135,6 +4269,7 @@ fn page_table_boot_probe(hhdm: u64) {
                     asm!("mov cr3, {}", in(reg) process_cr3, options(nostack, preserves_flags))
                 };
                 unsafe { idt::start_watchdog() };
+                let free_frames_before = FRAME_ALLOCATOR.lock().free_frames();
                 let routine_results =
                     unsafe { idt::run_ring3_probe(TEST_USER_VIRTUAL, USER_STACK_TOP) };
                 unsafe {
@@ -4147,8 +4282,30 @@ fn page_table_boot_probe(hhdm: u64) {
                 if quiescent {
                     PROCESS_PROBE_STARTED.store(false, Ordering::Release);
                 }
-                let reaped = quiescent && reap_process_probe();
-                let preempted = routine_results == 0xfff && reaped;
+                let reaped = quiescent
+                    && reap_terminal_processes()
+                    && PROCESS_PROBE_IDS
+                        .iter()
+                        .all(|id| id.load(Ordering::Acquire) == 0);
+                let frames_restored = if reaped {
+                    let free_frames_after = FRAME_ALLOCATOR.lock().free_frames();
+                    if free_frames_after == free_frames_before {
+                        write("Allocator por processo: frames livres restaurados ao baseline=");
+                        write_usize(free_frames_after);
+                        write(".\r\n");
+                        true
+                    } else {
+                        write("Allocator por processo: divergência de frames; baseline=");
+                        write_usize(free_frames_before);
+                        write(", atual=");
+                        write_usize(free_frames_after);
+                        write(".\r\n");
+                        false
+                    }
+                } else {
+                    false
+                };
+                let preempted = routine_results == 0xfff && frames_restored;
                 if quiescent {
                     release_process_probe_aps();
                 }
@@ -4259,7 +4416,16 @@ fn kernel_heap_boot_probe() {
     for allocation in allocations.into_iter().flatten() {
         let _ = unsafe { kernel_heap_deallocate(allocation) };
     }
-    if valid && released && stress_ok && grew {
+    let mut large = alloc::vec::Vec::<u8>::new();
+    let global_ok = large.try_reserve_exact(96 * 1024).is_ok() && {
+        large.resize(96 * 1024, 0x39);
+        core::hint::black_box(&large)
+            .iter()
+            .all(|&byte| byte == 0x39)
+    };
+    drop(large);
+    if valid && released && stress_ok && grew && global_ok {
+        write("Heap global: alocação Rust maior que a arena bootstrap passou.\r\n");
         write("Heap kernel: regiões dinâmicas, alinhamento, escrita/leitura, expansão e liberação passaram.\r\n");
     } else {
         record_error(KernelError::DeviceInitFailed);
@@ -4268,36 +4434,61 @@ fn kernel_heap_boot_probe() {
 }
 
 #[cfg(target_os = "none")]
+fn heap_stress_cycle(process_id: u64) -> bool {
+    let byte = process_id as u8;
+    let mut allocation = alloc::vec::Vec::<u8>::new();
+    if allocation.try_reserve_exact(512).is_err() {
+        return false;
+    }
+    allocation.resize(512, byte);
+    core::hint::black_box(&allocation)
+        .iter()
+        .all(|&value| value == byte)
+}
+
+#[cfg(target_os = "none")]
 fn kernel_heap_allocate(layout: core::alloc::Layout) -> Option<core::ptr::NonNull<u8>> {
-    if let Some(pointer) = KERNEL_HEAP.lock().allocate(layout) {
-        return Some(pointer);
-    }
-    // Uma região adicionada pelo crescimento tem exatamente um frame.
-    if layout.size() > 4096 {
-        return None;
-    }
-    // Nunca manter locks de heap e allocator de frames simultaneamente.
-    let physical = FRAME_ALLOCATOR.lock().allocate()?;
-    let hhdm = unsafe { core::ptr::addr_of!(HHDM_OFFSET).read_volatile() };
-    let virtual_address = match hhdm.checked_add(physical) {
-        Some(address) => address,
-        None => {
-            let _ = FRAME_ALLOCATOR.lock().free(physical);
+    {
+        let mut heap = KERNEL_HEAP.lock();
+        if heap.region_count() == 0 {
             return None;
         }
-    };
-    let Some(region) = core::ptr::NonNull::new(virtual_address as *mut u8) else {
-        let _ = FRAME_ALLOCATOR.lock().free(physical);
-        return None;
-    };
-    unsafe { core::ptr::write_bytes(region.as_ptr(), 0, 4096) };
-    let mut heap = KERNEL_HEAP.lock();
-    if unsafe { heap.add_region(region, 4096) }.is_err() {
-        drop(heap);
-        let _ = FRAME_ALLOCATOR.lock().free(physical);
-        return None;
+        if let Some(pointer) = heap.allocate(layout) {
+            return Some(pointer);
+        }
     }
-    heap.allocate(layout)
+    const PAGE_BYTES: usize = 4096;
+    let bytes = KernelHeapSet::<256>::arena_size_for(layout)?;
+    let pages = bytes.div_ceil(PAGE_BYTES);
+    let arena_bytes = pages.checked_mul(PAGE_BYTES)?;
+    let physical = FRAME_ALLOCATOR.lock().allocate_contiguous(pages)?;
+    let hhdm = unsafe { core::ptr::addr_of!(HHDM_OFFSET).read_volatile() };
+    let region = hhdm
+        .checked_add(physical)
+        .and_then(|address| address.checked_add(arena_bytes as u64).map(|_| address))
+        .and_then(|address| core::ptr::NonNull::new(address as *mut u8));
+    if let Some(region) = region {
+        let mut heap = KERNEL_HEAP.lock();
+        // Another CPU may have freed a block or expanded while we reserved frames.
+        if let Some(pointer) = heap.allocate(layout) {
+            drop(heap);
+            release_heap_frames(physical, pages);
+            return Some(pointer);
+        }
+        if unsafe { heap.add_region(region, arena_bytes) }.is_ok() {
+            return heap.allocate(layout);
+        }
+    }
+    release_heap_frames(physical, pages);
+    None
+}
+
+#[cfg(target_os = "none")]
+fn release_heap_frames(physical: u64, pages: usize) {
+    let mut allocator = FRAME_ALLOCATOR.lock();
+    for page in 0..pages {
+        let _ = allocator.free(physical + page as u64 * 4096);
+    }
 }
 
 #[cfg(target_os = "none")]

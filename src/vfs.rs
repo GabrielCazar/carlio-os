@@ -598,7 +598,8 @@ impl<const N: usize> Vfs<N> {
         backend: &mut B,
         output: &mut [u8],
     ) -> Result<usize, VfsError> {
-        self.read_mounted_file_range(path, context, backend, 0, output)
+        let relative = self.mounted_read_path(path, context, backend.filesystem_type())?;
+        backend.read_file(relative, output)
     }
 
     /// Reads a byte range from the backend selected by the most specific mount.
@@ -611,8 +612,18 @@ impl<const N: usize> Vfs<N> {
         offset: u64,
         output: &mut [u8],
     ) -> Result<usize, VfsError> {
+        let relative = self.mounted_read_path(path, context, backend.filesystem_type())?;
+        backend.read_file_range(relative, offset, output)
+    }
+
+    fn mounted_read_path<'a>(
+        &self,
+        path: &'a str,
+        context: AccessContext<'_>,
+        filesystem: FilesystemType,
+    ) -> Result<&'a str, VfsError> {
         let mount = self.mount_for(path).ok_or(VfsError::NotMounted)?;
-        if mount.filesystem != backend.filesystem_type() {
+        if mount.filesystem != filesystem {
             return Err(VfsError::InvalidMountPath);
         }
         if !mount.options.read_only {
@@ -627,7 +638,7 @@ impl<const N: usize> Vfs<N> {
         } else {
             &path[mount.path.len()..]
         };
-        backend.read_file_range(relative, offset, output)
+        Ok(relative)
     }
 
     /// Valida execução em arquivo fornecido por um mount. Permissões vêm do
@@ -1283,10 +1294,13 @@ fn snapshot_crc(bytes: &[u8]) -> u32 {
 }
 
 fn valid_mount_path(path: &str) -> bool {
+    if path == "/" {
+        return true;
+    }
     if path.is_empty()
         || !path.starts_with('/')
         || path.len() >= MOUNT_PATH_MAX
-        || (path.len() > 1 && path.ends_with('/'))
+        || path.ends_with('/')
     {
         return false;
     }
@@ -1650,6 +1664,31 @@ mod tests {
             ),
             Err(VfsError::InvalidMountPath)
         );
+    }
+
+    #[test]
+    fn root_mount_covers_absolute_paths_and_allows_nested_mounts() {
+        let mut fs = Vfs::<4>::new();
+        fs.create_dir("/", "mnt", ROOT, 0o755).unwrap();
+        fs.mount(
+            "root",
+            "/",
+            FilesystemType::Ext4,
+            MountOptions::DEFAULT,
+            ROOT,
+        )
+        .unwrap();
+        fs.mount(
+            "removable",
+            "/mnt",
+            FilesystemType::Fat32,
+            MountOptions::DEFAULT,
+            ROOT,
+        )
+        .unwrap();
+        assert_eq!(fs.mount_for("/").unwrap().source, "root");
+        assert_eq!(fs.mount_for("/bin/app").unwrap().source, "root");
+        assert_eq!(fs.mount_for("/mnt/file").unwrap().source, "removable");
     }
 
     #[test]

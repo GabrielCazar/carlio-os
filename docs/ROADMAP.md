@@ -56,9 +56,9 @@ positivos, negativos e de falha; modelos host e detecção PCI não bastam.
 
 | Subsistema | Implementado e validado | Gate que continua aberto |
 | --- | --- | --- |
-| Processos / scheduler | Filas por CPU, roubo, TSS/stacks RSP0/IST e timer LAPIC por CPU; `ProcessResourceBundle` associa Process, VM, CR3 e stack via token; fault CPL3 registra vetor, código e endereço. Registros históricos: boot 4 CPUs, 25 ACKs TLB e sobreposição CPL3 em dois APs | Revalidação QEMU mais recente falhou no probe CPL3 (falha de afinidade/VM com 1 CPU; #PF com 4 CPUs). Ownership, contabilidade, rollback e stress aguardam build e gates; objetos VM continuam no backend. Resultados históricos não fecham o gate atual ([relatório](../reports/fase-2-memoria-execucao.md)) |
+| Processos / scheduler | Filas por CPU, roubo, TSS/stacks RSP0/IST e timer LAPIC por CPU; `ProcessResourceBundle` associa Process, VM, CR3 e stack via token; fault CPL3 registra vetor, código e endereço. Registros históricos: boot 4 CPUs, 25 ACKs TLB e sobreposição CPL3 em dois APs | QEMU local BIOS/UEFI com quatro CPUs confirmou a preempção, a quiescência e 512 ciclos mmap/munmap em cada AP de teste. Ownership direto da VM, stress sustentado e revalidação NAS permanecem abertos ([relatório](../reports/implementation-local-pendente-validacao.md#revalidação-local--2026-11-23)) |
 | Módulos do kernel (LKMs) | Parser ET_REL host com relocations x86_64, extração de exports da `.symtab`, registro persistente host, lookup kernel/módulos e contabilidade host de dependências; `SmpPageTableManager::protect` com shootdown testado em host ([log fase 2](../reports/fase-2-memoria-execucao.md)) | Ciclo runtime ainda não ligado; backend x86_64 para alocação/mapeamento/invocação, bloqueio de novas chamadas, rollback transacional e quiescência SMP; gates QEMU/NAS que carreguem objetos ET_REL positivos, negativos e de falha |
-| Memória | Bitmap até 32 GiB, VM x86-64, folhas user owned, heap expansível e shootdown xAPIC com ACK | Allocator geral, memória contabilizada por processo e stress SMP sustentado pendentes; swap permanece desligado |
+| Memória | Bitmap até 32 GiB, VM x86-64, folhas user owned, heap expansível e shootdown xAPIC com ACK | Contabilidade confirmada na fixture CPL3. Allocator geral e stress SMP sustentado pendentes; swap permanece desligado |
 | Drivers / E/S | PCI read-only, framebuffer Limine, adaptador BlockDevice AHCI e Ethernet Intel QEMU; prioridade de filesystem em ext4/FAT32 | Validação física de AHCI e demais dispositivos (RTL8111/I219, EHCI/xHCI, iGPU), timeout/remoção em hardware |
 | VFS | Rootfs ext4 prioritário/FAT32 alternativo detectado em MBR/GPT e montado no boot; leitura, stat/access, ELF loader por mount, `execve` transacional limitado e copy-up/escrita em overlay RAM; Hermione arquivado | Escrita persistente, whiteouts/rename/unlink, limites atuais de 16 KiB e 40 nós, nomes longos FAT, recursos ext4 completos, validação QEMU/NAS do execve e enforcement integral de inode/processo |
 | Rede | NICs alvo identificadas; prova limitada do Intel 82574L em QEMU | Drivers físicos, pilha TCP/IP integrada, DNS e serviços de servidor pendentes; rede de servidor não está disponível |
@@ -128,6 +128,14 @@ NAS/KVM passou. Ainda não há modesetting Intel, aceleração, detecção de
 conectores nem controle HDMI/DP. Ver [relatório de vídeo](../reports/fase-video.md).
 
 ### 2 — Memória e execução isolada do kernel
+
+**Estado (2026-11-24): critérios locais aprovados; fechamento pendente de
+NAS/KVM.** BIOS e UEFI com quatro CPUs passaram com 5 GiB e 32 GiB,
+incluindo acesso e liberação de frames acima de 4 GiB. A prova com a ISO
+instrumentada passou em BIOS e UEFI com dois APs, 8.192 ciclos por AP,
+heap global expansível, faults isolados, reaper com três ACKs e execve
+de ELF estático em ext4. Os três acessos SSH ao NAS ficaram indisponíveis.
+[Matriz e evidências atuais](../reports/fase-2-memoria-execucao.md).
 
 Atualização (2026-11-15): a revisão conjunta mais recente passou 106 testes host
 localmente e no NAS. O

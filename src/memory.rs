@@ -840,6 +840,45 @@ impl<const WORDS: usize> PhysicalFrameAllocator<WORDS> {
         None
     }
 
+    /// Reserves an entire contiguous run, or leaves the allocator unchanged.
+    pub fn allocate_contiguous(&mut self, count: usize) -> Option<u64> {
+        if count == 0 || count > self.free_frames {
+            return None;
+        }
+        if count == 1 {
+            return self.allocate();
+        }
+        let mut run = 0;
+        for (index, (available, allocated)) in
+            self.available.iter().zip(self.allocated.iter()).enumerate()
+        {
+            let candidates = available & !allocated;
+            if candidates == 0 {
+                run = 0;
+                continue;
+            }
+            for bit in 0..64 {
+                if candidates & (1 << bit) == 0 {
+                    run = 0;
+                    continue;
+                }
+                run += 1;
+                if run == count {
+                    let end = index * 64 + bit + 1;
+                    let start = end - count;
+                    let address = (LOW_MEMORY_FRAME + start as u64).checked_mul(PAGE_SIZE)?;
+                    for frame in start..end {
+                        self.allocated[frame / 64] |= 1 << (frame % 64);
+                    }
+                    self.free_frames -= count;
+                    self.allocated_frames += count;
+                    return Some(address);
+                }
+            }
+        }
+        None
+    }
+
     pub fn free(&mut self, address: u64) -> Result<(), FrameError> {
         if !address.is_multiple_of(PAGE_SIZE) {
             return Err(FrameError::InvalidFrame);
@@ -1158,6 +1197,28 @@ mod tests {
         allocator.allocate().unwrap();
         allocator.free(0x20_0000).unwrap();
         assert_eq!(allocator.free(0x20_0000), Err(FrameError::AlreadyFree));
+    }
+
+    #[test]
+    fn contiguous_frames_cross_bitmap_words_and_failed_requests_preserve_counts() {
+        let mut allocator = PhysicalFrameAllocator::<2>::new();
+        let start = LOW_MEMORY_LIMIT + 62 * PAGE_SIZE;
+        allocator.add_usable_region(start, 4 * PAGE_SIZE).unwrap();
+        allocator
+            .add_usable_region(start + 5 * PAGE_SIZE, 2 * PAGE_SIZE)
+            .unwrap();
+        assert_eq!(allocator.allocate_contiguous(5), None);
+        assert_eq!(allocator.free_frames(), 6);
+        assert_eq!(allocator.allocate_contiguous(4), Some(start));
+        assert_eq!(
+            allocator.allocate_contiguous(2),
+            Some(start + 5 * PAGE_SIZE)
+        );
+        assert_eq!(allocator.free_frames(), 0);
+        for offset in 0..4 {
+            allocator.free(start + offset * PAGE_SIZE).unwrap();
+        }
+        assert_eq!(allocator.allocate_contiguous(4), Some(start));
     }
 
     #[test]

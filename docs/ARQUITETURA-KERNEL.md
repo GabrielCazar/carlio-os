@@ -72,43 +72,44 @@ Esta arquitetura é o contrato alvo. O allocator físico bitmap importa regiões
 quatro níveis e valida map/unmap. `AddressSpace` cria um PML4, compartilha
 entradas do half kernel e mantém folhas user rastreadas. `ProcessVm` integra
 VMA, folhas owned e page tables para `mmap/munmap` anônimo privado, com rollback;
-o probe CPL3 aloca, escreve e libera uma página. Ownership dos frames mapeados
-por processo já existe em caminhos específicos, e fault CPL3 registra vetor,
-código de erro e endereço. O bundle liga `Process` à VM, CR3 e stack; o teardown
-usa o mesmo token. Isso não comprova ownership completo, contabilidade,
-rollback de todas as falhas nem stress. `SmpPageTableManager` serializa
-map/unmap e o backend xAPIC aguarda ACKs remotos; stress concorrente de
-VM/allocator e política geral de faults continuam pendentes.
-O projeto exige kernel multithread em SMP. Limine agora inicia APs em stacks
-separadas e cada uma grava seu estado inicial atômico. Cada AP processa tarefas
-limitadas via mailbox; após a prova inicial, timer LAPIC e despacho SMP podem
-escalonar processos por CPU. Há filas locais e roubo em tabela fixa de 64
-processos/CPUs, `CpuContext` validado, pool com ownership de pilhas privilegiadas
-e `IrqSpinLock` no scheduler, pool e heap. Registros históricos validaram boot
-com 4 CPUs, 25 ACKs de TLB e sobreposição CPL3 em dois APs; isso é uma prova
-pontual, não stress sustentado de scheduler/VM/allocator. Na revalidação QEMU
-mais recente com 4 CPUs, os probes CPL3 de ABI, permissões e mmap passaram, mas
-o gate global ainda falhou: o probe de page tables reportou
-`entered=1 preempted=0`, e o reaper recusou liberar enquanto o BSP não confirmou
-o CR3 kernel. Um `#PF` observado em uma execução anterior não se repetiu nesse
-log. A posse direta dos objetos VM e dimensionamento dinâmico ainda não estão
-implementados.
+o probe CPL3 aloca, escreve e libera uma página. O scheduler guarda os objetos `ProcessVm`
+em slots tipados, com lock por slot. O snapshot copiável de `Process` carrega
+o identificador do slot e o CR3. O kernel valida PID e raiz antes de acessar,
+substituir ou liberar o objeto. As threads acessam a VM do líder do grupo.
+Exceções CPL3 em tarefas despachadas registram vetor, código e endereço de
+fault. O reaper seleciona tarefas terminais da tabela e libera recursos
+depois que a barreira confirma a saída das CPUs dos contextos de usuário.
 
-Handlers de IRQ e `int 0x80` salvam o frame na pilha interrompida e executam o
-dispatcher numa pilha IRQ de 64 KiB por CPU, dividida em quatro fatias de 16
-KiB. O dispatcher retorna o frame escolhido e o stub o restaura na pilha de
-origem. IF fica desabilitado nos gates; a prova de boot dispara um vetor 32
-aninhado por software e confirma uso de uma segunda fatia. IRQs de hardware
-aninhadas permanecem mascaradas. O TLB IPI usa o mesmo caminho. Isso ainda não
-é um teste de estresse de pilha nem justifica reduzir as pilhas das threads.
+O scheduler usa filas locais e roubo entre CPUs. O salvamento do frame, o
+reenfileiramento e a escolha da próxima tarefa ocorrem sob o mesmo lock.
+Limine inicia os APs em pilhas separadas, com RSP0, IST e timer LAPIC por CPU.
+A validação de quatro CPUs executou 8.192 ciclos de mmap/munmap e alocação
+no heap em cada um de dois APs, seguidos de dois page faults isolados. O
+reaper verificou o retorno à contagem inicial de frames.
 
-`stack-watermark` habilita sentinelas nas pilhas de processo e mede o maior
-consumo observado ao fim de cada syscall Linux. A captura QEMU desta revisão
-registrou 30.168 bytes de um stack de 65.536 bytes para o conjunto de probes
-executado. A varredura inclui o próprio instrumentador, portanto é um limite
-superior, e não cobre todos os caminhos de syscall nem carga sustentada. O
-build normal não habilita a varredura. A reserva de 64 KiB por processo
-permanece até haver medição sob carga representativa e stress de scheduler/VM.
+O heap first-fit é o `GlobalAlloc` do kernel. Quando nenhuma arena atende
+ao layout, o allocator físico reserva frames contíguos e o kernel os anexa
+ao heap via HHDM. Novas arenas podem ocupar várias páginas e permanecem
+disponíveis para reúso após a liberação dos blocos.
+
+IRQs salvam o frame na pilha interrompida e usam uma pilha de 64 KiB por CPU,
+com quatro fatias de 16 KiB. `SYSCALL` e `int 0x80` das tarefas escalonadas
+executam na pilha da tarefa. O diagnóstico `stack-watermark` registra a marca
+acumulada observada após cada tipo de entrada. Nos APs de stress, a varredura
+ocorre ao fim da carga para reduzir interferência. A marca inclui a execução
+da instrumentação, e o build padrão mantém a medição desabilitada.
+
+Cada tarefa tem uma pilha de kernel de 128 KiB. O caminho de `execve` de disco
+excedeu a reserva anterior de 64 KiB durante a validação. A pool ainda usa armazenamento estático
+contíguo e, portanto, não tem guard pages. O próximo desenho deve reservar uma
+faixa virtual exclusiva por pilha, mapear frames físicos somente na região de
+uso e deixar ao menos uma página inferior sem mapeamento. A pilha de IRQ por CPU
+já é separada da pilha da tarefa e deve continuar independente. A migração
+depende de um alocador de frames de kernel com rollback, uma faixa virtual que
+não colida com os mapeamentos Limine/HHDM, teardown após quiescência de todas as
+CPUs que possam usar a pilha e diagnóstico de #PF que identifique guard-page
+faults. Até esses contratos estarem ligados, as pilhas atuais permanecem sem
+proteção por guarda virtual.
 
 O descritor `Process` carrega um manifesto `ProcessResourceBundle` com token
 para VM no backend, raiz CR3 e stack user. Syscalls e reaper consultam o

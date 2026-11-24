@@ -11,6 +11,12 @@ const MAX_PHC_BYTES: usize = 128;
 const MAX_PASSES: u32 = 10;
 const MAX_LANES: u32 = 4;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyDerivationError {
+    InvalidLimits,
+    Argon2(argon2::Error),
+}
+
 /// Deriva bytes com Argon2id v1.3. `memory` contém blocos de 1 KiB e limita
 /// diretamente o consumo; `salt` deve ser único por segredo e ter >= 8 bytes.
 pub fn derive_key_into(
@@ -20,17 +26,17 @@ pub fn derive_key_into(
     lanes: u32,
     memory: &mut [Block],
     output: &mut [u8],
-) -> Result<(), ()> {
+) -> Result<(), KeyDerivationError> {
     clear_memory(memory);
     if memory.is_empty() || passes == 0 || passes > MAX_PASSES || lanes == 0 || lanes > MAX_LANES {
-        return Err(());
+        return Err(KeyDerivationError::InvalidLimits);
     }
-    let params =
-        Params::new(memory.len() as u32, passes, lanes, Some(output.len())).map_err(|_| ())?;
+    let params = Params::new(memory.len() as u32, passes, lanes, Some(output.len()))
+        .map_err(KeyDerivationError::Argon2)?;
     let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
     let result = argon.hash_password_into_with_memory(password, salt, output, &mut *memory);
     clear_memory(memory);
-    result.map_err(|_| ())
+    result.map_err(KeyDerivationError::Argon2)
 }
 
 /// Verificador PHC Argon2id com workspace exclusivo fornecido pelo chamador.

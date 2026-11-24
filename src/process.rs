@@ -3,11 +3,8 @@
 //! frame de interrupção, CR3 e RSP0 escolhidos pelo escalonador.
 use crate::sync::IrqSpinLock;
 use crate::vfs::Credentials;
+use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicU64, Ordering};
-
-#[cfg(all(target_os = "none", feature = "stack-watermark"))]
-pub static SYSCALL_STACK_HIGH_WATER: core::sync::atomic::AtomicUsize =
-    core::sync::atomic::AtomicUsize::new(0);
 
 /// Bytes occupied by the x86_64 return frame plus all saved general registers.
 pub const USER_INTERRUPT_FRAME_BYTES: u64 = 22 * 8;
@@ -16,16 +13,16 @@ pub const USER_INTERRUPT_FRAME_BYTES: u64 = 22 * 8;
 /// é transferido ao scheduler junto com o processo; nenhum slot pode ser
 /// alocado duas vezes enquanto estiver em uso.
 pub struct KernelStackPool<const N: usize, const BYTES: usize> {
-    state: IrqSpinLock<KernelStackPoolState<N, BYTES>>,
-}
-
-struct KernelStackPoolState<const N: usize, const BYTES: usize> {
     stacks: [KernelStackStorage<BYTES>; N],
-    used: [bool; N],
+    used: IrqSpinLock<[bool; N]>,
 }
 
 #[repr(C, align(4096))]
-struct KernelStackStorage<const BYTES: usize>([u8; BYTES]);
+struct KernelStackStorage<const BYTES: usize>(UnsafeCell<[u8; BYTES]>);
+
+// Allocation and release serialize ownership. Only the CPU that owns a
+// live stack may touch its bytes until it has switched to another stack.
+unsafe impl<const BYTES: usize> Sync for KernelStackStorage<BYTES> {}
 
 pub struct KernelStack {
     slot: usize,
@@ -133,10 +130,8 @@ impl KernelStack {
 impl<const N: usize, const BYTES: usize> KernelStackPool<N, BYTES> {
     pub const fn new() -> Self {
         Self {
-            state: IrqSpinLock::new(KernelStackPoolState {
-                stacks: [const { KernelStackStorage([0; BYTES]) }; N],
-                used: [false; N],
-            }),
+            stacks: [const { KernelStackStorage(UnsafeCell::new([0; BYTES])) }; N],
+            used: IrqSpinLock::new([false; N]),
         }
     }
 
@@ -144,27 +139,35 @@ impl<const N: usize, const BYTES: usize> KernelStackPool<N, BYTES> {
         if BYTES < 4096 || BYTES % 4096 != 0 {
             return None;
         }
-        let mut state = self.state.lock();
-        let slot = state.used.iter().position(|used| !used)?;
-        state.used[slot] = true;
-        state.stacks[slot].0.fill(0xa5);
-        let base = stack_base::<N, BYTES>(&state, slot);
-        Some(KernelStack {
-            slot,
-            top: base.checked_add(BYTES as u64)?,
-        })
+        let mut used = self.used.lock();
+        let slot = used.iter().position(|used| !used)?;
+        let top = self.stack_base(slot).checked_add(BYTES as u64)?;
+        // The metadata lock still owns this unpublished slot.
+        unsafe {
+            self.stacks[slot]
+                .0
+                .get()
+                .cast::<u8>()
+                .write_bytes(0xa5, BYTES)
+        };
+        used[slot] = true;
+        Some(KernelStack { slot, top })
     }
 
-    /// Mede o maior consumo observado na pilha cujo topo foi passado.
-    /// A pool preenche cada slot com 0xa5 ao alocá-lo; o primeiro byte alterado
-    /// a partir da base fornece um limite superior para o crescimento da pilha.
-    pub fn high_water_bytes_for_top(&self, top: u64) -> Option<usize> {
-        let state = self.state.lock();
-        let slot = state.used.iter().enumerate().find_map(|(slot, used)| {
-            (*used && stack_base::<N, BYTES>(&state, slot) + BYTES as u64 == top).then_some(slot)
+    /// Returns the observed stack high-water mark since this slot was allocated.
+    ///
+    /// # Safety
+    /// The stack must be the current CPU's stack or quiescent. The caller must
+    /// prevent any other CPU from running on it while the bytes are read.
+    pub unsafe fn high_water_bytes_for_top(&self, top: u64) -> Option<usize> {
+        let used = self.used.lock();
+        let slot = used.iter().enumerate().find_map(|(slot, used)| {
+            (*used && self.stack_base(slot) + BYTES as u64 == top).then_some(slot)
         })?;
-        let stack = &state.stacks[slot].0;
-        let first_modified = stack.iter().position(|byte| *byte != 0xa5).unwrap_or(BYTES);
+        let stack = self.stacks[slot].0.get().cast::<u8>();
+        let first_modified = (0..BYTES)
+            .position(|offset| unsafe { stack.add(offset).read_volatile() } != 0xa5)
+            .unwrap_or(BYTES);
         Some(BYTES - first_modified)
     }
 
@@ -174,37 +177,32 @@ impl<const N: usize, const BYTES: usize> KernelStackPool<N, BYTES> {
     }
 
     fn release_slot(&self, slot: usize, top: u64) -> Result<(), ProcessError> {
-        let mut state = self.state.lock();
-        if slot >= N || !state.used[slot] {
+        let mut used = self.used.lock();
+        if slot >= N || !used[slot] {
             return Err(ProcessError::UnknownProcess);
         }
-        let expected = stack_base::<N, BYTES>(&state, slot) + BYTES as u64;
-        if top != expected {
+        if top != self.stack_base(slot) + BYTES as u64 {
             return Err(ProcessError::NotRunnable);
         }
-        state.used[slot] = false;
+        used[slot] = false;
         Ok(())
+    }
+
+    fn stack_base(&self, slot: usize) -> u64 {
+        #[cfg(target_os = "none")]
+        {
+            self.stacks[slot].0.get() as u64
+        }
+        #[cfg(not(target_os = "none"))]
+        {
+            0xffff_8000_0000_0000u64 + (slot as u64) * BYTES as u64
+        }
     }
 }
 
 impl<const N: usize, const BYTES: usize> Default for KernelStackPool<N, BYTES> {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-fn stack_base<const N: usize, const BYTES: usize>(
-    state: &KernelStackPoolState<N, BYTES>,
-    slot: usize,
-) -> u64 {
-    #[cfg(target_os = "none")]
-    {
-        state.stacks[slot].0.as_ptr() as u64
-    }
-    #[cfg(not(target_os = "none"))]
-    {
-        let _storage = &state.stacks[slot];
-        0xffff_8000_0000_0000u64 + (slot as u64) * BYTES as u64
     }
 }
 
@@ -436,13 +434,22 @@ struct ProcessInit {
 
 /// Estado serializado pelo mesmo lock para preservar a propriedade exclusiva
 /// de um processo mesmo quando duas CPUs chamam o escalonador ao mesmo tempo.
-pub struct Scheduler<const P: usize, const C: usize> {
+pub struct Scheduler<const P: usize, const C: usize, R = ()> {
     state: IrqSpinLock<State<P, C>>,
+    resources: [IrqSpinLock<Option<OwnedProcessResource<R>>>; P],
 }
 
-impl<const P: usize, const C: usize> Scheduler<P, C> {
+/// The scheduler owns the resource itself. Its execution snapshots carry
+/// only the identity and slot, so copying a snapshot cannot copy ownership.
+pub struct OwnedProcessResource<R> {
+    pub owner: Option<u64>,
+    pub value: R,
+}
+
+impl<const P: usize, const C: usize, R> Scheduler<P, C, R> {
     pub const fn new() -> Self {
         Self {
+            resources: [const { IrqSpinLock::new(None) }; P],
             state: IrqSpinLock::new(State {
                 processes: [Process::EMPTY; P],
                 ready_next: [P; P],
@@ -457,6 +464,12 @@ impl<const P: usize, const C: usize> Scheduler<P, C> {
                 next_id: 1,
             }),
         }
+    }
+
+    /// The resource locks are independent of scheduling so VM operations can
+    /// wait for TLB acknowledgements without holding the run-queue lock.
+    pub const fn owned_resources(&self) -> &[IrqSpinLock<Option<OwnedProcessResource<R>>>] {
+        &self.resources
     }
 
     pub fn create(
@@ -864,28 +877,10 @@ impl<const P: usize, const C: usize> Scheduler<P, C> {
         if !is_kernel_address(frame_address) || frame_address & 0xf != 0 {
             return Err(ProcessError::NotRunnable);
         }
-        {
-            let mut s = self.state.lock();
-            if cpu >= C {
-                return Err(ProcessError::InvalidCpu);
-            }
-            let slot = s.current_slot[cpu];
-            if slot != P {
-                if slot >= P {
-                    return Err(ProcessError::NotRunnable);
-                }
-                if !matches!(s.processes[slot].state, ProcessState::Running { cpu: c } if c == cpu)
-                {
-                    return Err(ProcessError::NotRunnable);
-                }
-                s.processes[slot].interrupt_frame = frame_address;
-            }
-        }
-        self.schedule(cpu)
+        self.preempt_frame_inner(cpu, frame_address, true)
     }
 
     /// Reagenda o processo interrompido na fila local, sem roubo entre CPUs.
-    /// Útil para a prova SMP: mantém cada frame/stack na CPU que o produziu.
     pub fn preempt_frame_local(
         &self,
         cpu: usize,
@@ -894,26 +889,34 @@ impl<const P: usize, const C: usize> Scheduler<P, C> {
         if !is_kernel_address(frame_address) || frame_address & 0xf != 0 {
             return Err(ProcessError::NotRunnable);
         }
-        {
-            let mut state = self.state.lock();
-            if cpu >= C {
-                return Err(ProcessError::InvalidCpu);
-            }
-            let slot = state.current_slot[cpu];
-            if slot == P || slot >= P {
-                return Err(ProcessError::NotRunnable);
-            }
-            if !matches!(state.processes[slot].state, ProcessState::Running { cpu: owner } if owner == cpu)
-            {
-                return Err(ProcessError::NotRunnable);
-            }
-            state.processes[slot].interrupt_frame = frame_address;
-            state.processes[slot].state = ProcessState::Ready;
-            push_slot(&mut state, slot, cpu)?;
-            state.current_slot[cpu] = P;
-            state.prefer_steal[cpu] = false;
+        self.preempt_frame_inner(cpu, frame_address, false)
+    }
+
+    fn preempt_frame_inner(
+        &self,
+        cpu: usize,
+        frame_address: u64,
+        allow_steal: bool,
+    ) -> Result<Option<Process>, ProcessError> {
+        let mut state = self.state.lock();
+        let slot = *state
+            .current_slot
+            .get(cpu)
+            .ok_or(ProcessError::InvalidCpu)?;
+        if slot == P && !allow_steal {
+            return Err(ProcessError::NotRunnable);
         }
-        self.schedule_local(cpu)
+        if slot != P {
+            let process = state
+                .processes
+                .get_mut(slot)
+                .ok_or(ProcessError::NotRunnable)?;
+            if process.state != (ProcessState::Running { cpu }) {
+                return Err(ProcessError::NotRunnable);
+            }
+            process.interrupt_frame = frame_address;
+        }
+        Self::schedule_locked(&mut state, cpu, allow_steal)
     }
 
     /// Despacha um processo e devolve o processo anteriormente ativo à fila.
@@ -933,7 +936,14 @@ impl<const P: usize, const C: usize> Scheduler<P, C> {
         cpu: usize,
         allow_steal: bool,
     ) -> Result<Option<Process>, ProcessError> {
-        let mut s = self.state.lock();
+        Self::schedule_locked(&mut self.state.lock(), cpu, allow_steal)
+    }
+
+    fn schedule_locked(
+        s: &mut State<P, C>,
+        cpu: usize,
+        allow_steal: bool,
+    ) -> Result<Option<Process>, ProcessError> {
         if cpu >= C {
             return Err(ProcessError::InvalidCpu);
         }
@@ -944,13 +954,13 @@ impl<const P: usize, const C: usize> Scheduler<P, C> {
             }
             if matches!(s.processes[slot].state, ProcessState::Running { .. }) {
                 s.processes[slot].state = ProcessState::Ready;
-                push_slot(&mut s, slot, cpu)?;
-                s.prefer_steal[cpu] = true;
+                push_slot(s, slot, cpu)?;
+                s.prefer_steal[cpu] = allow_steal;
             }
             s.current_slot[cpu] = P;
         }
         while let Some(queue) = if allow_steal {
-            next_ready_queue(&s, cpu, s.prefer_steal[cpu])
+            next_ready_queue(s, cpu, s.prefer_steal[cpu])
         } else {
             (s.ready_len[cpu] != 0).then_some(cpu)
         } {
@@ -1047,6 +1057,27 @@ impl<const P: usize, const C: usize> Scheduler<P, C> {
     pub fn process(&self, id: u64) -> Option<Process> {
         let s = self.state.lock();
         find(&s.processes, id).map(|i| s.processes[i])
+    }
+
+    /// Returns a snapshot of terminal tasks that have no join or live group
+    /// members preventing reclamation. Reap still validates each candidate.
+    pub fn reapable_ids(&self) -> [Option<u64>; P] {
+        let state = self.state.lock();
+        core::array::from_fn(|slot| {
+            let process = state.processes[slot];
+            (matches!(
+                process.state,
+                ProcessState::Exited { .. } | ProcessState::Faulted { .. }
+            ) && !process.join_claimed
+                && !process.joinable
+                && (process.is_thread()
+                    || !state.processes.iter().any(|member| {
+                        member.id != process.id
+                            && member.thread_group_id == process.id
+                            && member.state != ProcessState::Vacant
+                    })))
+            .then_some(process.id)
+        })
     }
 
     /// Associa ao processo o token do bundle mantido pelo backend de memória.
@@ -1402,7 +1433,7 @@ const fn valid_context(context: CpuContext) -> bool {
         && context.rflags & (1 << 14) == 0
         && context.rflags & (1 << 17) == 0
 }
-impl<const P: usize, const C: usize> Default for Scheduler<P, C> {
+impl<const P: usize, const C: usize, R> Default for Scheduler<P, C, R> {
     fn default() -> Self {
         Self::new()
     }
@@ -1932,7 +1963,9 @@ mod tests {
             )
             .unwrap();
         scheduler.schedule(0).unwrap();
+        assert_eq!(scheduler.reapable_ids(), [None]);
         scheduler.fault(0, 14, 5, 0x7000).unwrap();
+        assert_eq!(scheduler.reapable_ids(), [Some(id)]);
         assert_eq!(scheduler.schedule(0).unwrap(), None);
         assert_eq!(
             scheduler.process(id).unwrap().state,
@@ -1958,6 +1991,7 @@ mod tests {
             .reap_with(id, &pool, |_| Ok::<(), ()>(()))
             .unwrap();
         assert_eq!(scheduler.process(id), None);
+        assert_eq!(scheduler.reapable_ids(), [None]);
     }
 
     #[test]

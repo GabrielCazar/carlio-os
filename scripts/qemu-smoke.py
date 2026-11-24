@@ -20,10 +20,17 @@ def main() -> int:
     parser.add_argument("--log", required=True, type=Path)
     parser.add_argument("--timeout", type=int, default=25)
     parser.add_argument("--cpus", type=int, default=4, help="CPUs virtuais para o teste SMP")
+    parser.add_argument("--smp-cycles", type=int, help="Ciclos mmap/munmap esperados em cada AP de teste")
+    parser.add_argument("--expect-runtime-stress", action="store_true",
+                        help="exige heap concorrente, faults isolados e watermark das duas entradas")
     parser.add_argument("--memory", default="512M", help="RAM guest QEMU (ex.: 5G, 32G)")
+    parser.add_argument("--expect-high-frame", action="store_true",
+                        help="exige alocação, escrita, leitura e liberação acima de 4 GiB")
     parser.add_argument("--herm-image", type=Path, help="imagem HermFS descartável anexada ao AHCI")
     parser.add_argument("--disk-image", type=Path,
                         help="imagem de disco anexada ao AHCI; escrita fica em snapshot temporário")
+    parser.add_argument("--expect-disk-exec", action="store_true",
+                        help="exige saída do ELF CPL3 carregado do disco por execve")
     parser.add_argument("--expect-rootfs", choices=("initialized", "mounted"),
                         help="exige mensagem positiva de inicialização ou remontagem do rootfs")
     parser.add_argument("--qemu-debug-log", type=Path,
@@ -31,8 +38,12 @@ def main() -> int:
     args = parser.parse_args()
     if not 1 <= args.cpus <= 64:
         parser.error("--cpus deve estar entre 1 e 64")
+    if args.smp_cycles is not None and args.smp_cycles < 1:
+        parser.error("--smp-cycles deve ser positivo")
     if args.herm_image and args.disk_image:
         parser.error("use apenas um entre --herm-image e --disk-image")
+    if args.expect_disk_exec and not args.disk_image:
+        parser.error("--expect-disk-exec exige --disk-image")
     if args.expect_rootfs and not args.herm_image:
         parser.error("--expect-rootfs exige --herm-image")
 
@@ -151,6 +162,10 @@ def main() -> int:
         sys.stderr.write(errors.decode("utf-8", errors="replace"))
         return 1
 
+    if args.expect_disk_exec and b"execve: ELF do disco executado em CPL3" not in output:
+        sys.stderr.write(f"ELF do disco não executou em CPL3. Log: {args.log}\n")
+        return 1
+
     if args.expect_rootfs:
         marker = (b"Hermione rootfs inicial persistido" if args.expect_rootfs == "initialized"
                   else b"Hermione rootfs persistente montado")
@@ -159,7 +174,7 @@ def main() -> int:
             sys.stderr.write(output.decode("utf-8", errors="replace"))
             return 1
 
-    if any(signature not in output for signature in (
+    expected_signatures = (
         b"SATA/AHCI", b" v\xc3\xaddeo", b" rede",
         b"NIC Intel 82574L: filas DMA TX/RX ativas",
         b"DHCP IPv4: concessao recebida",
@@ -171,7 +186,6 @@ def main() -> int:
         "Segurança CPL3: openat negou arquivo 0600 de outro UID com EACCES.".encode(),
         "ABI Linux: mmap/mprotect/munmap/brk CPL3 validaram ownership e permissões de página.".encode(),
         "SMP CPL3: mmap/munmap concluídos nos dois APs; sobreposição simultânea e retorno a idle confirmados.".encode(),
-        "Memória user por processo (folhas/tabelas/total/limite-folhas/limite-total): 2/4/6/128/513 2/4/6/128/513 2/4/6/128/513.".encode(),
         "Reaper SMP: BSP e APs confirmaram CR3 kernel; ACKs dos APs=".encode(),
         "Allocator por processo: frames livres restaurados ao baseline=".encode(),
         "; CPL3 ativo=0; stacks, VM e page tables liberáveis.".encode(),
@@ -182,8 +196,31 @@ def main() -> int:
         "Heap kernel: regiões dinâmicas, alinhamento, escrita/leitura, expansão e liberação passaram.".encode(),
         f"SMP Limine: CPUs detectadas={args.cpus}, APs iniciadas={args.cpus - 1}, aguardadas={args.cpus - 1}; APs aguardam despacho de tarefa, scheduler ainda desativado.".encode(),
         f"SMP trabalho: CPUs AP={args.cpus - 1}, tarefas concluídas={args.cpus - 1}, resultados válidos={args.cpus - 1}; despacho de prova concluído.".encode(),
-    )):
-        sys.stderr.write(f"Inventario PCI ou tela inicial incompletos. Log: {args.log}\n")
+    )
+    expected_signatures += (
+        (b" 2/4/6/128/513 2/4/6/128/513." if args.expect_disk_exec
+         else "Memória user por processo (folhas/tabelas/total/limite-folhas/limite-total): 2/4/6/128/513 2/4/6/128/513 2/4/6/128/513.".encode()),
+    )
+    if args.expect_runtime_stress:
+        expected_signatures += (
+            "Heap global: alocação Rust maior que a arena bootstrap passou.".encode(),
+            b"SMP CPL3: heap global concorrente e dois page faults isolados confirmados.",
+            "Pilha kernel observada após SYSCALL".encode(),
+            "Pilha kernel observada após int 0x80".encode(),
+        )
+    if args.expect_high_frame:
+        expected_signatures += (
+            ", frame acima de 4 GiB alocado e testado; alocação, escrita, leitura e liberação passaram.".encode(),
+        )
+    if args.smp_cycles is not None:
+        expected_signatures += (
+            f"SMP CPL3 ciclos: AP1={args.smp_cycles}, AP2={args.smp_cycles}.\r\n".encode(),
+        )
+    missing_signatures = [signature.decode() for signature in expected_signatures if signature not in output]
+    if missing_signatures:
+        sys.stderr.write(f"Marcadores ausentes no smoke de boot. Log: {args.log}\n")
+        for signature in missing_signatures:
+            sys.stderr.write(f"- {signature}\n")
         sys.stderr.write(output.decode("utf-8", errors="replace"))
         return 1
 

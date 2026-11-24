@@ -1,5 +1,24 @@
 # Relatório — Fase 2: memória e execução
 
+**Estado em 24/11/2026:** critérios locais aprovados. O fechamento integral
+aguarda revalidação no NAS/KVM, conforme `CORRECT.md` §§3, 4 e 7.
+
+### Correção — preempção da fixture e validação acima de 4 GiB — 24/11/2026
+
+Uma inicialização TCG com 32 GiB terminou o probe antes de o timer observar
+uma tarefa CPL3. `src/main.rs` ampliou o tempo em CPL3 da fixture.
+`scripts/qemu-smoke.py --expect-high-frame` agora exige confirmação de
+alocação, escrita, leitura e liberação acima de 4 GiB.
+[Execução inicial reprovada](logs/fechamento-fase-2-20261124-32G-bios.log).
+
+- [x] Formatação, 192 testes host e Clippy com as cinco features de diagnóstico. [Host](logs/fechamento-fases-1-2-20261124-host.txt) · [Clippy](logs/fechamento-fases-1-2-20261124-clippy.txt).
+- [x] ISO padrão com quatro CPUs e `--expect-high-frame`. Preempção, isolamento, shootdowns e retorno dos frames ao baseline passaram. [5 GiB BIOS](logs/fechamento-fase-2-20261124-5G-bios-final.log) · [5 GiB UEFI](logs/fechamento-fase-2-20261124-5G-uefi-final.log) · [32 GiB BIOS](logs/fechamento-fase-2-20261124-32G-bios-final.log) · [32 GiB UEFI](logs/fechamento-fase-2-20261124-32G-uefi-final.log).
+- [x] `scripts/test-disk-exec-qemu.sh` com `--smp-cycles 8192 --expect-runtime-stress` na ISO com `smp-stress-test,stack-watermark,disk-exec-test`. Dois APs completaram 8.192 ciclos cada e terminaram com page faults isolados. O reaper confirmou três ACKs e restaurou a contagem de frames. O BSP executou o ELF estático do ext4. [BIOS](logs/fechamento-fase-2-20261124-smp-bios.log) · [UEFI](logs/fechamento-fase-2-20261124-smp-uefi.log).
+- [ ] Repetir BIOS e UEFI em NAS/KVM. Os três endereços SSH configurados ficaram inacessíveis. [Conectividade NAS](logs/fechamento-fases-1-2-20261124-nas.txt).
+
+O reaper foi validado no ciclo de boot. Guard pages de pilha, swap e
+validação física seguem fora da cobertura desta rodada.
+
 ### Bundle de recursos associado ao `Process` — 2026-11-19
 
 O scheduler passou a carregar um `ProcessResourceBundle` no descritor do
@@ -1370,3 +1389,38 @@ contadores por CPU, preempção/saída/fault e reaper com confirmação de que n
 CPU ainda usa a stack/CR3 antes do cleanup. Depois, stress concorrente de VM e
 allocator. Anexar resultados aprovados e falhos em `reports/logs/fase2-smp-*`;
 até isso passar, manter o estado aberto.
+
+## Heap global, ownership de VM e stress SMP
+
+O heap first-fit agora implementa `GlobalAlloc`. O crescimento reserva
+sequências contíguas de frames pelo allocator físico, publica novas arenas
+via HHDM e devolve a reserva se outra CPU já tiver disponibilizado espaço.
+O boot verificou uma alocação Rust de 96 KiB. As arenas mantêm os frames
+reservados para reúso. O heap tem até 256 arenas e o crescimento de uma
+arena depende de frames físicos contíguos.
+
+O scheduler guarda diretamente os objetos VM nos slots tipados. A tabela
+de escalonamento mantém snapshots copiáveis, com o vínculo de slot, PID
+e CR3 validado pelo backend. Threads compartilham a VM do líder. O reaper
+seleciona tarefas terminais pelo estado do scheduler e recolhe seus
+recursos depois da quiescência confirmada pelo BSP e APs. O ciclo de reaper
+validado roda no contexto da prova de boot.
+
+O salvamento do frame e o despacho da próxima tarefa agora ocorrem na
+mesma seção crítica. No QEMU TCG de quatro CPUs, dois APs concluíram
+8.192 ciclos cada de mmap, munmap e alocação no heap Rust. Cada tarefa
+terminou em um #PF de leitura CPL3 com endereço zero e código 4. O teste
+também executou o ELF estático do ext4 no BSP. O reaper confirmou três
+ACKs e retorno exato dos frames à contagem inicial.
+
+Com `stack-watermark`, a marca acumulada observada foi de 78.728 bytes
+em 25 amostras após SYSCALL, incluindo execve, e 22.104 bytes na amostra
+após int 0x80. Ambas as entradas escalonadas usam a pilha de tarefa de
+131.072 bytes. São medidas do cenário executado. A amostragem dos APs
+de stress ocorre no último ciclo e a pilha estática ainda carece de
+guard pages.
+
+Formatação, 192 testes host e Clippy passaram. A ISO padrão e a ISO da
+prova passaram em QEMU BIOS e UEFI.
+[Prova BIOS](logs/runtime-smp-heap-bios.log) ·
+[Prova UEFI](logs/runtime-smp-heap-uefi.log).

@@ -1,0 +1,8 @@
+Verificação SSH em 2026-11-24
+Comando para cada alias: ssh -F /home/gabriel/.ssh/config -o BatchMode=yes -o ConnectTimeout=5 <alias> true
+
+nas-wifi (192.168.3.143) — No route to host
+nas (100.96.202.24) — Connection timed out
+nas-cabo (10.42.0.254) — Connection timed out
+
+Nenhum teste NAS/KVM da revisão atual foi iniciado.

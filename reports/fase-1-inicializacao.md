@@ -5,6 +5,23 @@ experimental AHCI em QEMU, validada localmente e no NAS/KVM. Isso não certifica
 hardware físico. AHCI nos controladores do servidor/desenvolvimento, timeout
 real e remoção durante I/O permanecem pendentes.
 
+### Correção — diagnóstico AHCI sem disco — 24/11/2026
+
+O teste negativo aguardava um prefixo desatualizado. O harness agora exige
+a mensagem emitida pelo kernel e a chegada ao shell. A revalidação da
+revisão atual passou em QEMU TCG BIOS e UEFI com a ISO padrão. A ISO de
+diagnóstico, criada com `CARLIO_CRASH_TEST=1 CARLIO_STORAGE_TEST=1
+./scripts/build-iso.sh`, passou nos quatro cenários de falha e nas duas
+execuções de `scripts/test-ahci-qemu.py` (disco descartável e `--without-disk`).
+
+- [Boot BIOS](logs/fechamento-fase-2-20261124-5G-bios-final.log) · [boot UEFI](logs/fechamento-fase-2-20261124-5G-uefi-final.log).
+- [Panic](logs/fechamento-fase-1-20261124-crash-panic.log) · [#UD](logs/fechamento-fase-1-20261124-crash-fault.log) · [watchdog](logs/fechamento-fase-1-20261124-crash-watchdog.log) · [double fault](logs/fechamento-fase-1-20261124-crash-doublefault.log).
+- [AHCI com disco descartável](logs/fechamento-fase-1-20261124-ahci-disco-final.log) · [AHCI sem disco](logs/fechamento-fase-1-20261124-ahci-sem-disco-final.log).
+
+O fechamento anterior inclui NAS/KVM. A revalidação no NAS ficou pendente
+por indisponibilidade dos três endereços SSH configurados. Hardware físico
+segue sem validação. [Conectividade NAS](logs/fechamento-fases-1-2-20261124-nas.txt).
+
 ### Fechamento final — 16/11/2026
 
 Os gates executáveis da fase e suas dependências foram repetidos após as
