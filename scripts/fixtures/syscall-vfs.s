@@ -31,6 +31,21 @@ _start:
     syscall_nr 21
     require -2                     # ENOENT
 
+    lea restricted_file(%rip), %rdi
+    xor %esi, %esi
+    syscall_nr 21                  # access
+    require -13
+    mov $-100, %edi
+    lea restricted_file(%rip), %rsi
+    xor %edx, %edx
+    syscall_nr 257                 # openat
+    require -13
+    lea restricted_file(%rip), %rdi
+    xor %esi, %esi
+    xor %edx, %edx
+    syscall_nr 59                  # execve
+    require -13
+
     sub $144, %rsp                  # Linux x86-64 struct stat
     lea directory(%rip), %rdi
     mov $0700, %esi
@@ -149,5 +164,7 @@ message:
 .set message_len, . - message
 disk_executable: .asciz "/carlio-disk-exec"
 missing_file: .asciz "/carlio-access-missing"
+
+restricted_file: .asciz "/carlio-privado/probe"
 
 .section .note.GNU-stack,"",@progbits

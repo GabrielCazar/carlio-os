@@ -31,9 +31,12 @@ case ${CARLIO_TEST_EXEC_FS:-ext4} in
     ld "${exec_args[@]}" -o "$fixture/root/carlio-disk-exec" "$fixture/probe.o"
     truncate -s 32K "$fixture/root/carlio-disk-exec"
     chmod 755 "$fixture/root/carlio-disk-exec"
+    mkdir -m 0700 "$fixture/root/carlio-privado"
+    cp "$fixture/root/carlio-disk-exec" "$fixture/root/carlio-privado/probe"
     truncate -s 64M "$fixture/volume"
     mkfs.ext4 -q -F -O '^flex_bg,^metadata_csum_seed,^orphan_file' \
       -d "$fixture/root" "$fixture/volume"
+    debugfs -w -R "set_inode_field /carlio-privado uid 0" "$fixture/volume"
     partition_type=83
     expect=--expect-disk-exec
     ;;

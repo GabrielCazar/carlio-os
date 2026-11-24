@@ -3549,9 +3549,7 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
                 if metadata.kind == carlio_os::vfs::NodeKind::Directory {
                     return Err(carlio_os::linux_abi::EISDIR);
                 }
-                let requested =
-                    (if readable { 0b100 } else { 0 }) | (if writable { 0b010 } else { 0 });
-                if !mount_permission(metadata, context, requested) {
+                if !metadata.permits(context, access) {
                     return Err(carlio_os::linux_abi::EACCES);
                 }
                 if writable {
@@ -3773,7 +3771,7 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
             Ok(_) => Ok(()),
             Err(carlio_os::vfs::VfsError::NotFound) => {
                 let metadata = rootfs_metadata(path, context).map_err(vfs_errno)?;
-                if mount_permission(metadata, context, mode) {
+                if metadata.permits(context, requested) {
                     Ok(())
                 } else {
                     Err(carlio_os::linux_abi::EACCES)
@@ -5227,19 +5225,7 @@ fn rootfs_metadata(
     let backend = backend
         .as_mut()
         .ok_or(carlio_os::vfs::VfsError::NotMounted)?;
-    let mount = vfs
-        .mount_for(path)
-        .ok_or(carlio_os::vfs::VfsError::NotMounted)?;
-    let relative = if path == mount.path {
-        "/"
-    } else if mount.path == "/" {
-        path
-    } else {
-        &path[mount.path.len()..]
-    };
-    let metadata = carlio_os::vfs::ReadOnlyMountBackend::metadata(backend, relative)?;
-    let _ = context;
-    Ok(metadata)
+    vfs.mounted_metadata(path, context, backend)
 }
 
 #[cfg(target_os = "none")]
@@ -5254,44 +5240,7 @@ fn read_rootfs_file(
     let backend = backend
         .as_mut()
         .ok_or(carlio_os::vfs::VfsError::NotMounted)?;
-    let mount = vfs
-        .mount_for(path)
-        .ok_or(carlio_os::vfs::VfsError::NotMounted)?;
-    let relative = if path == mount.path {
-        "/"
-    } else if mount.path == "/" {
-        path
-    } else {
-        &path[mount.path.len()..]
-    };
-    let metadata = carlio_os::vfs::ReadOnlyMountBackend::metadata(backend, relative)?;
-    if metadata.kind != carlio_os::vfs::NodeKind::File
-        || !mount_permission(metadata, context, 0b100)
-    {
-        return Err(carlio_os::vfs::VfsError::PermissionDenied);
-    }
     vfs.read_mounted_file_range(path, context, backend, offset, output)
-}
-
-#[cfg(target_os = "none")]
-fn mount_permission(
-    metadata: carlio_os::vfs::MountMetadata,
-    context: AccessContext<'_>,
-    requested: u8,
-) -> bool {
-    if context.credentials.uid == 0 {
-        return requested & 1 == 0 || metadata.mode & 0o111 != 0;
-    }
-    let shift = if context.credentials.uid == metadata.uid {
-        6
-    } else if context.credentials.gid == metadata.gid
-        || context.supplementary_groups.contains(&metadata.gid)
-    {
-        3
-    } else {
-        0
-    };
-    ((metadata.mode >> shift) as u8 & requested) == requested
 }
 
 #[cfg(target_os = "none")]

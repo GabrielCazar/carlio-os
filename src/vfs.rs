@@ -59,6 +59,24 @@ pub struct MountMetadata {
     pub size: u64,
 }
 
+impl MountMetadata {
+    pub fn permits(self, context: AccessContext<'_>, requested: Access) -> bool {
+        if context.credentials.uid == 0 {
+            return !requested.contains(Access::EXECUTE)
+                || self.kind == NodeKind::Directory
+                || self.mode & 0o111 != 0;
+        }
+        let shift = if context.credentials.uid == self.uid {
+            6
+        } else if context.in_group(self.gid) {
+            3
+        } else {
+            0
+        };
+        Access(((self.mode >> shift) & 7) as u8).contains(requested)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MountOptions {
     pub read_only: bool,
@@ -607,7 +625,11 @@ impl<const N: usize> Vfs<N> {
         backend: &mut B,
         output: &mut [u8],
     ) -> Result<usize, VfsError> {
-        let relative = self.mounted_read_path(path, context, backend.filesystem_type())?;
+        let relative = self.mounted_path(path, context, backend)?;
+        let metadata = backend.metadata(relative)?;
+        if !metadata.permits(context, Access::READ) {
+            return Err(VfsError::PermissionDenied);
+        }
         backend.read_file(relative, output)
     }
 
@@ -621,25 +643,39 @@ impl<const N: usize> Vfs<N> {
         offset: u64,
         output: &mut [u8],
     ) -> Result<usize, VfsError> {
-        let relative = self.mounted_read_path(path, context, backend.filesystem_type())?;
+        let relative = self.mounted_path(path, context, backend)?;
+        let metadata = backend.metadata(relative)?;
+        if !metadata.permits(context, Access::READ) {
+            return Err(VfsError::PermissionDenied);
+        }
         backend.read_file_range(relative, offset, output)
     }
 
-    fn mounted_read_path<'a>(
+    pub fn mounted_metadata<B: ReadOnlyMountBackend>(
+        &self,
+        path: &str,
+        context: AccessContext<'_>,
+        backend: &mut B,
+    ) -> Result<MountMetadata, VfsError> {
+        let relative = self.mounted_path(path, context, backend)?;
+        backend.metadata(relative)
+    }
+
+    fn mounted_path<'a, B: ReadOnlyMountBackend>(
         &self,
         path: &'a str,
         context: AccessContext<'_>,
-        filesystem: FilesystemType,
+        backend: &mut B,
     ) -> Result<&'a str, VfsError> {
         let mount = self.mount_for(path).ok_or(VfsError::NotMounted)?;
-        if mount.filesystem != filesystem {
+        if mount.filesystem != backend.filesystem_type() {
             return Err(VfsError::InvalidMountPath);
         }
         if !mount.options.read_only {
             return Err(VfsError::PermissionDenied);
         }
         let mount_node = self.resolve(mount.path, context)?;
-        self.check_node_access(mount_node, context, Access::READ_EXECUTE)?;
+        self.check_node_access(mount_node, context, Access::EXECUTE)?;
         let relative = if path == mount.path {
             "/"
         } else if mount.path == "/" {
@@ -647,6 +683,23 @@ impl<const N: usize> Vfs<N> {
         } else {
             &path[mount.path.len()..]
         };
+        if relative != "/" {
+            let directories = core::iter::once("/").chain(
+                relative
+                    .match_indices('/')
+                    .skip(1)
+                    .map(|(end, _)| &relative[..end]),
+            );
+            for directory in directories {
+                let metadata = backend.metadata(directory)?;
+                if metadata.kind != NodeKind::Directory {
+                    return Err(VfsError::NotDirectory);
+                }
+                if !metadata.permits(context, Access::EXECUTE) {
+                    return Err(VfsError::PermissionDenied);
+                }
+            }
+        }
         Ok(relative)
     }
 
@@ -659,36 +712,11 @@ impl<const N: usize> Vfs<N> {
         backend: &mut B,
     ) -> Result<(), VfsError> {
         let mount = self.mount_for(path).ok_or(VfsError::NotMounted)?;
-        if mount.filesystem != backend.filesystem_type() {
-            return Err(VfsError::InvalidMountPath);
-        }
         if mount.options.no_exec {
             return Err(VfsError::NotExecutable);
         }
-        let mount_node = self.resolve(mount.path, context)?;
-        self.check_node_access(mount_node, context, Access::READ_EXECUTE)?;
-        let relative = if path == mount.path {
-            "/"
-        } else if mount.path == "/" {
-            path
-        } else {
-            &path[mount.path.len()..]
-        };
-        let metadata = backend.metadata(relative)?;
-        let credentials = context.credentials;
-        let executable = if credentials.uid == 0 {
-            metadata.mode & 0o111 != 0
-        } else {
-            let shift = if credentials.uid == metadata.uid {
-                6
-            } else if context.in_group(metadata.gid) {
-                3
-            } else {
-                0
-            };
-            (metadata.mode >> shift) & 0o5 == 0o5
-        };
-        if metadata.kind != NodeKind::File || !executable {
+        let metadata = self.mounted_metadata(path, context, backend)?;
+        if metadata.kind != NodeKind::File || !metadata.permits(context, Access::READ_EXECUTE) {
             return Err(VfsError::NotExecutable);
         }
         Ok(())
@@ -1355,8 +1383,25 @@ mod tests {
         fn filesystem_type(&self) -> FilesystemType {
             FilesystemType::Ext4
         }
+        fn metadata(&mut self, path: &str) -> Result<MountMetadata, VfsError> {
+            let (kind, mode) = match path {
+                "/" => (NodeKind::Directory, 0o755),
+                "/restricted" => (NodeKind::Directory, 0o710),
+                "/hello" | "/restricted/hello" => (NodeKind::File, 0o755),
+                _ => return Err(VfsError::NotFound),
+            };
+            Ok(MountMetadata {
+                inode: 1,
+                kind,
+                uid: ROOT.uid,
+                gid: 42,
+                mode,
+                size: 2,
+            })
+        }
+
         fn read_file(&mut self, path: &str, output: &mut [u8]) -> Result<usize, VfsError> {
-            if path != "/hello" {
+            if path != "/hello" && path != "/restricted/hello" {
                 return Err(VfsError::NotFound);
             }
             if output.len() < 2 {
@@ -1390,6 +1435,28 @@ mod tests {
             Ok(2)
         );
         assert_eq!(&output[..2], b"oi");
+        let restricted = "/mnt/restricted/hello";
+        assert_eq!(
+            vfs.mounted_metadata(restricted, context, &mut backend),
+            Err(VfsError::PermissionDenied)
+        );
+        assert_eq!(
+            vfs.read_mounted_file_range(restricted, context, &mut backend, 0, &mut output),
+            Err(VfsError::PermissionDenied)
+        );
+        assert_eq!(
+            vfs.authorize_mounted_execution(restricted, context, &mut backend),
+            Err(VfsError::PermissionDenied)
+        );
+        let supplementary = AccessContext::new(ALICE, &[42], 0);
+        assert_eq!(
+            vfs.read_mounted_file(restricted, supplementary, &mut backend, &mut output),
+            Ok(2)
+        );
+        assert_eq!(
+            vfs.authorize_mounted_execution(restricted, supplementary, &mut backend),
+            Ok(())
+        );
     }
 
     #[test]

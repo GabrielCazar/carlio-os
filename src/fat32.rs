@@ -320,22 +320,29 @@ impl<D: BlockDevice> Fat32Volume<D> {
     }
 
     fn resolve_file(&mut self, path: &str) -> Result<Fat32File, Fat32Error> {
-        let mut directory = self.root_cluster;
-        let mut components = path.split('/').filter(|part| !part.is_empty());
-        let mut component = components.next().ok_or(Fat32Error::InvalidName)?;
-        loop {
-            let file = self.find_child(directory, component)?;
-            match components.next() {
-                None if file.attributes & 0x10 == 0 => {
-                    return Ok(file);
-                }
-                Some(next) if file.attributes & 0x10 != 0 => {
-                    directory = file.first_cluster;
-                    component = next;
-                }
-                _ => return Err(Fat32Error::NotFound),
-            }
+        let entry = self.resolve_entry(path)?;
+        if entry.attributes & 0x10 != 0 {
+            return Err(Fat32Error::NotFound);
         }
+        Ok(entry)
+    }
+
+    fn resolve_entry(&mut self, path: &str) -> Result<Fat32File, Fat32Error> {
+        let mut entry = Fat32File {
+            first_cluster: self.root_cluster,
+            attributes: 0x10,
+            size: 0,
+            name: [b' '; 11],
+            directory_lba: 0,
+            directory_offset: 0,
+        };
+        for component in path.split('/').filter(|part| !part.is_empty()) {
+            if entry.attributes & 0x10 == 0 {
+                return Err(Fat32Error::NotFound);
+            }
+            entry = self.find_child(entry.first_cluster, component)?;
+        }
+        Ok(entry)
     }
 
     fn read_file_in_directory(
@@ -564,17 +571,23 @@ impl<D: BlockDevice> crate::vfs::ReadOnlyMountBackend for Fat32Volume<D> {
     }
 
     fn metadata(&mut self, path: &str) -> Result<crate::vfs::MountMetadata, crate::vfs::VfsError> {
-        let file = self.resolve_file(path).map_err(|error| match error {
+        let file = self.resolve_entry(path).map_err(|error| match error {
             Fat32Error::NotFound => crate::vfs::VfsError::NotFound,
             Fat32Error::InvalidName => crate::vfs::VfsError::InvalidPath,
             _ => crate::vfs::VfsError::InvalidPath,
         })?;
         Ok(crate::vfs::MountMetadata {
             inode: u64::from(file.first_cluster),
-            kind: crate::vfs::NodeKind::File,
+            kind: if file.attributes & 0x10 != 0 {
+                crate::vfs::NodeKind::Directory
+            } else {
+                crate::vfs::NodeKind::File
+            },
             uid: 0,
             gid: 0,
-            mode: if file.attributes & 0x01 != 0 {
+            mode: if file.attributes & 0x10 != 0 {
+                0o755
+            } else if file.attributes & 0x01 != 0 {
                 0o444
             } else {
                 0o666
