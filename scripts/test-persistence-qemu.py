@@ -161,6 +161,8 @@ def main():
     scenario = parser.add_mutually_exclusive_group()
     scenario.add_argument("--filesystem", choices=["ext4", "fat32"])
     scenario.add_argument("--vfs", action="store_true")
+    scenario.add_argument("--accounts", action="store_true")
+    scenario.add_argument("--account-provisioner", type=Path)
     parser.add_argument("--metadata", action="store_true")
     parser.add_argument("--accel", choices=["tcg", "kvm"], default="tcg")
     parser.add_argument("--timeout", type=int, default=45)
@@ -168,12 +170,13 @@ def main():
     if args.metadata and not args.filesystem:
         parser.error("--metadata requer --filesystem")
     args.log_dir.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="carlioos-persistence-", dir="/tmp") as directory:
+    with tempfile.TemporaryDirectory(prefix="carlioos-persistence-") as directory:
         image = Path(directory) / "data.raw"
         if args.filesystem:
             filesystem_fixture(image, directory, args.filesystem, args.metadata)
         else:
-            provision(image, 16, vfs=args.vfs, swap_pages=0 if args.vfs else 1)
+            overlay = args.vfs or args.accounts or args.account_provisioner is not None
+            provision(image, 16, vfs=overlay, swap_pages=0 if overlay else 1)
         qemu = [
             "qemu-system-x86_64", "-machine", "q35", "-accel", args.accel,
             "-cpu", "host" if args.accel == "kvm" else "max", "-m", "512M", "-smp", "4",
@@ -191,6 +194,25 @@ def main():
                 "-drive", f"if=pflash,format=raw,unit=1,file={variables}",
             ])
         mode = "uefi" if args.firmware else "bios"
+        if args.account_provisioner:
+            subprocess.run(
+                [str(args.account_provisioner.resolve()), str(image), "operador", "1000", "1000"],
+                input=b"senha-descartavel-da-vm\n",
+                check=True,
+            )
+            boot(qemu, b"", "Contas: banco protegido validado no overlay persistente.".encode(),
+                 args.timeout, args.log_dir / f"bloco4-conta-provisionada-{mode}.log")
+            print(f"{mode}: kernel abriu o banco provisionado fora da VM")
+            return
+        if args.accounts:
+            for action, marker in (
+                ("gravar", "Contas: banco de teste gravado no disco."),
+                ("login", "Contas: sessão Argon2id emitida a partir do disco."),
+            ):
+                boot(qemu, f"contas-teste-{action}".encode(), marker.encode(), args.timeout,
+                     args.log_dir / f"bloco4-contas-{mode}-{action}.log")
+            print(f"{mode}: banco de contas persistiu e autenticou após remontagem")
+            return
         if args.vfs:
             for action, marker in (
                 ("gravar", "VFS: primeira geração confirmada."),

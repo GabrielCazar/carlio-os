@@ -80,18 +80,20 @@
         <div class="task done"><h3>AHCI e recuperação em VM</h3><p>BIOS e UEFI confirmaram timeout com COMRESET e retirada SATA com comando pendente e HBA presente.</p><span class="sub">Validação elétrica em equipamento físico pendente</span></div>
         <div class="task done"><h3>VFS ext4 / FAT32 em VM</h3><p>BIOS e UEFI confirmaram execução CPL3 a partir de ext4 e leitura FAT32 por syscall.</p><span class="sub">O overlay VFS persiste as alterações. As montagens nativas seguem em leitura</span></div>
         <div class="task done"><h3>Recuperação de dados e metadados em VM</h3><p>Ext4 e FAT32 recuperaram setores após corte simulado em imagens descartáveis.</p><span class="sub">As imagens recuperadas passaram em e2fsck e fsck.fat</span></div>
-        <div class="task doing"><h3>Swap e provisionamento</h3><p>A reserva dedicada suporta páginas autenticadas e coleta persistente de erros.</p><span class="sub">Integração com a paginação e com o instalador pendente</span></div>
+        <div class="task doing"><h3>Swap e provisionamento</h3><p>O provisionador cria uma imagem dedicada para o log persistente, o overlay e o swap experimental. O kernel pode restaurar uma página anônima após uma falta de página.</p><span class="sub">Evicção automática sob pressão de memória e integração com o instalador pendentes</span></div>
       </div>
     </article>
 
     <article class="phase" data-phase="4">
       <div class="phase-head"><h2><span class="phase-no">04</span> · VFS, contas e rede</h2><a class="phase-link" href="../reports/fase-4-mounts-interoperabilidade.md">Relatório ↗</a></div>
       <div class="tasks">
-        <div class="task doing"><h3>Política POSIX</h3><p>O kernel aplica UID, GID e grupos suplementares ao percorrer diretórios do disco.</p><span class="sub">CPL3 confirmou EACCES em access, openat e execve. Login e cobertura geral seguem pendentes</span></div>
+        <div class="task doing"><h3>Política POSIX</h3><p>O kernel aplica UID, GID e grupos suplementares ao percorrer diretórios do disco.</p><span class="sub">CPL3 confirmou EACCES em access, openat e execve. A cobertura geral segue pendente.</span></div>
         <div class="task done"><h3>VFS FHS em VM</h3><p>Rootfs ext4/FAT32 em leitura, syscalls em CPL3 e overlay persistente em disco provisionado.</p><span class="sub">Validação em BIOS e UEFI com imagens descartáveis</span></div>
-        <div class="task doing"><h3>Contas e identidade</h3><p>Modelo host persiste contas; processos carregam UID/GID e grupos suplementares.</p><span class="sub">Sem login de boot, KDF próprio ou autorização geral de syscalls/VFS</span></div>
-        <div class="task doing"><h3>Rede de servidor</h3><p>Intel 82574L e DHCPv4 passaram em QEMU.</p><span class="sub">Rede física, transporte TCP/IP, DNS e serviços pendentes</span></div>
+        <div class="task doing"><h3>Contas e identidade</h3><p>O provisionador offline grava contas sem privilégios no banco protegido. O kernel abriu a imagem provisionada em QEMU com BIOS e UEFI. O teste de autenticação após remontagem passou com a conta de teste.</p><span class="sub">Autenticação da conta criada pelo provisionador e sessão interativa pendentes. <a href="../reports/logs/bloco4-conta-provisionada-bios.log">Log BIOS</a> · <a href="../reports/logs/bloco4-conta-provisionada-uefi.log">Log UEFI</a></span></div>
+        <div class="task doing"><h3>Rede de servidor</h3><p>DHCPv4 e ARP passaram em BIOS e UEFI. O parser DNS A passou no teste host. A consulta de boot a example.com ficou sem resposta válida em QEMU local.</p><span class="sub">A resolução DNS para aplicações, o transporte de sockets e a validação da rede em hardware físico seguem pendentes.</span></div>
+        <div class="task doing"><h3>Serviços de rede</h3><p>SSH/SFTP e SMB seguem pendentes, incluindo a capacidade de reiniciar os serviços.</p></div>
       </div>
+      <div class="phase-foot"><p><span class="status-word">Revalidação em VM concluída. Bloco 4 em aberto.</span> BIOS e UEFI passaram em QEMU/KVM via nas-manjaro (192.168.50.10). O acesso pelos três aliases SSH anteriores falhou.</p><div><a href="../reports/logs/bloco-4-revalidacao-nas-20261124-195431-qemu-kvm-bios.log">Log BIOS ↗</a> · <a href="../reports/logs/bloco-4-revalidacao-nas-20261124-195431-qemu-kvm-uefi.log">Log UEFI ↗</a></div></div>
     </article>
 
     <article class="phase" data-phase="5">

@@ -1,11 +1,170 @@
-//! Decodificadores bounded para Ethernet, ARP, IPv4, UDP e opções DHCP.
-//!
-//! Este módulo não fornece driver de placa, filas DMA, roteamento ou sockets;
-//! ele valida quadros recebidos antes de uma futura integração com NIC.
+//! Quadros Ethernet, ARP, IPv4, UDP, opções DHCP e descritores de sockets.
 
 pub const ETHERNET_HEADER_LEN: usize = 14;
 pub const IPV4_MIN_HEADER_LEN: usize = 20;
 pub const UDP_HEADER_LEN: usize = 8;
+
+/// Monta uma consulta recursiva A/IN para um nome ASCII.
+pub fn dns_a_query(name: &str, id: u16, output: &mut [u8; 271]) -> Result<usize, NetworkError> {
+    let name = name.strip_suffix('.').unwrap_or(name);
+    if name.len() > 253 {
+        return Err(NetworkError::InvalidLength);
+    }
+    output[..12].fill(0);
+    output[..2].copy_from_slice(&id.to_be_bytes());
+    output[2] = 1;
+    output[5] = 1;
+    let mut cursor = 12;
+    for label in name.split('.') {
+        if label.is_empty()
+            || label.len() > 63
+            || !label
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        {
+            return Err(NetworkError::InvalidAddress);
+        }
+        output[cursor] = label.len() as u8;
+        cursor += 1;
+        output[cursor..cursor + label.len()].copy_from_slice(label.as_bytes());
+        cursor += label.len();
+    }
+    output[cursor..cursor + 5].copy_from_slice(&[0, 0, 1, 0, 1]);
+    Ok(cursor + 5)
+}
+
+/// Extrai o primeiro A/IN do nome consultado em uma resposta completa.
+pub fn dns_a_answer(query: &[u8], reply: &[u8]) -> Option<[u8; 4]> {
+    if query.len() < 17
+        || reply.len() < query.len()
+        || reply[..2] != query[..2]
+        || reply[2] & 0xfa != 0x80
+        || reply[3] & 0x0f != 0
+        || reply[4..6] != [0, 1]
+        || !reply[12..query.len()].eq_ignore_ascii_case(&query[12..])
+    {
+        return None;
+    }
+    let mut cursor = query.len();
+    for _ in 0..u16::from_be_bytes([reply[6], reply[7]]) {
+        let mut owner = [0; 255];
+        let (next, owner_len) = dns_name(reply, cursor, &mut owner)?;
+        let header = reply.get(next..next + 10)?;
+        let length = usize::from(u16::from_be_bytes([header[8], header[9]]));
+        let data = reply.get(next + 10..next + 10 + length)?;
+        if header[..4] == [0, 1, 0, 1]
+            && length == 4
+            && owner[..owner_len].eq_ignore_ascii_case(&query[12..query.len() - 4])
+        {
+            return data.try_into().ok();
+        }
+        cursor = next + 10 + length;
+    }
+    None
+}
+
+fn dns_name(packet: &[u8], mut cursor: usize, name: &mut [u8; 255]) -> Option<(usize, usize)> {
+    let mut next = None;
+    let mut length = 0;
+    loop {
+        let label = *packet.get(cursor)?;
+        if label & 0xc0 == 0xc0 {
+            let target = (usize::from(label & 0x3f) << 8) | usize::from(*packet.get(cursor + 1)?);
+            if target < 12 || target >= cursor {
+                return None;
+            }
+            next.get_or_insert(cursor + 2);
+            cursor = target;
+            continue;
+        }
+        if label > 63 {
+            return None;
+        }
+        let end = cursor + 1 + usize::from(label);
+        let label = packet.get(cursor..end)?;
+        name.get_mut(length..length + label.len())?
+            .copy_from_slice(label);
+        length += label.len();
+        if label == [0] {
+            return Some((next.unwrap_or(end), length));
+        }
+        cursor = end;
+    }
+}
+
+/// Seleciona o destino ARP para uma rota unicast diretamente conectada
+/// ou para a rota padrão de uma interface IPv4.
+pub fn ipv4_next_hop(
+    source: [u8; 4],
+    mask: Option<[u8; 4]>,
+    gateway: Option<[u8; 4]>,
+    destination: [u8; 4],
+) -> Option<[u8; 4]> {
+    fn unicast(address: [u8; 4]) -> bool {
+        (1..224).contains(&address[0]) && address[0] != 127
+    }
+
+    if !unicast(source) || !unicast(destination) || source == destination {
+        return None;
+    }
+    let mask = u32::from_be_bytes(mask?);
+    if mask == 0 || mask.leading_ones() + mask.trailing_zeros() != 32 {
+        return None;
+    }
+    let network = u32::from_be_bytes(source) & mask;
+    let on_link = |address| {
+        let address = u32::from_be_bytes(address);
+        address & mask == network
+            && (mask.count_zeros() <= 1 || (address != network && address != (network | !mask)))
+    };
+    if u32::from_be_bytes(destination) & mask == network {
+        return on_link(destination).then_some(destination);
+    }
+    gateway.filter(|address| unicast(*address) && *address != source && on_link(*address))
+}
+
+/// Escreve um datagrama UDP com checksum e cabeçalho IPv4 sem fragmentação.
+pub fn encode_ipv4_udp(
+    source: [u8; 4],
+    destination: [u8; 4],
+    source_port: u16,
+    destination_port: u16,
+    payload: &[u8],
+    output: &mut [u8],
+) -> Result<usize, NetworkError> {
+    let total = IPV4_MIN_HEADER_LEN + UDP_HEADER_LEN + payload.len();
+    if total > 1500 || total > output.len() {
+        return Err(NetworkError::InvalidLength);
+    }
+    if source_port == 0 || destination_port == 0 {
+        return Err(NetworkError::InvalidPort);
+    }
+    let (ip, udp) = output[..total].split_at_mut(IPV4_MIN_HEADER_LEN);
+    ip.fill(0);
+    ip[0] = 0x45;
+    ip[2..4].copy_from_slice(&(total as u16).to_be_bytes());
+    ip[6] = 0x40;
+    ip[8] = 64;
+    ip[9] = 17;
+    ip[12..16].copy_from_slice(&source);
+    ip[16..20].copy_from_slice(&destination);
+    let header_checksum = checksum(ip);
+    ip[10..12].copy_from_slice(&header_checksum.to_be_bytes());
+    let udp_len = udp.len() as u16;
+    udp[..2].copy_from_slice(&source_port.to_be_bytes());
+    udp[2..4].copy_from_slice(&destination_port.to_be_bytes());
+    udp[4..6].copy_from_slice(&udp_len.to_be_bytes());
+    udp[6..8].fill(0);
+    udp[8..].copy_from_slice(payload);
+    let transport_checksum = udp_checksum(source, destination, udp);
+    let transport_checksum = if transport_checksum == 0 {
+        u16::MAX
+    } else {
+        transport_checksum
+    };
+    udp[6..8].copy_from_slice(&transport_checksum.to_be_bytes());
+    Ok(total)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NetworkError {
@@ -508,6 +667,76 @@ fn u16be(bytes: &[u8], offset: usize) -> u16 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn selects_direct_and_default_ipv4_routes() {
+        let source = [192, 168, 3, 20];
+        let mask = Some([255, 255, 255, 0]);
+        let gateway = Some([192, 168, 3, 1]);
+        let peer = [192, 168, 3, 53];
+        let remote = [203, 0, 113, 53];
+        assert_eq!(ipv4_next_hop(source, mask, gateway, peer), Some(peer));
+        assert_eq!(ipv4_next_hop(source, mask, gateway, remote), gateway);
+        assert_eq!(ipv4_next_hop(source, mask, None, remote), None);
+        assert_eq!(
+            ipv4_next_hop(source, mask, gateway, [192, 168, 3, 255]),
+            None
+        );
+        assert_eq!(
+            ipv4_next_hop(source, Some([255, 0, 255, 0]), gateway, peer),
+            None
+        );
+        assert_eq!(
+            ipv4_next_hop(source, mask, Some([192, 168, 4, 1]), remote),
+            None
+        );
+    }
+
+    #[test]
+    fn dns_checks_transaction_question_and_compressed_owner() {
+        let mut query = [0; 271];
+        let length = dns_a_query("example.test.", 0x1234, &mut query).unwrap();
+        let query = &query[..length];
+        let mut reply = [0; 64];
+        reply[..length].copy_from_slice(query);
+        reply[2] = 0x81;
+        reply[3] = 0x80;
+        reply[7] = 1;
+        let answer = [0xc0, 12, 0, 1, 0, 1, 0, 0, 0, 30, 0, 4, 192, 0, 2, 1];
+        let reply = &mut reply[..length + answer.len()];
+        reply[length..].copy_from_slice(&answer);
+        assert_eq!(dns_a_answer(query, reply), Some([192, 0, 2, 1]));
+        assert_eq!(dns_a_answer(query, &reply[..reply.len() - 1]), None);
+        reply[1] ^= 1;
+        assert_eq!(dns_a_answer(query, reply), None);
+        reply[1] ^= 1;
+        reply[length + 1] = length as u8;
+        assert_eq!(dns_a_answer(query, reply), None);
+    }
+
+    #[test]
+    fn encodes_ipv4_udp_and_detects_corrupted_payload() {
+        let mut bytes = [0; 64];
+        let source = [192, 0, 2, 10];
+        let destination = [203, 0, 113, 53];
+        let len = encode_ipv4_udp(source, destination, 49152, 53, b"odd", &mut bytes).unwrap();
+        let ip = Ipv4Packet::parse(&bytes[..len]).unwrap();
+        assert_eq!(
+            (ip.source, ip.destination, ip.protocol),
+            (source, destination, 17)
+        );
+        let udp = UdpDatagram::parse(ip.payload, source, destination).unwrap();
+        assert_eq!(
+            (udp.source_port, udp.destination_port, udp.payload),
+            (49152, 53, &b"odd"[..])
+        );
+        bytes[len - 1] ^= 1;
+        let ip = Ipv4Packet::parse(&bytes[..len]).unwrap();
+        assert_eq!(
+            UdpDatagram::parse(ip.payload, source, destination),
+            Err(NetworkError::InvalidChecksum)
+        );
+    }
+
     use super::*;
 
     #[test]

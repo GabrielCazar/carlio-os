@@ -30,8 +30,8 @@ use carlio_os::errors::{ErrorLog, KernelError};
 use carlio_os::heap::KernelHeapSet;
 #[cfg(target_os = "none")]
 use carlio_os::memory::{
-    FrameError, OwnedAddressSpace, PageTableAccess, PageTableManager, PhysicalFrameAllocator,
-    PAGE_FLAG_NO_EXECUTE, PAGE_FLAG_USER, PAGE_FLAG_WRITABLE, PHYSICAL_FRAME_BITMAP_WORDS,
+    FrameError, OwnedAddressSpace, PAGE_FLAG_NO_EXECUTE, PAGE_FLAG_USER, PAGE_FLAG_WRITABLE,
+    PHYSICAL_FRAME_BITMAP_WORDS, PageTableAccess, PageTableManager, PhysicalFrameAllocator,
 };
 #[cfg(target_os = "none")]
 use carlio_os::pci::PciFunction;
@@ -44,7 +44,7 @@ use carlio_os::sync::IrqSpinLock;
 #[cfg(target_os = "none")]
 use carlio_os::vfs::{AccessContext, Credentials, Vfs};
 #[cfg(target_os = "none")]
-use carlio_os::{parse_command, Command};
+use carlio_os::{Command, parse_command};
 #[cfg(target_os = "none")]
 use core::arch::asm;
 #[cfg(target_os = "none")]
@@ -1398,6 +1398,13 @@ fn shell() -> ! {
             continue;
         }
         let command = core::str::from_utf8(&line[..len]).unwrap_or("");
+        #[cfg(feature = "storage-test")]
+        if matches!(command, "contas-teste-gravar" | "contas-teste-login") {
+            if accounts_storage_probe(command == "contas-teste-gravar").is_err() {
+                write("Contas: teste falhou.\r\n");
+            }
+            continue;
+        }
         #[cfg(all(target_os = "none", feature = "storage-test"))]
         if matches!(
             command,
@@ -1455,7 +1462,7 @@ fn shell() -> ! {
         ) {
             use carlio_os::{
                 block::BlockRegion,
-                persistent_log::{PersistentLog, MAX_RECORD},
+                persistent_log::{MAX_RECORD, PersistentLog},
                 swap::PAGE_SIZE,
             };
             // Only the test build can access this fixed region on the disposable disk.
@@ -1924,6 +1931,96 @@ fn frame_user_mode(frame: *mut idt::UserInterruptFrame) -> bool {
 }
 
 #[cfg(target_os = "none")]
+fn authenticate_process_probe() -> Option<carlio_os::process::ProcessSecurityContext> {
+    authenticate_probe_database(&probe_account_database()?)
+}
+
+#[cfg(target_os = "none")]
+fn probe_account_database() -> Option<carlio_os::userland::accounts::AccountDatabase> {
+    use carlio_os::userland::accounts::AccountDatabase;
+    // Conta pública reservada aos testes, sem acesso ao login interativo.
+    const HASH: &[u8] = b"$argon2id$v=19$m=32,t=2,p=1$Y3BsMy1maXh0dXJlLXNhbHQ$bRCGVUmBHd7RwyNSKJm4Wg+PfiAHtXAiG94Jh2onE/o";
+    let mut accounts = AccountDatabase::new();
+    accounts
+        .add(
+            "probe",
+            Credentials {
+                uid: 1000,
+                gid: 1000,
+            },
+            &[],
+            HASH,
+        )
+        .ok()?;
+    Some(accounts)
+}
+
+#[cfg(target_os = "none")]
+fn authenticate_probe_database(
+    accounts: &carlio_os::userland::accounts::AccountDatabase,
+) -> Option<carlio_os::process::ProcessSecurityContext> {
+    use carlio_os::userland::{
+        accounts::AccountVerifier,
+        kdf::Argon2idVerifier,
+        login::{LoginError, LoginManager},
+    };
+
+    static WORKSPACE: IrqSpinLock<[argon2::Block; 32]> =
+        IrqSpinLock::new([argon2::Block::new(); 32]);
+
+    let mut workspace = WORKSPACE.lock();
+    let mut login = LoginManager::new(AccountVerifier::new(
+        accounts,
+        Argon2idVerifier::new(&mut *workspace),
+    ));
+    if login.authenticate("probe", b"incorreta") != Err(LoginError::InvalidCredentials) {
+        return None;
+    }
+    let session = login.authenticate("probe", b"carlio-probe").ok()?;
+    carlio_os::process::ProcessSecurityContext::new(
+        session.credentials(),
+        session.supplementary_groups(),
+        0o022,
+    )
+}
+
+#[cfg(all(target_os = "none", feature = "storage-test"))]
+fn accounts_storage_probe(provision: bool) -> Result<(), u16> {
+    use carlio_os::{
+        linux_abi::EIO,
+        userland::accounts::{ACCOUNT_PATH, AccountDatabase, DATABASE_BYTES},
+    };
+    if !provision {
+        if VFS_STORE_FAILED.load(Ordering::Acquire) || VFS_STORE.lock().is_none() {
+            return Err(EIO);
+        }
+        let database = AccountDatabase::load_protected(&PROCESS_VFS.lock()).map_err(|_| EIO)?;
+        authenticate_probe_database(&database).ok_or(EIO)?;
+        write("Contas: sessão Argon2id emitida a partir do disco.\r\n");
+        return Ok(());
+    }
+    let transaction = VfsMutationGuard::acquire()?;
+    if transaction.before.is_none() {
+        return Err(EIO);
+    }
+    let root = Credentials { uid: 0, gid: 0 };
+    let mut bytes = [0; DATABASE_BYTES];
+    probe_account_database()
+        .ok_or(EIO)?
+        .encode(&mut bytes)
+        .map_err(|_| EIO)?;
+    let mut vfs = PROCESS_VFS.lock();
+    vfs.create_file("/etc", "carlio-accounts.db", root, 0o600)
+        .map_err(vfs_errno)?;
+    vfs.write_file_as(ACCOUNT_PATH, AccessContext::new(root, &[], 0), &bytes)
+        .map_err(vfs_errno)?;
+    drop(vfs);
+    commit_vfs_mutation(&transaction)?;
+    write("Contas: banco de teste gravado no disco.\r\n");
+    Ok(())
+}
+
+#[cfg(target_os = "none")]
 pub(crate) fn begin_process_switch_probe() -> Option<*mut idt::UserInterruptFrame> {
     const CODE_VA: u64 = 0x0000_4000_0000_3000;
     const STACK_VA: u64 = CODE_VA + 4096;
@@ -1974,12 +2071,20 @@ pub(crate) fn begin_process_switch_probe() -> Option<*mut idt::UserInterruptFram
         PROCESS_PROBE_STARTED.store(false, Ordering::Release);
         return None;
     }
-    let Some((space_a, entry_a, user_stack_a)) = make_process_probe_space(
+    let Some(user_probe_security) = authenticate_process_probe() else {
+        write("Login de teste: falha na autenticação da tarefa CPL3.\r\n");
+        PROCESS_PROBE_STARTED.store(false, Ordering::Release);
+        return None;
+    };
+    write("Login de teste: senha incorreta negada e sessão Argon2id emitida.\r\n");
+    let Ok((space_a, entry_a, user_stack_a, _)) = make_process_space(
         root,
         STACK_VA,
+        1,
         "/programas/probe",
         &["probe", "--spin"],
         &["PATH=/programas", "CARLIO_PROBE=1"],
+        user_probe_security.access_context(),
     ) else {
         write("Runtime: falha ao criar espaço virtual A.\r\n");
         PROCESS_PROBE_STARTED.store(false, Ordering::Release);
@@ -2074,19 +2179,6 @@ pub(crate) fn begin_process_switch_probe() -> Option<*mut idt::UserInterruptFram
         rsp: user_stack_a,
         rflags: 0x202,
         ..CpuContext::default()
-    };
-    let user_probe_security = carlio_os::process::ProcessSecurityContext::new(
-        Credentials {
-            uid: 1000,
-            gid: 1000,
-        },
-        &[],
-        0o022,
-    );
-    let Some(user_probe_security) = user_probe_security else {
-        let _ = abort_unstarted_process_probe([0; 3], [root_a, root_b, root_c]);
-        PROCESS_PROBE_STARTED.store(false, Ordering::Release);
-        return None;
     };
     let first = PROCESS_SCHEDULER
         .create_with_stack_pool_and_security(
@@ -5394,6 +5486,12 @@ fn initialize_vfs_store(reserve: carlio_os::storage_reserve::StorageReserve) {
     })();
     if result.is_some() {
         write("VFS: overlay persistente aberto.\r\n");
+        use carlio_os::userland::accounts::{AccountDatabase, AccountError};
+        match AccountDatabase::load_protected(&vfs) {
+            Ok(_) => write("Contas: banco protegido validado no overlay persistente.\r\n"),
+            Err(AccountError::Vfs(carlio_os::vfs::VfsError::NotFound)) => {}
+            Err(_) => write("Contas: banco recusado por metadados ou conteúdo inválidos.\r\n"),
+        }
     } else {
         VFS_STORE_FAILED.store(true, Ordering::Release);
         write("VFS: reserva persistente recusada; alterações bloqueadas.\r\n");
@@ -5596,6 +5694,36 @@ fn report_pci_function(function: PciFunction) {
                             write_u32(*octet as u32);
                         }
                         write("\r\n");
+                        if lease.router.is_some() {
+                            match e1000::resolve_gateway(lease) {
+                                Ok(Some(mac)) => {
+                                    write("ARP IPv4: gateway respondeu, MAC=");
+                                    for byte in mac {
+                                        write_hex_byte(byte);
+                                    }
+                                    write("\r\n");
+                                }
+                                Ok(None) => write("ARP IPv4: gateway sem resposta.\r\n"),
+                                Err(error) => {
+                                    write("ARP IPv4: ");
+                                    write(error.message());
+                                    write(".\r\n");
+                                }
+                            }
+                        }
+                        if lease.dns_server.is_some() {
+                            match e1000::resolve_dns_a_boot(lease, "example.com") {
+                                Ok(Some(_)) => {
+                                    write("DNS IPv4: resposta A valida para example.com.\r\n")
+                                }
+                                Ok(None) => write("DNS IPv4: sem resposta A valida.\r\n"),
+                                Err(error) => {
+                                    write("DNS IPv4: ");
+                                    write(error.message());
+                                    write(".\r\n");
+                                }
+                            }
+                        }
                     }
                     Ok(None) => {
                         write("DHCP IPv4: servidor sem resposta; interface sem endereco.\r\n")

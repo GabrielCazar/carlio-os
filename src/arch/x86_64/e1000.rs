@@ -1,7 +1,14 @@
 //! Driver polling experimental para o Intel 82574L apresentado pelo QEMU q35.
 //! RTL8111/I219 físico e interrupções continuam fora deste driver.
 
-use carlio_os::{errors::KernelError, pci::PciFunction};
+use carlio_os::{
+    errors::KernelError,
+    net::{
+        dns_a_answer, dns_a_query, encode_ipv4_udp, ipv4_next_hop, ArpPacket, EthernetFrame,
+        Ipv4Packet, UdpDatagram,
+    },
+    pci::PciFunction,
+};
 use core::{
     arch::asm,
     ptr,
@@ -36,6 +43,8 @@ const RX_EOP: u8 = 2;
 const TX_DD: u8 = 1;
 const TX_CMD_EOP_IFCS_RS: u8 = 0x0b;
 const DHCP_POLL_LIMIT: usize = 20_000_000;
+const ARP_POLL_LIMIT: usize = 2_000_000;
+const DNS_POLL_LIMIT: usize = 200_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DhcpLease {
@@ -324,6 +333,121 @@ pub fn request_dhcp_lease() -> Result<Option<DhcpLease>, KernelError> {
         dns_server: options.dns_server,
         lease_seconds: options.lease_seconds,
     }))
+}
+
+/// Prova a conectividade local com o roteador recebido por DHCP.
+pub fn resolve_gateway(lease: DhcpLease) -> Result<Option<[u8; 6]>, KernelError> {
+    let Some(gateway) = lease.router.filter(|gateway| *gateway != [0; 4]) else {
+        return Ok(None);
+    };
+    resolve_neighbor(lease.address, gateway)
+}
+
+fn resolve_neighbor(
+    local_address: [u8; 4],
+    next_hop: [u8; 4],
+) -> Result<Option<[u8; 6]>, KernelError> {
+    let nic = unsafe { NIC }.ok_or(KernelError::DeviceNotFound)?;
+    let mut frame = [0; BUFFER_SIZE];
+
+    frame[..6].fill(0xff);
+    frame[6..12].copy_from_slice(&nic.mac);
+    frame[12..14].copy_from_slice(&0x0806_u16.to_be_bytes());
+    frame[14..22].copy_from_slice(&[0, 1, 8, 0, 6, 4, 0, 1]);
+    frame[22..28].copy_from_slice(&nic.mac);
+    frame[28..32].copy_from_slice(&local_address);
+    frame[38..42].copy_from_slice(&next_hop);
+
+    transmit(&frame[..60])?;
+    for _ in 0..ARP_POLL_LIMIT {
+        let Some(length) = receive(&mut frame)? else {
+            core::hint::spin_loop();
+            continue;
+        };
+        let Ok(ethernet) = EthernetFrame::parse(&frame[..length]) else {
+            continue;
+        };
+        if ethernet.ethertype != 0x0806 || ethernet.destination != nic.mac {
+            continue;
+        }
+        let Ok(reply) = ArpPacket::parse(ethernet.payload) else {
+            continue;
+        };
+        if reply.operation == 2
+            && reply.sender_ipv4 == next_hop
+            && reply.sender_mac == ethernet.source
+            && reply.sender_mac != [0; 6]
+            && reply.sender_mac[0] & 1 == 0
+            && reply.target_ipv4 == local_address
+            && reply.target_mac == nic.mac
+        {
+            return Ok(Some(reply.sender_mac));
+        }
+    }
+    Ok(None)
+}
+
+/// Resolve uma consulta A direta durante a inicialização, com a interface em polling.
+pub fn resolve_dns_a_boot(lease: DhcpLease, name: &str) -> Result<Option<[u8; 4]>, KernelError> {
+    let mut query = [0; 271];
+    // O diagnóstico roda uma vez, no BSP, antes de expor a interface a processos.
+    let stamp = unsafe { core::arch::x86_64::_rdtsc() };
+    let source_port = 49152 | ((stamp >> 16) as u16 & 0x3fff);
+    let query_len =
+        dns_a_query(name, stamp as u16, &mut query).map_err(|_| KernelError::ControllerError)?;
+    let query = &query[..query_len];
+    let Some(server) = lease.dns_server else {
+        return Ok(None);
+    };
+    let Some(next_hop) = ipv4_next_hop(lease.address, lease.subnet_mask, lease.router, server)
+    else {
+        return Ok(None);
+    };
+    let Some(next_mac) = resolve_neighbor(lease.address, next_hop)? else {
+        return Ok(None);
+    };
+    let nic = unsafe { NIC }.ok_or(KernelError::DeviceNotFound)?;
+    let mut frame = [0; BUFFER_SIZE];
+    frame[..6].copy_from_slice(&next_mac);
+    frame[6..12].copy_from_slice(&nic.mac);
+    frame[12..14].copy_from_slice(&0x0800u16.to_be_bytes());
+    let length = encode_ipv4_udp(
+        lease.address,
+        server,
+        source_port,
+        53,
+        query,
+        &mut frame[14..],
+    )
+    .map_err(|_| KernelError::ControllerError)?;
+    transmit(&frame[..(14 + length).max(60)])?;
+    for _ in 0..DNS_POLL_LIMIT {
+        let Some(length) = receive(&mut frame)? else {
+            core::hint::spin_loop();
+            continue;
+        };
+        let Ok(ethernet) = EthernetFrame::parse(&frame[..length]) else {
+            continue;
+        };
+        if ethernet.ethertype != 0x0800 || ethernet.destination != nic.mac {
+            continue;
+        }
+        let Ok(ip) = Ipv4Packet::parse(ethernet.payload) else {
+            continue;
+        };
+        if ip.protocol != 17 || ip.source != server || ip.destination != lease.address {
+            continue;
+        }
+        let Ok(udp) = UdpDatagram::parse(ip.payload, ip.source, ip.destination) else {
+            continue;
+        };
+        if udp.source_port == 53 && udp.destination_port == source_port {
+            if let Some(address) = dns_a_answer(query, udp.payload) {
+                return Ok(Some(address));
+            }
+        }
+    }
+    Ok(None)
 }
 
 fn build_dhcp_frame(

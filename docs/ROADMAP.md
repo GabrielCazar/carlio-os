@@ -410,8 +410,33 @@ SMB; demais protocolos ficam atrás dos serviços essenciais.
 
 **Aceite:** negação e concessão verificadas no kernel/VFS, isolamento entre
 usuários/processos, persistência segura de contas, login real, rede funcional,
-autenticação negativa e serviços headless reiniciáveis. Login e catálogo
-seguem como modelos host-testados.
+autenticação negativa e serviços headless reiniciáveis.
+
+**Banco de contas no overlay:** ao abrir o overlay persistente, o kernel
+verifica `/etc/carlio-accounts.db`. O arquivo deve pertencer a UID/GID 0
+e ter modo `0600`. Os diretórios pais devem pertencer a UID 0 e proibir
+escrita por grupo e outros. Em teste host, um snapshot restaurado conservou
+essas permissões e forneceu as credenciais e grupos da sessão após
+autenticação. Em QEMU BIOS e UEFI, o cenário `--accounts` de
+`scripts/test-persistence-qemu.py` gravou uma conta de teste em disco
+descartável. Após novo boot, o kernel abriu o banco protegido, rejeitou a
+senha incorreta e emitiu uma sessão Argon2id para a senha correta.
+O provisionador offline `carlio-account` adiciona contas sem privilégios
+à imagem dedicada com overlay. Ele recebe a senha pela entrada padrão e
+grava somente o hash Argon2id com salt aleatório. Use com a VM desligada:
+
+```bash
+python3 scripts/provision_storage.py dados.raw --vfs
+cargo build --bin carlio-account
+IFS= read -rs -p 'Senha: ' senha
+printf '%s\n' "$senha" | target/debug/carlio-account dados.raw operador 1000 1000
+unset senha
+```
+
+O cenário `--account-provisioner target/debug/carlio-account` de
+`scripts/test-persistence-qemu.py` confirmou que o kernel abriu esse
+banco em QEMU com BIOS e UEFI. A autenticação das contas provisionadas
+e o início da sessão interativa seguem abertos.
 
 **Incremento host (2026-11-15):** o VFS já aplica bits POSIX `rwx` por
 owner/group/other, grupos suplementares, `umask`, herança setgid, busca em
@@ -451,12 +476,52 @@ O smoke com UID 1000 confirma a negação em `access`, `openat` e
 `execve`; os testes também exercitam o caminho permitido em CPL3.
 Consulte o [relatório do VFS](../reports/fase-4-mounts-interoperabilidade.md).
 
+**Autenticação na prova CPL3:** o kernel valida uma conta de teste com
+Argon2id, exige a rejeição de uma senha incorreta e usa UID/GID da sessão
+para autorizar o carregamento do ELF no VFS e executar a tarefa em um CR3
+próprio. O smoke exige a emissão da sessão e a negação de acesso ao arquivo
+root-owned modo `0600`. A conta existe em memória para a prova de boot.
+O banco de contas protegido em disco, o login interativo e o catálogo no
+runtime continuam pendentes.
+
 **Incremento de rede (2026-11-16):** driver Intel 82574L/QEMU (`8086:10d3`)
 com filas DMA em polling TX/RX e DHCPv4 DORA aprovado no QEMU. O dispatcher
 Linux liga `socket`, `bind`, `listen` e `close` a uma tabela bounded IPv4
 TCP/UDP por processo, com colisão de portas e restrição de portas privilegiadas.
-Ainda faltam drivers RTL8111/I219 físicos, roteamento, DNS, `accept`/`connect`/
-`send`/`recv` e teste em hardware. A interface não tem acesso geral à internet.
+O boot consulta via ARP o gateway anunciado por DHCP e valida a resposta
+Ethernet/ARP. O smoke em QEMU BIOS e UEFI exige confirmação de DHCP e ARP.
+O diagnóstico DNS usa a máscara e a rota padrão do DHCP para selecionar o
+próximo salto ARP e transmitir UDP/IPv4 com checksum. Em BIOS e UEFI no QEMU,
+o diagnóstico executou, mas a consulta NS da raiz expirou. Ainda faltam
+resolução de nomes para aplicações, transporte dos sockets
+(`accept`/`connect`/`send`/`recv`), serviços reiniciáveis SSH/SFTP e SMB,
+drivers RTL8111/I219 físicos e validação em hardware.
+
+**Revalidação NAS/KVM (24/11/2026):** BIOS e UEFI passaram via
+`nas-manjaro` (`192.168.50.10`). Ambos confirmaram DHCPv4, ARP do gateway,
+rejeição da senha incorreta, emissão da sessão Argon2id da conta de teste e
+negação de `openat` em CPL3. A consulta DNS NS da raiz terminou sem resposta
+válida nos dois boots. O acesso pelos três aliases SSH anteriores falhou.
+A revalidação em VM foi concluída. O aceite do bloco 4 segue aberto.
+[Log BIOS](../reports/logs/bloco-4-revalidacao-nas-20261124-195431-qemu-kvm-bios.log) ·
+[Log UEFI](../reports/logs/bloco-4-revalidacao-nas-20261124-195431-qemu-kvm-uefi.log).
+
+**Diagnóstico DNS A:** o boot agora consulta `example.com` usando o servidor
+do DHCP. O teste host cobre uma resposta com nome comprimido, transação
+incorreta, registro truncado e referência inválida. Os smokes locais em
+BIOS/UEFI passaram, com DHCPv4 e ARP, mas a consulta A terminou sem resposta
+válida. O código atende a registros A diretos durante o boot. A exposição
+ao runtime e o suporte a aliases CNAME seguem pendentes.
+
+**Pendências de aceite do bloco 4**
+
+- [ ] Contas protegidas em disco e disponíveis ao runtime.
+- [ ] Login interativo.
+- [ ] Resolução DNS para aplicações.
+- [ ] Transporte de sockets (`accept`, `connect`, `send`, `recv`).
+- [ ] Serviço SSH/SFTP reiniciável.
+- [ ] Serviço SMB reiniciável.
+- [ ] Validação da rede em hardware físico.
 
 ### 5 — ABI Linux e userlands Arch e Ubuntu
 

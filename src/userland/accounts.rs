@@ -4,7 +4,7 @@
 //! implementação criptográfica externa; esta camada não inventa KDF próprio.
 
 use super::login::CredentialVerifier;
-use crate::vfs::Credentials;
+use crate::vfs::{AccessContext, Credentials, NodeKind, Vfs, VfsError};
 
 pub const ACCOUNT_LIMIT: usize = 16;
 pub const ACCOUNT_NAME_BYTES: usize = 32;
@@ -14,7 +14,8 @@ const MAGIC: &[u8; 8] = b"CARLAC01";
 const HEADER_BYTES: usize = 16;
 const RECORD_BYTES: usize =
     ACCOUNT_NAME_BYTES + 8 + 2 + PASSWORD_HASH_BYTES + ACCOUNT_GROUP_LIMIT * 4;
-const DATABASE_BYTES: usize = HEADER_BYTES + ACCOUNT_LIMIT * RECORD_BYTES;
+pub const DATABASE_BYTES: usize = HEADER_BYTES + ACCOUNT_LIMIT * RECORD_BYTES;
+pub const ACCOUNT_PATH: &str = "/etc/carlio-accounts.db";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AccountError {
@@ -25,6 +26,8 @@ pub enum AccountError {
     Corrupt,
     BufferTooSmall,
     InvalidSize,
+    UnsafePermissions,
+    Vfs(VfsError),
     Storage(crate::hermione::FsError),
 }
 
@@ -64,6 +67,35 @@ pub struct AccountDatabase {
     count: usize,
 }
 impl AccountDatabase {
+    /// Loads the account database from the VFS overlay. The caller must open
+    /// the persistent overlay before using this database for system login.
+    pub fn load_protected<const N: usize>(vfs: &Vfs<N>) -> Result<Self, AccountError> {
+        let root = AccessContext::new(Credentials { uid: 0, gid: 0 }, &[], 0);
+        for path in ["/", "/etc"] {
+            let directory = vfs.metadata(path, root).map_err(AccountError::Vfs)?;
+            if directory.kind != NodeKind::Directory
+                || directory.uid != 0
+                || directory.mode & 0o022 != 0
+            {
+                return Err(AccountError::UnsafePermissions);
+            }
+        }
+        let file = vfs
+            .metadata(ACCOUNT_PATH, root)
+            .map_err(AccountError::Vfs)?;
+        if file.kind != NodeKind::File || file.uid != 0 || file.gid != 0 || file.mode != 0o600 {
+            return Err(AccountError::UnsafePermissions);
+        }
+        if file.size != DATABASE_BYTES as u64 {
+            return Err(AccountError::InvalidSize);
+        }
+        let mut bytes = [0; DATABASE_BYTES];
+        let length = vfs
+            .read_file_as(ACCOUNT_PATH, root, &mut bytes)
+            .map_err(AccountError::Vfs)?;
+        Self::decode(&bytes[..length])
+    }
+
     pub const fn new() -> Self {
         Self {
             entries: [Account::EMPTY; ACCOUNT_LIMIT],
@@ -341,6 +373,55 @@ mod tests {
     }
 
     #[test]
+    fn protected_accounts_require_safe_metadata_after_overlay_restore() {
+        let root = Credentials { uid: 0, gid: 0 };
+        let user = Credentials { uid: 42, gid: 42 };
+        let context = AccessContext::new(root, &[], 0);
+        let mut original = Vfs::<4>::new();
+        original.create_dir("/", "etc", root, 0o755).unwrap();
+        original
+            .create_file("/etc", "carlio-accounts.db", root, 0o600)
+            .unwrap();
+        let mut accounts = AccountDatabase::new();
+        accounts
+            .add("service", user, &[8], b"$test$opaque")
+            .unwrap();
+        let mut encoded = [0; DATABASE_BYTES];
+        accounts.encode(&mut encoded).unwrap();
+        original
+            .write_file_as(ACCOUNT_PATH, context, &encoded)
+            .unwrap();
+
+        let mut snapshot = std::vec![0; Vfs::<4>::SNAPSHOT_MAX];
+        let length = original.encode_snapshot(&mut snapshot).unwrap();
+        let mut restored = Vfs::<4>::new();
+        restored.restore_overlay(&snapshot[..length]).unwrap();
+        assert_eq!(
+            restored.read_file_as(ACCOUNT_PATH, AccessContext::new(user, &[], 0), &mut encoded),
+            Err(VfsError::PermissionDenied)
+        );
+
+        let accounts = AccountDatabase::load_protected(&restored).unwrap();
+        let mut login = LoginManager::new(AccountVerifier::new(&accounts, TestHash));
+        assert!(login.authenticate("service", b"wrong").is_err());
+        let session = login.authenticate("service", b"correct").unwrap();
+        assert_eq!(session.credentials(), user);
+        assert_eq!(session.supplementary_groups(), &[8]);
+
+        restored.set_mode(ACCOUNT_PATH, root, 0o644).unwrap();
+        assert!(matches!(
+            AccountDatabase::load_protected(&restored),
+            Err(AccountError::UnsafePermissions)
+        ));
+        restored.set_mode(ACCOUNT_PATH, root, 0o600).unwrap();
+        restored.set_mode("/etc", root, 0o777).unwrap();
+        assert!(matches!(
+            AccountDatabase::load_protected(&restored),
+            Err(AccountError::UnsafePermissions)
+        ));
+    }
+
+    #[test]
     fn account_database_persists_through_hermione_remount() {
         let mut database = AccountDatabase::new();
         database
@@ -382,9 +463,11 @@ mod tests {
             .unwrap();
         let mut image = [0u8; DATABASE_BYTES];
         let length = database.encode(&mut image).unwrap();
-        assert!(!image[..length]
-            .windows(7)
-            .any(|window| window == b"correct"));
+        assert!(
+            !image[..length]
+                .windows(7)
+                .any(|window| window == b"correct")
+        );
         let reopened = AccountDatabase::decode(&image[..length]).unwrap();
         let mut login = LoginManager::new(AccountVerifier::new(&reopened, TestHash));
         let session = login.authenticate("alice", b"correct").unwrap();
