@@ -17,6 +17,7 @@ fi
 
 build_args=(build --release --bin carlio-kernel --target x86_64-unknown-none)
 features=()
+image=build/carlio-os.iso
 if [[ ${CARLIO_CRASH_TEST:-0} == 1 ]]; then
   features+=(crash-test)
 fi
@@ -34,6 +35,24 @@ if [[ ${CARLIO_DISK_EXEC_TEST:-0} == 1 ]]; then
 fi
 if [[ ${CARLIO_DISK_READ_TEST:-0} == 1 ]]; then
   features+=(disk-read-test)
+fi
+lockdown_mode=${CARLIO_LOCKDOWN:-none}
+case "$lockdown_mode" in
+  none|integrity|confidentiality) ;;
+  *) echo "CARLIO_LOCKDOWN inválido: $lockdown_mode" >&2; exit 1 ;;
+esac
+if [[ $lockdown_mode != none ]]; then
+  image=${image%.iso}-lockdown-${lockdown_mode}.iso
+fi
+if [[ ${CARLIO_SECURE_BOOT_STAGE:-0} == 1 ]]; then
+  if [[ $lockdown_mode == none || ${CARLIO_CRASH_TEST:-0} == 1 || ${CARLIO_STORAGE_TEST:-0} == 1 ]]; then
+    echo "O estágio Secure Boot exige lockdown e exclui crash-test/storage-test." >&2
+    exit 1
+  fi
+  command -v b2sum >/dev/null || { echo "Ferramenta ausente: b2sum" >&2; exit 1; }
+  case ${CARLIO_LOCKDOWN_FLOOR:-none} in
+    none) export CARLIO_LOCKDOWN_FLOOR=$lockdown_mode ;;
+  esac
 fi
 if ((${#features[@]})); then
   feature_list=$(IFS=,; echo "${features[*]}")
@@ -61,12 +80,26 @@ rm -rf build/iso-root
 mkdir -p build/iso-root/boot build/iso-root/EFI/BOOT
 cp target/x86_64-unknown-none/release/carlio-kernel build/iso-root/boot/carlio-kernel
 cp limine.conf build/iso-root/limine.conf
+if [[ $lockdown_mode != none ]]; then
+  printf '    cmdline: lockdown=%s\n' "$lockdown_mode" >> build/iso-root/limine.conf
+fi
 cp "$limine_root/limine-bios.sys" "$limine_root/limine-bios-cd.bin" \
    "$limine_root/limine-uefi-cd.bin" build/iso-root/boot/
 cp "$limine_root/BOOTX64.EFI" build/iso-root/EFI/BOOT/
+if [[ ${CARLIO_SECURE_BOOT_STAGE:-0} == 1 ]]; then
+  stage=${image%.iso}-uefi-stage
+  mkdir -p "$stage/EFI/BOOT" "$stage/boot"
+  cp build/iso-root/boot/carlio-kernel "$stage/boot/"
+  cp build/iso-root/EFI/BOOT/BOOTX64.EFI "$stage/EFI/BOOT/"
+  read -r kernel_hash _ < <(b2sum "$stage/boot/carlio-kernel")
+  sed "s|/boot/carlio-kernel$|/boot/carlio-kernel#$kernel_hash|" build/iso-root/limine.conf > "$stage/limine.conf"
+  read -r config_hash _ < <(b2sum "$stage/limine.conf")
+  limine enroll-config "$stage/EFI/BOOT/BOOTX64.EFI" "$config_hash"
+  echo "Estágio UEFI criado em $stage. Assine EFI/BOOT/BOOTX64.EFI antes de instalar."
+fi
 xorriso -as mkisofs -R -r -J -b boot/limine-bios-cd.bin \
   -no-emul-boot -boot-load-size 4 -boot-info-table --efi-boot boot/limine-uefi-cd.bin \
   -efi-boot-part --efi-boot-image --protective-msdos-label \
-  build/iso-root -o build/carlio-os.iso
-limine bios-install build/carlio-os.iso
-echo "Imagem criada: build/carlio-os.iso"
+  build/iso-root -o "$image"
+limine bios-install "$image"
+echo "Imagem criada: $image"

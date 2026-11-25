@@ -14,6 +14,7 @@ pub enum KernelError {
     BootInfoMissing = 20,
     CpuException = 21,
     WatchdogTimeout = 22,
+    LockdownDenied = 23,
     KernelPanic = 255,
 }
 
@@ -30,6 +31,7 @@ impl KernelError {
             Self::ControllerError => "controlador informou erro",
             Self::BootInfoMissing => "informacao de memoria do bootloader ausente",
             Self::CpuException => "excecao/fault de CPU capturado pela IDT",
+            Self::LockdownDenied => "operacao bloqueada pela politica lockdown",
             Self::WatchdogTimeout => "watchdog detectou ausencia de progresso do kernel",
             Self::KernelPanic => "falha critica do kernel; modo de recuperacao",
         }

@@ -54,7 +54,7 @@ use core::fmt::{self, Write as FmtWrite};
 #[cfg(target_os = "none")]
 use core::panic::PanicInfo;
 #[cfg(target_os = "none")]
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 
 #[cfg(target_os = "none")]
 const COM1: u16 = 0x3f8;
@@ -979,13 +979,85 @@ static BASE_REVISION: [u64; 3] = [0xf956_2b2d_5c95_a6c8, 0x6a7b_3849_4453_6bdc, 
 #[link_section = ".limine_requests_end"]
 static REQUESTS_END: [u64; 2] = [0xadc0_e053_1bb1_0d03, 0x9572_709f_3176_4c62];
 
+#[cfg(target_os = "none")]
+#[repr(C)]
+struct ExecutableCmdlineResponse {
+    revision: u64,
+    cmdline: *const u8,
+}
+
+#[cfg(target_os = "none")]
+#[repr(C)]
+struct ExecutableCmdlineRequest {
+    id: [u64; 4],
+    revision: u64,
+    response: *const ExecutableCmdlineResponse,
+}
+
+#[cfg(target_os = "none")]
+#[used]
+#[link_section = ".limine_requests"]
+static mut EXECUTABLE_CMDLINE: ExecutableCmdlineRequest = ExecutableCmdlineRequest {
+    id: [
+        0xc7b1_dd30_df4c_8b88,
+        0x0a82_e883_a194_f07b,
+        0x4b16_1536_e598_651e,
+        0xb390_ad4a_2f1f_303a,
+    ],
+    revision: 0,
+    response: core::ptr::null(),
+};
+
+#[cfg(target_os = "none")]
+static LOCKDOWN: AtomicU8 = AtomicU8::new(0);
+
+#[cfg(target_os = "none")]
+fn lockdown() -> carlio_os::lockdown::Level {
+    carlio_os::lockdown::Level::from_raw(LOCKDOWN.load(Ordering::Relaxed))
+}
+
+#[cfg(target_os = "none")]
+fn initialize_lockdown() {
+    use carlio_os::lockdown::Level;
+    let floor = Level::parse(env!("CARLIO_LOCKDOWN_FLOOR").as_bytes()).unwrap();
+    // Limine supplies a NUL-terminated string mapped by the boot page tables.
+    let response = unsafe { core::ptr::addr_of!(EXECUTABLE_CMDLINE.response).read_volatile() };
+    let mut level = floor;
+    if let Some(response) = unsafe { response.as_ref() } {
+        let cmdline = response.cmdline;
+        if !cmdline.is_null() {
+            level = Level::Confidentiality;
+            for len in 0..4096 {
+                if unsafe { cmdline.add(len).read() } == 0 {
+                    level = Level::from_boot(floor, unsafe { core::slice::from_raw_parts(cmdline, len) });
+                    break;
+                }
+            }
+        }
+    }
+    LOCKDOWN.store(level as u8, Ordering::Relaxed);
+}
+
+#[cfg(target_os = "none")]
+fn check_lockdown_path(path: &str) -> Result<(), u16> {
+    if lockdown().denies_path(path) {
+        record_error(KernelError::LockdownDenied);
+        return Err(carlio_os::linux_abi::EPERM);
+    }
+    Ok(())
+}
+
 #[no_mangle]
 #[cfg(target_os = "none")]
 pub extern "C" fn _start() -> ! {
     serial_init();
+    initialize_lockdown();
     unsafe { idt::install() };
     user_fpu::enable();
     startup_screen();
+    write("Lockdown: ");
+    write(lockdown().name());
+    write("\r\n");
     boot_progress(5, "kernel carregado");
     video_boot_probe();
     boot_progress(12, "vídeo/console");
@@ -1386,6 +1458,14 @@ fn shell() -> ! {
             continue;
         };
         let command = core::str::from_utf8(&line[..len]).unwrap_or("");
+        if lockdown().restricts_integrity()
+            && (command.contains("-teste") || command.starts_with("diskteste") || command.starts_with("fs-meta-"))
+            && (cfg!(feature = "storage-test") || cfg!(feature = "crash-test"))
+        {
+            record_error(KernelError::LockdownDenied);
+            write("Lockdown: operação de teste bloqueada.\r\n");
+            continue;
+        }
         if console.handle(command) {
             continue;
         }
@@ -2865,6 +2945,12 @@ pub(crate) fn dispatch_linux_syscall(
     cpu: usize,
     via_int80: bool,
 ) -> Option<carlio_os::linux_abi::SyscallOutcome> {
+    if lockdown().denies_syscall(number, arguments) {
+        record_error(KernelError::LockdownDenied);
+        return Some(carlio_os::linux_abi::SyscallOutcome::Return(
+            (-(i64::from(carlio_os::linux_abi::EPERM))) as u64,
+        ));
+    }
     let process = PROCESS_SCHEDULER.current(cpu)?;
     let mut io = KernelLinuxSyscallIo { process, cpu };
     let program_break = io.with_process_vm(|vm| Ok(vm.program_break())).unwrap_or(0);
@@ -3133,6 +3219,7 @@ impl KernelLinuxSyscallIo {
             return Err(carlio_os::linux_abi::EBADF);
         }
         let path = file.path_str().ok_or(carlio_os::linux_abi::EIO)?;
+        check_lockdown_path(path)?;
         let context = process.security.access_context();
         let inline_offset = usize::try_from(offset).map_err(|_| carlio_os::linux_abi::EINVAL)?;
         let inline = PROCESS_VFS.lock().read_file_range_as(
@@ -3560,6 +3647,7 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
         arguments: &[&str],
         environment: &[&str],
     ) -> Result<carlio_os::linux_abi::ExecTransition, u16> {
+        check_lockdown_path(path)?;
         if self.process.is_thread() {
             return Err(carlio_os::linux_abi::EBUSY);
         }
@@ -3689,6 +3777,7 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
     }
 
     fn open(&mut self, path: &str, flags: u64, mode: u64) -> Result<u64, u16> {
+        check_lockdown_path(path)?;
         let _transaction = VfsMutationGuard::acquire()?;
         let create_mode = if flags & 0x40 != 0 {
             u16::try_from(mode).map_err(|_| carlio_os::linux_abi::EINVAL)?
@@ -3910,6 +3999,7 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
     }
 
     fn stat(&mut self, path: &str) -> Result<carlio_os::linux_abi::LinuxStat, u16> {
+        check_lockdown_path(path)?;
         let context = self.process.security.access_context();
         let vfs = PROCESS_VFS.lock();
         let metadata = match vfs.metadata(path, context) {
@@ -3961,6 +4051,7 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
     }
 
     fn access(&mut self, path: &str, mode: u64) -> Result<(), u16> {
+        check_lockdown_path(path)?;
         let mode = u8::try_from(mode).map_err(|_| carlio_os::linux_abi::EINVAL)?;
         let requested =
             carlio_os::vfs::Access::from_posix_bits(mode).ok_or(carlio_os::linux_abi::EINVAL)?;
@@ -5904,18 +5995,22 @@ impl FmtWrite for PanicSerial {
 fn panic(info: &PanicInfo) -> ! {
     record_error(KernelError::KernelPanic);
     write("\r\n=== CAPTURA DE PANIC ===\r\n");
-    write("Causa: ");
-    let _ = PanicSerial.write_fmt(format_args!("{}\r\n", info.message()));
-    if let Some(location) = info.location() {
-        write("Local: ");
-        write(location.file());
-        write(":");
-        write_u32(location.line());
-        write(":");
-        write_u32(location.column());
-        write("\r\n");
+    if lockdown().hides_diagnostics() {
+        write("Lockdown: detalhes internos da falha suprimidos.\r\n");
     } else {
-        write("Local: indisponível\r\n");
+        write("Causa: ");
+        let _ = PanicSerial.write_fmt(format_args!("{}\r\n", info.message()));
+        if let Some(location) = info.location() {
+            write("Local: ");
+            write(location.file());
+            write(":");
+            write_u32(location.line());
+            write(":");
+            write_u32(location.column());
+            write("\r\n");
+        } else {
+            write("Local: indisponível\r\n");
+        }
     }
     write("Registradores do ponto de panic indisponíveis; faults de CPU usam a captura IDT.\r\n");
     write("Captura somente serial e volátil; reiniciar perde este registro.\r\n");

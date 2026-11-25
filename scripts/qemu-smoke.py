@@ -33,6 +33,8 @@ def main() -> int:
                         help="imagem de disco anexada ao AHCI; escrita fica em snapshot temporário")
     parser.add_argument("--expect-disk-exec", action="store_true",
                         help="exige saída do ELF CPL3 carregado do disco por execve")
+    parser.add_argument("--expect-lockdown", choices=("none", "integrity", "confidentiality"),
+                        help="exige o nível de lockdown no log de boot")
     parser.add_argument("--expect-disk-read", action="store_true",
                         help="exige montagem e leitura CPL3 de /probe.bin com disk-read-test")
     parser.add_argument("--expect-rootfs", choices=("initialized", "mounted"),
@@ -239,6 +241,8 @@ def main() -> int:
         expected_signatures += (
             f"SMP CPL3 ciclos: AP1={args.smp_cycles}, AP2={args.smp_cycles}.\r\n".encode(),
         )
+    if args.expect_lockdown:
+        expected_signatures += (f"Lockdown: {args.expect_lockdown}\r\n".encode(),)
     missing_signatures = [signature.decode() for signature in expected_signatures if signature not in output]
     if missing_signatures:
         sys.stderr.write(f"Marcadores ausentes no smoke de boot. Log: {args.log}\n")

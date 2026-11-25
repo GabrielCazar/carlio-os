@@ -67,6 +67,7 @@ pub mod heap;
 pub mod hermione;
 pub mod kernel_module;
 pub mod linux_abi;
+pub mod lockdown;
 #[cfg(not(target_os = "none"))]
 pub mod log_report;
 pub mod memory;

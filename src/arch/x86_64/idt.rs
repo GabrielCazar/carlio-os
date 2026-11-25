@@ -1063,6 +1063,11 @@ extern "C" fn exception_dispatch(frame: *mut ExceptionFrame) -> *mut ExceptionFr
         super::write(" RSP=0x");
         super::write_hex_u64(IRET_TARGET_RSP[cpu].load(Ordering::Acquire));
         super::write(" SS=0x");
+    if super::lockdown().hides_diagnostics() {
+        super::record_error(carlio_os::errors::KernelError::CpuException);
+        super::write("\r\nLockdown: detalhes internos da exceção suprimidos.\r\n");
+        stop_cpu();
+    }
         super::write_hex_u64(IRET_TARGET_SS[cpu].load(Ordering::Acquire));
         super::write(" GDT3=0x");
         super::write_hex_u64(IRET_USER_DATA_DESC[cpu].load(Ordering::Acquire));
@@ -1233,6 +1238,9 @@ fn report_registers(frame: &ExceptionFrame) {
     super::write_hex_u64(frame.rax);
     super::write(" RBX=0x");
     super::write_hex_u64(frame.rbx);
+    if super::lockdown().hides_diagnostics() {
+        return;
+    }
     super::write(" RCX=0x");
     super::write_hex_u64(frame.rcx);
     super::write(" RDX=0x");

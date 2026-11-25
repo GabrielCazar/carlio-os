@@ -61,6 +61,7 @@ Matrizes de formato, operações e gates de pacotes:
 [`docs/MATRIZ-PACOTES.md`](docs/MATRIZ-PACOTES.md).
 Fluxogramas, imagens, manual e configuração: [`fluxogramas/README.md`](fluxogramas/README.md).
 Procedimento e limites do [teste físico da ISO](docs/TESTE-FISICO.md).
+Consulte os níveis do [Lockdown do kernel](docs/LOCKDOWN.md) e o procedimento para preparar a árvore UEFI.
 Hermione e `herm-fs` estão arquivados como protótipo experimental; ext4 e FAT32
 são os filesystems prioritários. Consulte o registro técnico preservado em
 [`docs/HERMIONE.md`](docs/HERMIONE.md). O código e os testes de Hermione ficam
