@@ -28,6 +28,7 @@ const MAX_LOAD_PAGES: usize = 1024;
 const ELF_NAME_MAX: usize = 128;
 const PT_PHDR: u32 = 6;
 pub const AT_NULL: u64 = 0;
+pub const AT_RANDOM: u64 = 25;
 pub const AT_PHDR: u64 = 3;
 pub const AT_PHENT: u64 = 4;
 pub const AT_PHNUM: u64 = 5;
@@ -280,6 +281,7 @@ pub struct AuxEntry {
 /// `entry` é o início do ld-linux; `program_entry` é o AT_ENTRY que ele iniciará.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ExecImage {
+    pub domain: crate::dircache_policy::Domain,
     pub entry: u64,
     pub program_entry: u64,
     pub interpreter_base: u64,
@@ -353,6 +355,20 @@ pub fn build_initial_user_stack_with_auxv_sized<T: ElfLoadTarget>(
     env: &[&str],
     auxv: &[AuxEntry],
 ) -> Result<UserStack, ElfError> {
+    build_initial_user_stack_with_random(target, stack_top, stack_bytes, argv, env, auxv, None)
+}
+
+/// If supplied, store the 16 private random bytes on the stack and publish
+/// their user address as AT_RANDOM.
+pub fn build_initial_user_stack_with_random<T: ElfLoadTarget>(
+    target: &mut T,
+    stack_top: u64,
+    stack_bytes: u64,
+    argv: &[&str],
+    env: &[&str],
+    auxv: &[AuxEntry],
+    random: Option<&[u8; 16]>,
+) -> Result<UserStack, ElfError> {
     const STACK_BYTES_MIN: u64 = 4096;
     const VECTOR_LIMIT: usize = 16;
     if argv.len() > VECTOR_LIMIT || env.len() > VECTOR_LIMIT {
@@ -368,6 +384,18 @@ pub fn build_initial_user_stack_with_auxv_sized<T: ElfLoadTarget>(
     }
     let lower_bound = stack_top - stack_bytes;
     let mut sp = stack_top;
+    let random_entry = if let Some(random) = random {
+        sp -= 16;
+        target
+            .write(sp, random)
+            .map_err(|_| ElfError::MappingFailed)?;
+        Some(AuxEntry {
+            kind: AT_RANDOM,
+            value: sp,
+        })
+    } else {
+        None
+    };
     let mut arg_ptrs = [0u64; VECTOR_LIMIT];
     let mut env_ptrs = [0u64; VECTOR_LIMIT];
 
@@ -380,13 +408,21 @@ pub fn build_initial_user_stack_with_auxv_sized<T: ElfLoadTarget>(
         env_ptrs[index] = sp;
     }
 
-    if auxv.len() > 32 || auxv.iter().any(|entry| entry.kind == AT_NULL) {
+    let aux_count = auxv
+        .len()
+        .checked_add(usize::from(random_entry.is_some()))
+        .ok_or(ElfError::InvalidArguments)?;
+    if aux_count > 32
+        || auxv.iter().any(|entry| {
+            entry.kind == AT_NULL || (entry.kind == AT_RANDOM && random_entry.is_some())
+        })
+    {
         return Err(ElfError::InvalidArguments);
     }
     let word_count = 1usize
         .checked_add(argv.len())
         .and_then(|v| v.checked_add(1))
-        .and_then(|v| v.checked_add((auxv.len() + 1).checked_mul(2)?))
+        .and_then(|v| v.checked_add((aux_count + 1).checked_mul(2)?))
         .and_then(|v| v.checked_add(env.len()))
         .and_then(|v| v.checked_add(1))
         .ok_or(ElfError::InvalidArguments)?;
@@ -420,7 +456,7 @@ pub fn build_initial_user_stack_with_auxv_sized<T: ElfLoadTarget>(
         write_user_word(target, &mut cursor, *pointer)?;
     }
     write_user_word(target, &mut cursor, 0)?;
-    for entry in auxv {
+    for entry in auxv.iter().chain(random_entry.iter()) {
         write_user_word(target, &mut cursor, entry.kind)?;
         write_user_word(target, &mut cursor, entry.value)?;
     }
@@ -674,6 +710,7 @@ fn load_interpreted_executable_from_source<
             .load_into_unrelocated(interpreter, target)
             .map_err(VfsElfError::Elf)?;
         Ok(ExecImage {
+            domain: crate::dircache_policy::Domain::Ordinary,
             entry: interpreter_image.entry,
             program_entry: program_image.entry,
             interpreter_base: DYNAMIC_INTERPRETER_BIAS,
@@ -690,6 +727,7 @@ fn load_interpreted_executable_from_source<
             .load_into(program, target)
             .map_err(VfsElfError::Elf)?;
         Ok(ExecImage {
+            domain: crate::dircache_policy::executable_domain(path, program, false),
             entry: program_image.entry,
             program_entry: program_image.entry,
             interpreter_base: 0,
@@ -1136,17 +1174,17 @@ fn parse_relative_relocations(
         }
         match tag {
             DT_NEEDED | DT_PLTRELSZ | DT_REL | DT_RELSZ | DT_RELENT | DT_JMPREL => {
-                return Err(ElfError::UnsupportedFormat)
+                return Err(ElfError::UnsupportedFormat);
             }
             DT_RELA if rela_address.replace(value).is_some() => {
-                return Err(ElfError::InvalidHeader)
+                return Err(ElfError::InvalidHeader);
             }
             DT_RELASZ if rela_size.replace(value).is_some() => return Err(ElfError::InvalidHeader),
             DT_RELAENT if rela_entry_size.replace(value).is_some() => {
-                return Err(ElfError::InvalidHeader)
+                return Err(ElfError::InvalidHeader);
             }
             DT_RELACOUNT if rela_count_tag.replace(value).is_some() => {
-                return Err(ElfError::InvalidHeader)
+                return Err(ElfError::InvalidHeader);
             }
             DT_RELA | DT_RELASZ | DT_RELAENT | DT_RELACOUNT => {}
             _ => {}
@@ -1704,6 +1742,30 @@ mod tests {
         assert_eq!(target.word(stack.envp + 16), 0);
         assert_eq!(target.c_string(env0), b"PATH=/bin");
         assert_eq!(target.c_string(env1), b"MODE=test");
+    }
+
+    #[test]
+    fn points_at_random_to_sixteen_bytes_in_the_user_stack() {
+        let mut target = StackTarget {
+            base: 0x4000_0000,
+            bytes: [0; 4096],
+        };
+        let random = *b"0123456789abcdef";
+        let stack = build_initial_user_stack_with_random(
+            &mut target,
+            0x4000_1000,
+            4096,
+            &[""],
+            &[],
+            &[],
+            Some(&random),
+        )
+        .unwrap();
+        let auxv = stack.envp + 8;
+        assert_eq!(target.word(auxv), AT_RANDOM);
+        assert_eq!(target.word(auxv + 8), 0x4000_0ff0);
+        assert_eq!(target.word(auxv + 16), AT_NULL);
+        assert_eq!(&target.bytes[4080..], &random);
     }
 
     #[test]

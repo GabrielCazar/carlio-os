@@ -6,6 +6,8 @@
 //! continuam sendo conectados por etapas.
 
 pub const SYS_WRITE: u64 = 1;
+pub const SYS_GETRANDOM: u64 = 318;
+pub const SYS_STATX: u64 = 332;
 pub const SYS_PREAD64: u64 = 17;
 pub const SYS_WRITEV: u64 = 20;
 pub const SYS_CLOSE: u64 = 3;
@@ -20,6 +22,13 @@ pub const SYS_BRK: u64 = 12;
 pub const SYS_READ: u64 = 0;
 pub const SYS_OPEN: u64 = 2;
 pub const SYS_FSTAT: u64 = 5;
+pub const SYS_POLL: u64 = 7;
+pub const SYS_RT_SIGACTION: u64 = 13;
+pub const POLLIN: u16 = 0x001;
+pub const POLLOUT: u16 = 0x004;
+pub const POLLERR: u16 = 0x008;
+pub const POLLNVAL: u16 = 0x020;
+pub const SIGPIPE: u64 = 13;
 pub const SYS_ACCESS: u64 = 21;
 pub const SYS_NEWFSTATAT: u64 = 262;
 pub const SYS_GETPID: u64 = 39;
@@ -34,10 +43,19 @@ pub const SYS_EXIT: u64 = 60;
 pub const SYS_EXECVE: u64 = 59;
 pub const SYS_EXIT_GROUP: u64 = 231;
 pub const SYS_SOCKET: u64 = 41;
+pub const SYS_CONNECT: u64 = 42;
+pub const SYS_ACCEPT: u64 = 43;
+pub const SYS_SENDTO: u64 = 44;
+pub const SYS_RECVFROM: u64 = 45;
+pub const SYS_ACCEPT4: u64 = 288;
 pub const SYS_BIND: u64 = 49;
 pub const SYS_LISTEN: u64 = 50;
+pub const SYS_GETSOCKNAME: u64 = 51;
 pub const SYS_CLOCK_GETTIME: u64 = 228;
 pub const SYS_CLOCK_GETRES: u64 = 229;
+pub const SYS_ARCH_PRCTL: u64 = 158;
+pub const ARCH_SET_FS: u64 = 0x1002;
+pub const ARCH_GET_FS: u64 = 0x1003;
 pub const SYS_GETTID: u64 = 186;
 pub const SYS_GETCWD: u64 = 79;
 pub const SYS_MKDIR: u64 = 83;
@@ -52,6 +70,7 @@ pub const SYS_FCHMODAT: u64 = 268;
 pub const SYS_UNLINK: u64 = 87;
 pub const SYS_UNLINKAT: u64 = 263;
 pub const SYS_RMDIR: u64 = 84;
+pub const AT_EMPTY_PATH: u64 = 0x1000;
 pub const AT_REMOVEDIR: u64 = 0x200;
 pub const AT_SYMLINK_NOFOLLOW: u64 = 0x100;
 
@@ -75,12 +94,20 @@ pub const ENOSYS: u16 = 38;
 pub const EACCES: u16 = 13;
 pub const EAFNOSUPPORT: u16 = 97;
 pub const EADDRINUSE: u16 = 98;
+pub const EADDRNOTAVAIL: u16 = 99;
 pub const ENFILE: u16 = 23;
 pub const EOPNOTSUPP: u16 = 95;
 pub const EROFS: u16 = 30;
 pub const EEXIST: u16 = 17;
 pub const EOVERFLOW: u16 = 75;
 pub const ERANGE: u16 = 34;
+pub const ENOTSOCK: u16 = 88;
+pub const ESPIPE: u16 = 29;
+pub const EMSGSIZE: u16 = 90;
+pub const ENOTCONN: u16 = 107;
+pub const ETIMEDOUT: u16 = 110;
+pub const ECONNREFUSED: u16 = 111;
+pub const ECONNRESET: u16 = 104;
 pub const EAGAIN: u16 = 11;
 pub const EBUSY: u16 = 16;
 
@@ -198,6 +225,18 @@ pub trait LinuxSyscallIo {
     fn stat(&mut self, _path: &str) -> Result<LinuxStat, u16> {
         Err(ENOSYS)
     }
+    fn random_bytes(&mut self, _destination: &mut [u8]) -> Result<(), u16> {
+        Err(ENOSYS)
+    }
+    fn poll_events(&mut self, _descriptor: u32, _events: u16) -> Result<u16, u16> {
+        Err(ENOSYS)
+    }
+    fn ignores_sigpipe(&self) -> bool {
+        false
+    }
+    fn set_sigpipe_ignored(&mut self, _ignored: bool) -> Result<(), u16> {
+        Err(ENOSYS)
+    }
     fn access(&mut self, _path: &str, _mode: u64) -> Result<(), u16> {
         Err(ENOSYS)
     }
@@ -233,10 +272,22 @@ pub trait LinuxSyscallIo {
     fn socket(&mut self, _domain: u64, _kind: u64, _protocol: u64) -> Result<u64, u16> {
         Err(EOPNOTSUPP)
     }
+    fn unix_address(&mut self, _fd: u64, _path: &[u8], _bind: bool) -> Result<(), u16> {
+        Err(EOPNOTSUPP)
+    }
+    fn unix_name(&mut self, _fd: u64) -> Result<bool, u16> {
+        Err(EBADF)
+    }
     fn bind(&mut self, _descriptor: u64, _address: [u8; 4], _port: u16) -> Result<(), u16> {
         Err(EOPNOTSUPP)
     }
     fn listen(&mut self, _descriptor: u64, _backlog: u16) -> Result<(), u16> {
+        Err(EOPNOTSUPP)
+    }
+    fn accept(&mut self, _descriptor: u64, _flags: u64) -> Result<(u64, [u8; 4], u16), u16> {
+        Err(EOPNOTSUPP)
+    }
+    fn socket_name(&mut self, _descriptor: u64) -> Result<([u8; 4], u16), u16> {
         Err(EOPNOTSUPP)
     }
     fn seek(&mut self, _descriptor: u64, _offset: i64, _whence: u64) -> Result<u64, u16> {
@@ -261,6 +312,12 @@ pub trait LinuxSyscallIo {
     }
     fn madvise(&mut self, _address: u64, _length: u64, _advice: u64) -> Result<(), u16> {
         Err(EOPNOTSUPP)
+    }
+    fn fs_base(&self) -> u64 {
+        0
+    }
+    fn set_fs_base(&mut self, _base: u64) -> Result<(), u16> {
+        Err(ENOSYS)
     }
     fn brk(&mut self, current: u64, _requested: u64) -> u64 {
         current
@@ -293,15 +350,52 @@ pub fn dispatch<I: LinuxSyscallIo>(
         ),
         SYS_OPEN => open_syscall(AT_FDCWD, arguments[0], arguments[1], arguments[2], io),
         SYS_FSTAT => fstat_syscall(arguments[0], arguments[1], io),
+        SYS_GETRANDOM => getrandom_syscall(arguments[0], arguments[1], arguments[2] as u32, io),
+        SYS_POLL => poll_syscall(arguments[0], arguments[1], arguments[2] as i32, io),
+        SYS_RT_SIGACTION => {
+            sigaction_syscall(arguments[0], arguments[1], arguments[2], arguments[3], io)
+        }
         SYS_ACCESS => access_syscall(arguments[0], arguments[1], io),
         SYS_NEWFSTATAT => {
             newfstatat_syscall(arguments[0], arguments[1], arguments[2], arguments[3], io)
         }
+        SYS_STATX => statx_syscall(
+            arguments[0],
+            arguments[1],
+            arguments[2] as u32,
+            arguments[3] as u32,
+            arguments[4],
+            io,
+        ),
         SYS_OPENAT => open_syscall(arguments[0], arguments[1], arguments[2], arguments[3], io),
         SYS_CLOSE => result(io.close(arguments[0]).map(|_| 0)),
         SYS_FSYNC => result(io.fsync(arguments[0]).map(|_| 0)),
         SYS_SOCKET => result(io.socket(arguments[0], arguments[1], arguments[2])),
+        SYS_ACCEPT | SYS_ACCEPT4 => accept_syscall(
+            arguments[0],
+            arguments[1],
+            arguments[2],
+            if number == SYS_ACCEPT4 {
+                arguments[3]
+            } else {
+                0
+            },
+            io,
+        ),
+        SYS_SENDTO | SYS_RECVFROM if !crate::dircache_socket::is_descriptor(arguments[0]) && io.socket_name(arguments[0]).is_err() => errno(ENOTSOCK),
+        SYS_SENDTO if arguments[3] & !(0x4000 | 0x40) == 0 && arguments[4] == 0 => {
+            write_syscall(arguments[0], arguments[1], arguments[2], io)
+        }
+        SYS_RECVFROM if arguments[3] & !0x40 == 0 && arguments[4] == 0 => {
+            read_syscall(arguments[0], arguments[1], arguments[2], None, io)
+        }
+        SYS_SENDTO | SYS_RECVFROM => errno(EOPNOTSUPP),
+        SYS_BIND | SYS_CONNECT if crate::dircache_socket::is_descriptor(arguments[0]) => {
+            unix_address_syscall(arguments[0], arguments[1], arguments[2], number == SYS_BIND, io)
+        }
+        SYS_CONNECT => errno(EOPNOTSUPP),
         SYS_BIND => bind_syscall(arguments[0], arguments[1], arguments[2], io),
+        SYS_GETSOCKNAME => getsockname_syscall(arguments[0], arguments[1], arguments[2], io),
         SYS_LISTEN => {
             if (arguments[1] as i64) <= 0 {
                 errno(EINVAL)
@@ -330,6 +424,18 @@ pub fn dispatch<I: LinuxSyscallIo>(
             io.madvise(arguments[0], arguments[1], arguments[2])
                 .map(|_| 0),
         ),
+        SYS_ARCH_PRCTL => match arguments[0] {
+            ARCH_SET_FS if arguments[1] >= crate::elf::USER_TOP => errno(EPERM),
+            ARCH_SET_FS => result(io.set_fs_base(arguments[1]).map(|_| 0)),
+            ARCH_GET_FS => {
+                let base = io.fs_base();
+                result(
+                    io.copy_to_user(arguments[1], &base.to_le_bytes())
+                        .map(|_| 0),
+                )
+            }
+            _ => errno(EINVAL),
+        },
         SYS_BRK => SyscallOutcome::Return(io.brk(context.program_break, arguments[0])),
         SYS_GETPID => SyscallOutcome::Return(context.process_id),
         SYS_GETTID => SyscallOutcome::Return(context.thread_id),
@@ -387,6 +493,7 @@ pub fn dispatch<I: LinuxSyscallIo>(
         SYS_EXIT | SYS_EXIT_GROUP => SyscallOutcome::Exit {
             status: arguments[0] as u8,
         },
+        SYS_WRITEV if crate::dircache_socket::is_descriptor(arguments[0]) => errno(EOPNOTSUPP),
         SYS_WRITEV => writev_syscall(arguments[0], arguments[1], arguments[2], io),
         SYS_WRITE => write_syscall(arguments[0], arguments[1], arguments[2], io),
         _ => errno(ENOSYS),
@@ -422,6 +529,132 @@ fn clock_syscall<I: LinuxSyscallIo>(
     result(io.copy_to_user(address, &bytes).map(|_| 0))
 }
 
+fn getrandom_syscall<I: LinuxSyscallIo>(
+    address: u64,
+    length: u64,
+    flags: u32,
+    io: &mut I,
+) -> SyscallOutcome {
+    const GRND_NONBLOCK: u32 = 0x1;
+    const GRND_RANDOM: u32 = 0x2;
+    const GRND_INSECURE: u32 = 0x4;
+    if flags & !(GRND_NONBLOCK | GRND_RANDOM | GRND_INSECURE) != 0
+        || flags & (GRND_RANDOM | GRND_INSECURE) == (GRND_RANDOM | GRND_INSECURE)
+    {
+        return errno(EINVAL);
+    }
+    let limit = if flags & GRND_RANDOM != 0 {
+        512
+    } else {
+        MAX_WRITE_BYTES
+    };
+    let length = length.min(limit as u64) as usize;
+    if length == 0 {
+        return SyscallOutcome::Return(0);
+    }
+    if let Err(error) = io.validate_user_write(address, length) {
+        return errno(error);
+    }
+    let mut buffer = zeroize::Zeroizing::new([0u8; WRITE_CHUNK_SIZE]);
+    let mut copied = 0;
+    while copied < length {
+        let chunk = &mut buffer[..(length - copied).min(WRITE_CHUNK_SIZE)];
+        if let Err(error) = io.random_bytes(chunk) {
+            return partial_or_error(copied, error);
+        }
+        let Some(destination) = address.checked_add(copied as u64) else {
+            return partial_or_error(copied, EFAULT);
+        };
+        if let Err(error) = io.copy_to_user(destination, chunk) {
+            return partial_or_error(copied, error);
+        }
+        copied += chunk.len();
+    }
+    SyscallOutcome::Return(copied as u64)
+}
+
+fn poll_syscall<I: LinuxSyscallIo>(
+    address: u64,
+    count: u64,
+    timeout: i32,
+    io: &mut I,
+) -> SyscallOutcome {
+    const MAX_POLL_FDS: usize = 256;
+    if timeout != 0 {
+        return errno(ENOSYS);
+    }
+    if count > MAX_POLL_FDS as u64 {
+        return errno(EINVAL);
+    }
+    if count == 0 {
+        return SyscallOutcome::Return(0);
+    }
+    let length = count as usize * 8;
+    let mut entries = [0u8; MAX_POLL_FDS * 8];
+    let entries = &mut entries[..length];
+    if let Err(error) = io.copy_from_user(address, entries) {
+        return errno(error);
+    }
+    let mut ready = 0;
+    for entry in entries.as_chunks_mut::<8>().0 {
+        let fd = i32::from_le_bytes([entry[0], entry[1], entry[2], entry[3]]);
+        let events = u16::from_le_bytes([entry[4], entry[5]]);
+        let returned = if fd < 0 {
+            0
+        } else {
+            match io.poll_events(fd as u32, events) {
+                Ok(events) => events,
+                Err(EBADF) => POLLNVAL,
+                Err(error) => return errno(error),
+            }
+        };
+        ready += u64::from(returned != 0);
+        entry[6..].copy_from_slice(&returned.to_le_bytes());
+    }
+    result(io.copy_to_user(address, entries).map(|_| ready))
+}
+
+fn sigaction_syscall<I: LinuxSyscallIo>(
+    signal: u64,
+    action: u64,
+    previous: u64,
+    mask_size: u64,
+    io: &mut I,
+) -> SyscallOutcome {
+    if mask_size != 8 || !(1..=64).contains(&signal) || matches!(signal, 9 | 19) {
+        return errno(EINVAL);
+    }
+    if signal != SIGPIPE {
+        return errno(ENOSYS);
+    }
+    // Linux x86-64 kernel sigaction: handler, flags, restorer, signal mask.
+    let mut bytes = [0u8; 32];
+    let ignored = if action == 0 {
+        None
+    } else {
+        if let Err(error) = io.copy_from_user(action, &mut bytes) {
+            return errno(error);
+        }
+        match u64::from_le_bytes(bytes[..8].try_into().unwrap()) {
+            0 => Some(false),
+            1 => Some(true),
+            _ => return errno(ENOSYS),
+        }
+    };
+    if previous != 0 {
+        bytes.fill(0);
+        bytes[0] = u8::from(io.ignores_sigpipe());
+        if let Err(error) = io.copy_to_user(previous, &bytes) {
+            return errno(error);
+        }
+    }
+    result(
+        ignored
+            .map_or(Ok(()), |value| io.set_sigpipe_ignored(value))
+            .map(|_| 0),
+    )
+}
+
 fn fstat_syscall<I: LinuxSyscallIo>(descriptor: u64, address: u64, io: &mut I) -> SyscallOutcome {
     let stat = match io.fstat(descriptor) {
         Ok(stat) => stat,
@@ -437,22 +670,84 @@ fn newfstatat_syscall<I: LinuxSyscallIo>(
     flags: u64,
     io: &mut I,
 ) -> SyscallOutcome {
-    if flags != 0 {
+    if flags & !AT_EMPTY_PATH != 0 {
         return errno(EOPNOTSUPP);
     }
-    let mut path = [0u8; PATH_BUFFER_SIZE];
-    let (path, absolute) = match read_rooted_path(path_address, &mut path, io) {
-        Ok(path) => path,
-        Err(error) => return errno(error),
-    };
-    if directory as i32 != AT_FDCWD as i32 && !absolute {
-        return errno(EBADF);
+    match stat_at(directory, path_address, flags & AT_EMPTY_PATH != 0, io) {
+        Ok(stat) => write_stat(stat_address, stat, io),
+        Err(error) => errno(error),
     }
-    let stat = match io.stat(path) {
+}
+
+fn stat_at<I: LinuxSyscallIo>(
+    directory: u64,
+    path_address: u64,
+    allow_empty: bool,
+    io: &mut I,
+) -> Result<LinuxStat, u16> {
+    let directory = directory as i32;
+    if allow_empty {
+        let mut first = [0];
+        if path_address != 0 {
+            io.copy_from_user(path_address, &mut first)?;
+        }
+        if first[0] == 0 {
+            return if directory == AT_FDCWD as i32 {
+                io.stat("/")
+            } else {
+                io.fstat(directory as u32 as u64)
+            };
+        }
+    }
+    let mut path = [0u8; PATH_BUFFER_SIZE];
+    let (path, absolute) = read_rooted_path(path_address, &mut path, io)?;
+    if directory != AT_FDCWD as i32 && !absolute {
+        return Err(EBADF);
+    }
+    io.stat(path)
+}
+
+fn statx_syscall<I: LinuxSyscallIo>(
+    directory: u64,
+    path: u64,
+    flags: u32,
+    mask: u32,
+    address: u64,
+    io: &mut I,
+) -> SyscallOutcome {
+    const AT_STATX_SYNC_TYPE: u32 = 0x6000;
+    const STATX_RESERVED: u32 = 0x8000_0000;
+    // TYPE, MODE, NLINK, UID, GID, INO and SIZE. The current VFS does
+    // not report real allocation counts or timestamps.
+    const AVAILABLE: u32 = 0x31f;
+    let allowed = (AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW) as u32 | AT_STATX_SYNC_TYPE;
+    if flags & !allowed != 0
+        || flags & AT_STATX_SYNC_TYPE == AT_STATX_SYNC_TYPE
+        || mask & STATX_RESERVED != 0
+    {
+        return errno(EINVAL);
+    }
+    let stat = match stat_at(directory, path, flags & AT_EMPTY_PATH as u32 != 0, io) {
         Ok(stat) => stat,
         Err(error) => return errno(error),
     };
-    write_stat(stat_address, stat, io)
+    let (Ok(size), Ok(block_size), Ok(links)) = (
+        u64::try_from(stat.size),
+        u32::try_from(stat.block_size),
+        u32::try_from(stat.links),
+    ) else {
+        return errno(EOVERFLOW);
+    };
+    let mut bytes = [0u8; 256];
+    bytes[..4].copy_from_slice(&AVAILABLE.to_le_bytes());
+    bytes[4..8].copy_from_slice(&block_size.to_le_bytes());
+    bytes[16..20].copy_from_slice(&links.to_le_bytes());
+    bytes[20..24].copy_from_slice(&stat.uid.to_le_bytes());
+    bytes[24..28].copy_from_slice(&stat.gid.to_le_bytes());
+    bytes[28..30].copy_from_slice(&(stat.mode as u16).to_le_bytes());
+    bytes[32..40].copy_from_slice(&stat.inode.to_le_bytes());
+    bytes[40..48].copy_from_slice(&size.to_le_bytes());
+    result(io.copy_to_user(address, &bytes).map(|_| 0))
 }
 
 fn access_syscall<I: LinuxSyscallIo>(path_address: u64, mode: u64, io: &mut I) -> SyscallOutcome {
@@ -686,6 +981,127 @@ fn uname_syscall<I: LinuxSyscallIo>(address: u64, io: &mut I) -> SyscallOutcome 
     result(io.copy_to_user(address, &value).map(|_| 0))
 }
 
+fn getsockname_syscall<I: LinuxSyscallIo>(
+    descriptor: u64,
+    address: u64,
+    length_ptr: u64,
+    io: &mut I,
+) -> SyscallOutcome {
+    if crate::dircache_socket::is_descriptor(descriptor) {
+        return result(io.unix_name(descriptor)
+            .and_then(|bound| write_unix_name(address, length_ptr, bound, io))
+            .map(|()| 0));
+    }
+    let (ip, port) = match io.socket_name(descriptor) {
+        Ok(endpoint) => endpoint,
+        Err(error) => return errno(error),
+    };
+    result(write_sockaddr(address, length_ptr, ip, port, io).map(|()| 0))
+}
+
+fn accept_syscall<I: LinuxSyscallIo>(
+    descriptor: u64,
+    address: u64,
+    length_ptr: u64,
+    flags: u64,
+    io: &mut I,
+) -> SyscallOutcome {
+    if flags & !(0x800 | 0x80000) != 0 {
+        return errno(EINVAL);
+    }
+    let (accepted, ip, port) = match io.accept(descriptor, flags) {
+        Ok(endpoint) => endpoint,
+        Err(error) => return errno(error),
+    };
+    if address != 0 {
+        let written = if crate::dircache_socket::is_descriptor(accepted) {
+            write_unix_name(address, length_ptr, false, io)
+        } else {
+            write_sockaddr(address, length_ptr, ip, port, io)
+        };
+        if let Err(error) = written {
+            let _ = io.close(accepted);
+            return errno(error);
+        }
+    }
+    SyscallOutcome::Return(accepted)
+}
+
+fn write_sockaddr<I: LinuxSyscallIo>(
+    address: u64,
+    length_ptr: u64,
+    ip: [u8; 4],
+    port: u16,
+    io: &mut I,
+) -> Result<(), u16> {
+    let mut length = [0; 4];
+    io.copy_from_user(length_ptr, &mut length)?;
+    let requested = i32::from_le_bytes(length);
+    if requested < 0 {
+        return Err(EINVAL);
+    }
+    let mut sockaddr = [0u8; 16];
+    sockaddr[..2].copy_from_slice(&2u16.to_le_bytes());
+    sockaddr[2..4].copy_from_slice(&port.to_be_bytes());
+    sockaddr[4..8].copy_from_slice(&ip);
+    let amount = (requested as usize).min(sockaddr.len());
+    if amount != 0 {
+        io.copy_to_user(address, &sockaddr[..amount])?;
+    }
+    io.copy_to_user(length_ptr, &16u32.to_le_bytes())
+}
+
+fn write_unix_name<I: LinuxSyscallIo>(
+    address: u64,
+    length_ptr: u64,
+    bound: bool,
+    io: &mut I,
+) -> Result<(), u16> {
+    let mut length = [0; 4];
+    io.copy_from_user(length_ptr, &mut length)?;
+    let requested = i32::from_le_bytes(length);
+    if requested < 0 {
+        return Err(EINVAL);
+    }
+    let mut sockaddr = [0u8; 110];
+    sockaddr[0] = 1;
+    let actual = if bound {
+        let path = crate::dircache::SOCKET_PATH.as_bytes();
+        sockaddr[2..2 + path.len()].copy_from_slice(path);
+        3 + path.len()
+    } else {
+        2
+    };
+    let amount = (requested as usize).min(actual);
+    if amount != 0 {
+        io.copy_to_user(address, &sockaddr[..amount])?;
+    }
+    io.copy_to_user(length_ptr, &(actual as u32).to_le_bytes())
+}
+
+fn unix_address_syscall<I: LinuxSyscallIo>(
+    fd: u64,
+    address: u64,
+    length: u64,
+    bind: bool,
+    io: &mut I,
+) -> SyscallOutcome {
+    if !(3..=110).contains(&length) {
+        return errno(EINVAL);
+    }
+    let mut storage = [0; 110];
+    let sockaddr = &mut storage[..length as usize];
+    if let Err(error) = io.copy_from_user(address, sockaddr) {
+        return errno(error);
+    }
+    if sockaddr[..2] != [1, 0] {
+        return errno(EAFNOSUPPORT);
+    }
+    let path = &sockaddr[2..];
+    let end = path.iter().position(|byte| *byte == 0).unwrap_or(path.len());
+    result(io.unix_address(fd, &path[..end], bind).map(|()| 0))
+}
+
 fn bind_syscall<I: LinuxSyscallIo>(
     descriptor: u64,
     address: u64,
@@ -793,7 +1209,8 @@ fn execve_syscall<I: LinuxSyscallIo>(
     }
     match io.execve(
         path,
-        &arguments[..argument_count],
+        // Linux inserts an empty argv[0] when execve receives no arguments.
+        &arguments[..argument_count.max(1)],
         &environment[..environment_count],
     ) {
         Ok(transition) => SyscallOutcome::Exec(transition),
@@ -893,6 +1310,21 @@ fn read_syscall<I: LinuxSyscallIo>(
     offset: Option<u64>,
     io: &mut I,
 ) -> SyscallOutcome {
+    if crate::dircache_socket::is_descriptor(descriptor) {
+        if offset.is_some() {
+            return errno(ESPIPE);
+        }
+        let mut packet = [0; crate::dircache_socket::PACKET_SIZE];
+        let count = requested.min(packet.len() as u64) as usize;
+        if count == 0 {
+            return SyscallOutcome::Return(0);
+        }
+        return result(io.validate_user_write(address, count).and_then(|()| {
+            let amount = io.read(descriptor, &mut packet[..count])?;
+            io.copy_to_user(address, packet.get(..amount).ok_or(EIO)?)?;
+            Ok(amount as u64)
+        }));
+    }
     if offset.is_some_and(|offset| offset > i64::MAX as u64) {
         return errno(EINVAL);
     }
@@ -1010,6 +1442,16 @@ fn write_syscall<I: LinuxSyscallIo>(
     if requested == 0 {
         return SyscallOutcome::Return(0);
     }
+    if crate::dircache_socket::is_descriptor(descriptor) {
+        let mut packet = [0; crate::dircache_socket::PACKET_SIZE];
+        if requested > packet.len() as u64 {
+            return errno(EMSGSIZE);
+        }
+        let packet = &mut packet[..requested as usize];
+        return result(io.copy_from_user(address, packet)
+            .and_then(|()| io.write(descriptor, packet))
+            .map(|amount| amount as u64));
+    }
     let count = requested.min(MAX_WRITE_BYTES as u64) as usize;
     let mut buffer = [0u8; WRITE_CHUNK_SIZE];
     let mut written = 0usize;
@@ -1064,6 +1506,7 @@ mod tests {
         descriptor: u64,
         max_write: usize,
         opened_path: String,
+        ignores_sigpipe: bool,
     }
 
     impl LinuxSyscallIo for FakeIo {
@@ -1106,6 +1549,50 @@ mod tests {
             Ok(count)
         }
 
+        fn fstat(&mut self, descriptor: u64) -> Result<LinuxStat, u16> {
+            if descriptor != self.descriptor {
+                return Err(EBADF);
+            }
+            let timestamp = Timespec {
+                seconds: 0,
+                nanoseconds: 0,
+            };
+            Ok(LinuxStat {
+                inode: 3,
+                mode: 0o020600,
+                links: 1,
+                uid: 1000,
+                gid: 100,
+                size: 0,
+                block_size: 4096,
+                blocks: 0,
+                access_time: timestamp,
+                modification_time: timestamp,
+                change_time: timestamp,
+            })
+        }
+
+        fn random_bytes(&mut self, destination: &mut [u8]) -> Result<(), u16> {
+            destination.fill(0xa5);
+            Ok(())
+        }
+
+        fn poll_events(&mut self, descriptor: u32, events: u16) -> Result<u16, u16> {
+            if u64::from(descriptor) != self.descriptor {
+                return Err(EBADF);
+            }
+            Ok(events & POLLOUT)
+        }
+
+        fn ignores_sigpipe(&self) -> bool {
+            self.ignores_sigpipe
+        }
+
+        fn set_sigpipe_ignored(&mut self, ignored: bool) -> Result<(), u16> {
+            self.ignores_sigpipe = ignored;
+            Ok(())
+        }
+
         fn open(&mut self, path: &str, _flags: u64, _mode: u64) -> Result<u64, u16> {
             self.opened_path.clear();
             self.opened_path.push_str(path);
@@ -1145,6 +1632,13 @@ mod tests {
             }
         }
 
+        fn socket_name(&mut self, descriptor: u64) -> Result<([u8; 4], u16), u16> {
+            if descriptor != 5 {
+                return Err(EBADF);
+            }
+            Ok(([127, 0, 0, 1], 49152))
+        }
+
         fn clock_gettime(&mut self, clock_id: u64) -> Result<Timespec, u16> {
             if clock_id == CLOCK_MONOTONIC {
                 Ok(Timespec {
@@ -1180,7 +1674,90 @@ mod tests {
             descriptor: 1,
             max_write: usize::MAX,
             opened_path: String::new(),
+            ignores_sigpipe: false,
         }
+    }
+
+    #[test]
+    fn statx_empty_path_uses_descriptor_and_marks_unavailable_fields() {
+        let mut io = fake_io();
+        let base = io.base;
+        io.user[..256].fill(0xff);
+        assert_eq!(
+            statx_syscall(1, 0, AT_EMPTY_PATH as u32, 0xfff, base, &mut io),
+            SyscallOutcome::Return(0)
+        );
+        assert_eq!(&io.user[..4], &0x31fu32.to_le_bytes());
+        assert_eq!(&io.user[28..30], &0o020600u16.to_le_bytes());
+        assert_eq!(&io.user[32..40], &3u64.to_le_bytes());
+        assert_eq!(&io.user[64..128], &[0; 64]);
+        assert_eq!(
+            statx_syscall(3, 0, AT_EMPTY_PATH as u32, 0, base, &mut io),
+            errno(EBADF)
+        );
+        assert_eq!(
+            statx_syscall(1, 0, AT_EMPTY_PATH as u32, 1 << 31, base, &mut io),
+            errno(EINVAL)
+        );
+    }
+
+    #[test]
+    fn immediate_poll_reports_ready_invalid_and_ignored_descriptors() {
+        let mut io = fake_io();
+        let base = io.base;
+        for (entry, fd) in io.user[..24]
+            .as_chunks_mut::<8>()
+            .0
+            .iter_mut()
+            .zip([1i32, 4, -1])
+        {
+            entry[..4].copy_from_slice(&fd.to_le_bytes());
+            entry[4..6].copy_from_slice(&POLLOUT.to_le_bytes());
+            entry[6..].fill(0xff);
+        }
+        assert_eq!(poll_syscall(base, 3, 0, &mut io), SyscallOutcome::Return(2));
+        assert_eq!(&io.user[6..8], &POLLOUT.to_le_bytes());
+        assert_eq!(&io.user[14..16], &POLLNVAL.to_le_bytes());
+        assert_eq!(&io.user[22..24], &[0, 0]);
+        assert_eq!(poll_syscall(base, 3, 1, &mut io), errno(ENOSYS));
+        assert_eq!(poll_syscall(0, 1, 0, &mut io), errno(EFAULT));
+    }
+
+    #[test]
+    fn sigpipe_disposition_survives_query_and_bad_output_does_not_change_it() {
+        let mut io = fake_io();
+        let base = io.base;
+        io.user[..32].fill(0);
+        io.user[0] = 1;
+        assert_eq!(
+            sigaction_syscall(SIGPIPE, base, base + 32, 8, &mut io),
+            SyscallOutcome::Return(0)
+        );
+        assert_eq!(io.user[32], 0);
+        assert_eq!(
+            sigaction_syscall(SIGPIPE, 0, base + 32, 8, &mut io),
+            SyscallOutcome::Return(0)
+        );
+        assert_eq!(io.user[32], 1);
+        io.user[0] = 0;
+        assert_eq!(
+            sigaction_syscall(SIGPIPE, base, 1, 8, &mut io),
+            errno(EFAULT)
+        );
+        assert!(io.ignores_sigpipe());
+    }
+
+    #[test]
+    fn getrandom_checks_flags_and_destination_before_copying() {
+        let mut io = fake_io();
+        let base = io.base;
+        assert_eq!(
+            getrandom_syscall(base, 300, 0, &mut io),
+            SyscallOutcome::Return(300)
+        );
+        assert_eq!(&io.user[..300], &[0xa5; 300]);
+        assert_eq!(getrandom_syscall(base, 1, 6, &mut io), errno(EINVAL));
+        assert_eq!(getrandom_syscall(base + 4095, 2, 0, &mut io), errno(EFAULT));
     }
 
     #[test]
@@ -1496,6 +2073,18 @@ mod tests {
             dispatch(SYS_LISTEN, [5, 10, 0, 0, 0, 0], context, &mut io),
             SyscallOutcome::Return(0)
         );
+        io.user[32..36].copy_from_slice(&4u32.to_le_bytes());
+        assert_eq!(
+            dispatch(
+                SYS_GETSOCKNAME,
+                [5, 0x4010, 0x4020, 0, 0, 0],
+                context,
+                &mut io
+            ),
+            SyscallOutcome::Return(0)
+        );
+        assert_eq!(&io.user[16..20], &[2, 0, 192, 0]);
+        assert_eq!(&io.user[32..36], &16u32.to_le_bytes());
         assert_eq!(
             dispatch(SYS_LISTEN, [5, u64::MAX, 0, 0, 0, 0], context, &mut io),
             SyscallOutcome::Return((-(EINVAL as i64)) as u64)

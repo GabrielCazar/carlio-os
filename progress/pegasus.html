@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#10151d">
+  <title>Pegasus DS — progresso da integração</title>
+  <link rel="stylesheet" href="map.css">
+</head>
+<body>
+<main>
+  <header>
+    <div class="summary">
+      <div class="eyebrow">Progresso da integração · CarlioOS</div>
+      <h1>Pegasus DS</h1>
+      <p>Marcos para executar o serviço de diretório e identidade no CarlioOS. A barra conta as tarefas de integração validadas nesta página.</p>
+      <p class="project-links"><a href="index.html">← Progresso do CarlioOS</a> · <a href="../../pegasus_ds/progress/html/index.html">Painel do repositório Pegasus DS ↗</a></p>
+    </div>
+    <nav class="legend" aria-label="Legenda de estados">
+      <span class="key"><i class="dot done"></i>Validado</span><span class="key"><i class="dot doing"></i>Em andamento</span><span class="key"><i class="dot pending"></i>Pendente</span><span class="key"><i class="dot blocked"></i>Dependência</span>
+    </nav>
+  </header>
+
+  <section class="completion" aria-labelledby="completion-title">
+    <div class="completion-head">
+      <div><h2 id="completion-title">Progresso de conclusão</h2><p id="completion-summary">Calculando tarefas ativas…</p></div>
+      <strong class="completion-score" id="completion-percent">—%</strong>
+    </div>
+    <div class="progress-track" id="completion-bar" role="progressbar" aria-label="Tarefas ativas validadas" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+      <span class="progress-segment done" data-status="done"></span><span class="progress-segment doing" data-status="doing"></span><span class="progress-segment pending" data-status="pending"></span><span class="progress-segment blocked" data-status="blocked"></span>
+    </div>
+    <div class="progress-legend" id="completion-legend" aria-live="polite"></div>
+    <h3 class="tree-title">Árvore de conclusão por fase</h3>
+    <ul class="completion-tree" id="completion-tree" aria-label="Fases e tarefas da integração Pegasus DS"></ul>
+    <noscript><p>Ative JavaScript para calcular a barra e expandir a árvore de conclusão.</p></noscript>
+  </section>
+
+  <section class="treemap integration-map" aria-label="Mapa da integração Pegasus DS">
+    <article class="phase">
+      <div class="phase-head"><h2><span class="phase-no">01</span> · Execução e rede</h2><a class="phase-link" href="../docs/PEGASUS-DS.md">Evidências ↗</a></div>
+      <div class="tasks">
+        <div class="task done"><h3>Diagnóstico em CPL3</h3><p>O executável de diagnóstico do pegasusd realizou operações de diretório no convidado.</p></div>
+        <div class="task done"><h3>TCP passivo em VM</h3><p>Um ELF em CPL3 aceitou uma conexão, trocou dados e encerrou a sessão em BIOS e UEFI.</p><span class="sub"><a href="../reports/logs/carlio-tcp-cpl3-bios.log">BIOS ↗</a> · <a href="../reports/logs/carlio-tcp-cpl3-uefi.log">UEFI ↗</a></span></div>
+        <div class="task pending"><h3>Recursos de rede e ABI para serviços</h3><p>O mapa do CarlioOS acompanha TCP de saída, sockets bloqueantes e as chamadas Linux exigidas pelo serviço.</p></div>
+      </div>
+    </article>
+    <article class="phase">
+      <div class="phase-head"><h2><span class="phase-no">02</span> · Diretório e autenticação</h2></div>
+      <div class="tasks">
+        <div class="task doing"><h3>LDAP com TLS 1.3</h3><p>Há operações de diretório exercitadas pelo diagnóstico. Faltam o listener, a sessão TLS e o teste com um cliente LDAP.</p></div>
+        <div class="task pending"><h3>Armazenamento persistente</h3><p>Persistir identidades e políticas e verificar a recuperação após reinício e falhas.</p></div>
+        <div class="task pending"><h3>NSS e PAM</h3><p>Validar consultas a usuários e grupos pelo NSS e autenticação pelo PAM.</p></div>
+      </div>
+    </article>
+    <article class="phase">
+      <div class="phase-head"><h2><span class="phase-no">03</span> · Isolamento e cache</h2><a class="phase-link" href="../docs/DIRCACHE_PROTOCOL.md">Contrato ↗</a></div>
+      <div class="tasks">
+        <div class="task pending"><h3>Isolamento do pegasusd</h3><p>Executar o serviço com identidade dedicada e acesso limitado ao armazenamento e às interfaces necessárias.</p></div>
+        <div class="task doing"><h3>IPC local</h3><p>Endpoint experimental AF_UNIX SOCK_SEQPACKET com descritores vinculados à identidade do processo. Registro exige domínio do backend e capability, concedidos somente ao ELF estático aprovado. Homologação pendente.</p></div>
+        <div class="task doing"><h3>Integração com dircache</h3><p>Codec v1 ligado à ABI com expiração, geração e auditoria no console e em reserva AHCI provisionada. Dispositivo de auditoria disponível para leitura. Adaptador no pegasusd pendente.</p></div>
+      </div>
+    </article>
+    <article class="phase">
+      <div class="phase-head"><h2><span class="phase-no">04</span> · Operação no NAS</h2><a class="phase-link" href="../docs/ROADMAP.md">Roadmap ↗</a></div>
+      <div class="tasks">
+        <div class="task blocked"><h3>Validação do serviço completo</h3><p>O teste depende do listener TLS, do armazenamento persistente e da integração de identidade.</p></div>
+        <div class="task pending"><h3>Drivers em hardware físico</h3><p>Verificar rede e armazenamento no NAS com CarlioOS executando diretamente no equipamento.</p></div>
+      </div>
+    </article>
+  </section>
+</main>
+<script src="map.js"></script>
+</body>
+</html>

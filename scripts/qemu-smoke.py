@@ -33,8 +33,14 @@ def main() -> int:
                         help="imagem de disco anexada ao AHCI; escrita fica em snapshot temporário")
     parser.add_argument("--expect-disk-exec", action="store_true",
                         help="exige saída do ELF CPL3 carregado do disco por execve")
+    parser.add_argument("--expect-linux-uname", action="store_true",
+                        help="exige que um uname com glibc escreva Linux no serial")
+    parser.add_argument("--expect-pegasus", action="store_true",
+                        help="exige que pegasusd conclua as operações locais de diretório e saia com status zero")
     parser.add_argument("--expect-lockdown", choices=("none", "integrity", "confidentiality"),
                         help="exige o nível de lockdown no log de boot")
+    parser.add_argument("--expect-physical-report", action="store_true",
+                        help="exige diagnóstico automático sem entrada serial durante o boot")
     parser.add_argument("--expect-disk-read", action="store_true",
                         help="exige montagem e leitura CPL3 de /probe.bin com disk-read-test")
     parser.add_argument("--expect-rootfs", choices=("initialized", "mounted"),
@@ -50,6 +56,12 @@ def main() -> int:
         parser.error("use apenas um entre --herm-image e --disk-image")
     if args.expect_disk_exec and not args.disk_image:
         parser.error("--expect-disk-exec exige --disk-image")
+    if args.expect_linux_uname and not args.disk_image:
+        parser.error("--expect-linux-uname exige --disk-image")
+    if args.expect_pegasus and not args.disk_image:
+        parser.error("--expect-pegasus exige --disk-image")
+    if args.expect_pegasus and (args.expect_disk_exec or args.expect_linux_uname or args.expect_disk_read):
+        parser.error("--expect-pegasus é um modo de execução de disco independente")
     if args.expect_disk_read and not args.disk_image:
         parser.error("--expect-disk-read exige --disk-image")
     if args.expect_rootfs and not args.herm_image:
@@ -70,6 +82,8 @@ def main() -> int:
         "-no-reboot",
         "-no-shutdown",
     ]
+    if args.expect_linux_uname or args.expect_pegasus:
+        command.extend(("-cpu", "host" if args.accel == "kvm" else "max"))
     if args.iso:
         command.extend(("-cdrom", str(args.iso.resolve()), "-boot", "d"))
     else:
@@ -128,6 +142,12 @@ def main() -> int:
         ("Sistema operacional experimental x86_64 escrito em Rust.".encode(), b"parar\r"),
         ("Processador parado.".encode(), None),
     )
+    if args.expect_pegasus:
+        checks = (
+            ("Pegasus DS: operações locais de diretório verificadas.".encode(), None),
+            (b"Runtime: prova de execve encerrou com status=0.", None),
+        )
+    pegasus_offset = 0
     deadline = time.monotonic() + args.timeout
 
     try:
@@ -147,6 +167,16 @@ def main() -> int:
                 else:
                     errors.extend(chunk)
                     haystack = bytes(errors)
+                if args.expect_pegasus:
+                    if key.data == "serial":
+                        while stage < len(checks):
+                            expected, _ = checks[stage]
+                            position = haystack.find(expected, pegasus_offset)
+                            if position < 0:
+                                break
+                            pegasus_offset = position + len(expected)
+                            stage += 1
+                    continue
                 expected, response = checks[stage]
                 if expected in haystack:
                     if response:
@@ -178,9 +208,20 @@ def main() -> int:
     if args.expect_disk_exec and (
             b"execve: ELF do disco executado em CPL3" not in output
             or b"execve: SSE iniciado e preservado em CPL3" not in output
-            or b"ABI Linux: stat, mutacoes e fsync verificados em CPL3" not in output):
-        sys.stderr.write(f"Validação do ELF, SSE ou ABI VFS ausente em CPL3. Log: {args.log}\n")
+            or b"ABI Linux: stat, mutacoes e fsync verificados em CPL3" not in output
+            or b"ABI Linux: socket IPv4 e porta efemera verificados em CPL3" not in output):
+        sys.stderr.write(f"Validação de ELF, SSE, VFS ou sockets ausente em CPL3. Log: {args.log}\n")
         return 1
+
+    if args.expect_linux_uname and (
+            b"Linux" not in output.splitlines()
+            or b"Runtime: prova de execve encerrou com status=0." not in output):
+        sys.stderr.write(f"Saída ou status zero do uname Linux ausente. Log: {args.log}\n")
+        return 1
+
+    if args.expect_pegasus:
+        print(f"Operações locais do Pegasus DS em CPL3 concluídas com status zero. Log: {args.log}")
+        return 0
 
     if args.expect_disk_read and (
             "VFS: rootfs montado em / para leitura".encode() not in output
@@ -206,7 +247,6 @@ def main() -> int:
         b"Framebuffer de firmware: ativo",
         "Criado por João G.R.Santos".encode(),
         "Login de teste: senha incorreta negada e sessão Argon2id emitida.".encode(),
-        b"ABI Linux: read(0) CPL3 recebeu entrada serial.",
         "ABI Linux: gettid e clock_gettime monotônico CPL3 passaram.".encode(),
         "Segurança CPL3: openat negou arquivo 0600 de outro UID com EACCES.".encode(),
         "ABI Linux: mmap/mprotect/munmap/brk CPL3 validaram ownership e permissões de página.".encode(),
@@ -222,10 +262,27 @@ def main() -> int:
         f"SMP Limine: CPUs detectadas={args.cpus}, APs iniciadas={args.cpus - 1}, aguardadas={args.cpus - 1}; APs aguardam despacho de tarefa, scheduler ainda desativado.".encode(),
         f"SMP trabalho: CPUs AP={args.cpus - 1}, tarefas concluídas={args.cpus - 1}, resultados válidos={args.cpus - 1}; despacho de prova concluído.".encode(),
     )
-    expected_signatures += (
-        (b" 2/4/6/768/3073 2/4/6/768/3073." if args.expect_disk_exec
-         else "Memória user por processo (folhas/tabelas/total/limite-folhas/limite-total): 2/4/6/768/3073 2/4/6/768/3073 2/4/6/768/3073.".encode()),
-    )
+    # Each unmodified probe owns two user pages and four page-table pages.
+    # The disk workload replaces the first probe's address space.
+    memory_probe = b"2/4/6/4096/16385"
+    memory_prefix = "Memória user por processo (folhas/tabelas/total/limite-folhas/limite-total): ".encode()
+    if args.expect_disk_exec or args.expect_linux_uname:
+        memory_signature = b" " + b" ".join((memory_probe,) * 2)
+    else:
+        memory_signature = memory_prefix + b" ".join((memory_probe,) * 3)
+    expected_signatures += (memory_signature + b".",)
+    if args.expect_physical_report:
+        expected_signatures += (
+            "ABI Linux: teste de entrada serial omitido no boot autônomo.".encode(),
+            b"CARLIO-PHYSICAL-REPORT BEGIN",
+            b"CARLIO-PHYSICAL-REPORT END",
+            b"Log persistente: inativo",
+        )
+        if serial_probe_sent:
+            sys.stderr.write("O perfil físico solicitou entrada serial durante o boot.\n")
+            return 1
+    else:
+        expected_signatures += (b"ABI Linux: read(0) CPL3 recebeu entrada serial.",)
     if args.expect_runtime_stress:
         expected_signatures += (
             "Heap global: alocação Rust maior que a arena bootstrap passou.".encode(),

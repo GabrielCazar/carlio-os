@@ -3,30 +3,40 @@
 //! Resolve dependências nomeadas e restrições de versão para um catálogo já
 //! carregado. Não baixa nem extrai arquivos e não executa install scripts.
 
+extern crate alloc;
+
+use self::alloc::vec::Vec;
 use super::arch::ArchPackageInfo;
 
-pub const TRANSACTION_LIMIT: usize = 64;
+pub const TRANSACTION_LIMIT: usize = 4096;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResolveError {
     TooManyPackages,
     TooManyRoots,
+    OutOfMemory,
     MissingDependency,
     VersionMismatch,
     DependencyCycle,
     InvalidDependency,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Transaction {
-    indexes: [usize; TRANSACTION_LIMIT],
-    len: usize,
+    indexes: Vec<usize>,
 }
 
 impl Transaction {
     pub fn packages(&self) -> &[usize] {
-        &self.indexes[..self.len]
+        &self.indexes
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Visit {
+    Unseen,
+    Active,
+    Complete,
 }
 
 /// Retorna índices em ordem de instalação (dependências antes dos dependentes).
@@ -37,42 +47,50 @@ pub fn resolve(catalog: &[ArchPackageInfo], roots: &[&str]) -> Result<Transactio
     if roots.len() > TRANSACTION_LIMIT {
         return Err(ResolveError::TooManyRoots);
     }
-    let mut state = [0u8; TRANSACTION_LIMIT]; // 0 ausente, 1 visitando, 2 concluído
-    let mut transaction = Transaction {
-        indexes: [0; TRANSACTION_LIMIT],
-        len: 0,
-    };
+    let mut state = Vec::new();
+    let mut indexes = Vec::new();
+    let mut path = Vec::new();
+    state
+        .try_reserve_exact(catalog.len())
+        .map_err(|_| ResolveError::OutOfMemory)?;
+    indexes
+        .try_reserve_exact(catalog.len())
+        .map_err(|_| ResolveError::OutOfMemory)?;
+    path.try_reserve_exact(catalog.len())
+        .map_err(|_| ResolveError::OutOfMemory)?;
+    state.resize(catalog.len(), Visit::Unseen);
+
     for root in roots {
         let index = find_name(catalog, root).ok_or(ResolveError::MissingDependency)?;
-        visit(index, catalog, &mut state, &mut transaction)?;
-    }
-    Ok(transaction)
-}
-
-fn visit(
-    index: usize,
-    catalog: &[ArchPackageInfo],
-    state: &mut [u8; TRANSACTION_LIMIT],
-    transaction: &mut Transaction,
-) -> Result<(), ResolveError> {
-    match state[index] {
-        1 => return Err(ResolveError::DependencyCycle),
-        2 => return Ok(()),
-        _ => {}
-    }
-    state[index] = 1;
-    for dependency in catalog[index].dependencies() {
-        let (name, operator, version) = parse_dependency(dependency)?;
-        let dep_index = find_name(catalog, name).ok_or(ResolveError::MissingDependency)?;
-        if !version_matches(catalog[dep_index].version(), operator, version) {
-            return Err(ResolveError::VersionMismatch);
+        if state[index] == Visit::Complete {
+            continue;
         }
-        visit(dep_index, catalog, state, transaction)?;
+        // A pilha explícita mantém cadeias longas fora da pilha do kernel.
+        state[index] = Visit::Active;
+        path.push((index, catalog[index].dependencies()));
+        while let Some((index, dependencies)) = path.last_mut() {
+            let Some(dependency) = dependencies.next() else {
+                state[*index] = Visit::Complete;
+                indexes.push(*index);
+                path.pop();
+                continue;
+            };
+            let (name, operator, version) = parse_dependency(dependency)?;
+            let dep_index = find_name(catalog, name).ok_or(ResolveError::MissingDependency)?;
+            if !version_matches(catalog[dep_index].version(), operator, version) {
+                return Err(ResolveError::VersionMismatch);
+            }
+            match state[dep_index] {
+                Visit::Active => return Err(ResolveError::DependencyCycle),
+                Visit::Complete => {}
+                Visit::Unseen => {
+                    state[dep_index] = Visit::Active;
+                    path.push((dep_index, catalog[dep_index].dependencies()));
+                }
+            }
+        }
     }
-    state[index] = 2;
-    transaction.indexes[transaction.len] = index;
-    transaction.len += 1;
-    Ok(())
+    Ok(Transaction { indexes })
 }
 
 fn find_name(catalog: &[ArchPackageInfo], name: &str) -> Option<usize> {
@@ -161,14 +179,14 @@ fn compare_version(left: &str, right: &str) -> core::cmp::Ordering {
                     Ordering::Equal
                 } else {
                     Ordering::Greater
-                }
+                };
             }
             (None, Some(y)) => {
                 return if y.bytes().all(|c| c.is_ascii_digit()) && y.trim_matches('0').is_empty() {
                     Ordering::Equal
                 } else {
                     Ordering::Less
-                }
+                };
             }
             (None, None) => return Ordering::Equal,
         }
@@ -196,6 +214,17 @@ mod tests {
         ];
         let plan = resolve(&catalog, &["app", "zlib"]).unwrap();
         assert_eq!(plan.packages(), &[1, 2, 0]);
+    }
+
+    #[test]
+    fn resolves_a_dependency_chain_the_size_of_the_arch_base_profile() {
+        let names: Vec<_> = (0..110).map(|index| std::format!("pkg{index}")).collect();
+        let mut catalog = std::vec![pkg(&names[0], "1", &[])];
+        for pair in names.windows(2) {
+            catalog.push(pkg(&pair[1], "1", &[&pair[0]]));
+        }
+        let plan = resolve(&catalog, &[&names[109]]).unwrap();
+        assert!(plan.packages().iter().copied().eq(0..110));
     }
 
     #[test]

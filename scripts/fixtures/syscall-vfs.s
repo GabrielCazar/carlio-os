@@ -13,12 +13,43 @@ _start:
     movq %xmm7, %rax
     test %rax, %rax                # execve clears the previous image state
     jne failed
-    cmpq $0, (%rsp)
+    cmpq $1, (%rsp)
     jne failed
+    mov 8(%rsp), %rax
+    cmpb $0, (%rax)
+    jne failed
+    pushq $0x43544c53
+    mov $0x1002, %edi             # ARCH_SET_FS
+    mov %rsp, %rsi
+    syscall_nr 158
+    require 0
+    mov $0x1003, %edi             # ARCH_GET_FS
+    xor %esi, %esi
+    syscall_nr 158
+    require -14                    # EFAULT
+    mov $0x1002, %edi
+    movabs $0xffff800000000000, %rsi
+    syscall_nr 158
+    require -1                     # EPERM
     movabs $0x123456789abcdef0, %r15
     movq %r15, %xmm7
     mov $0x1000000, %ecx
 1:  loop 1b                        # permit a scheduler timer tick
+    cmpl $0x43544c53, %fs:0
+    jne failed
+    pushq $0
+    mov $0x1003, %edi
+    mov %rsp, %rsi
+    syscall_nr 158
+    require 0
+    pop %rax
+    cmp %rsp, %rax
+    jne failed
+    add $8, %rsp
+    mov $0x1002, %edi
+    xor %esi, %esi
+    syscall_nr 158
+    require 0
     movq %xmm7, %rax
     cmp %r15, %rax
     jne failed
@@ -45,6 +76,35 @@ _start:
     xor %edx, %edx
     syscall_nr 59                  # execve
     require -13
+
+    mov $-100, %edi
+    lea mmap_window(%rip), %rsi
+    xor %edx, %edx
+    syscall_nr 257
+    test %rax, %rax
+    js failed
+    mov %rax, %r12
+    mov %rax, %r8
+    xor %edi, %edi
+    mov $69632, %esi
+    mov $1, %edx
+    mov $2, %r10d
+    xor %r9d, %r9d
+    syscall_nr 9
+    test %rax, %rax
+    jle failed
+    cmpb $'A', (%rax)
+    jne failed
+    cmpb $'B', 65536(%rax)
+    jne failed
+    cmpb $0, 65537(%rax)
+    jne failed
+    mov %rax, %rdi
+    syscall_nr 11
+    require 0
+    mov %r12, %rdi
+    syscall_nr 3
+    require 0
 
     sub $144, %rsp                  # Linux x86-64 struct stat
     lea directory(%rip), %rdi
@@ -186,6 +246,48 @@ _start:
     syscall_nr 84                        # rmdir
     require 0
 
+    mov $2, %edi                    # AF_INET
+    mov $0x80801, %esi              # SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC
+    xor %edx, %edx
+    syscall_nr 41                   # socket
+    test %rax, %rax
+    js failed
+    mov %rax, %r12
+    sub $24, %rsp
+    movq $2, (%rsp)                 # sockaddr_in, wildcard address and port zero
+    movq $0, 8(%rsp)
+    mov %r12, %rdi
+    mov %rsp, %rsi
+    mov $16, %edx
+    syscall_nr 49                   # bind
+    require 0
+    movl $16, 16(%rsp)
+    lea 16(%rsp), %rdx
+    syscall_nr 51                   # getsockname
+    require 0
+    cmpl $16, 16(%rsp)
+    jne failed
+    cmpw $2, (%rsp)
+    jne failed
+    cmpw $0, 2(%rsp)
+    je failed
+    mov $4, %esi
+    syscall_nr 50                   # listen
+    require 0
+    syscall_nr 3                    # close
+    require 0
+    add $24, %rsp
+
+    mov $2, %edi
+    syscall_nr 3                   # close(stderr)
+    require 0
+    syscall_nr 3
+    require -9                     # EBADF on a second close
+    lea payload(%rip), %rsi
+    mov $3, %edx
+    syscall_nr 1
+    require -9                     # EBADF after closing stderr
+
     mov $1, %edi
     movq %xmm7, %rax
     cmp %r15, %rax
@@ -216,8 +318,10 @@ message:
     .ascii "execve: ELF do disco executado em CPL3\n"
     .ascii "execve: SSE iniciado e preservado em CPL3\n"
     .ascii "ABI Linux: stat, mutacoes e fsync verificados em CPL3\n"
+    .ascii "ABI Linux: socket IPv4 e porta efemera verificados em CPL3\n"
 .set message_len, . - message
 disk_executable: .asciz "/carlio-disk-exec"
+mmap_window: .asciz "/mmap-window"
 missing_file: .asciz "/carlio-access-missing"
 
 restricted_file: .asciz "/carlio-privado/probe"

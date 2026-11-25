@@ -5,15 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#10151d">
   <title>CarlioOS — mapa de progresso</title>
-  <style>
-    :root{color-scheme:dark;--bg:#10151d;--panel:#19222e;--line:#344254;--text:#edf3f8;--muted:#b1bdc9;--done:#17483e;--done-line:#4aa990;--doing:#51411c;--doing-line:#e7bd54;--pending:#202b38;--pending-line:#56677b;--blocked:#462c31;--blocked-line:#bd707b;--accent:#8ce1cb}
-    *{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at 78% 0,#263b48 0,transparent 42%),var(--bg);color:var(--text);font:15px/1.45 system-ui,sans-serif}main{max-width:1500px;margin:auto;padding:36px 24px 60px}header{display:flex;justify-content:space-between;align-items:end;gap:24px;margin-bottom:22px}.eyebrow{color:var(--accent);letter-spacing:.13em;text-transform:uppercase;font-size:.75rem;font-weight:750}h1{font-size:clamp(2rem,5vw,3.5rem);line-height:1.05;margin:6px 0}p{color:var(--muted);margin:7px 0}.summary{max-width:850px}.legend{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end}.key,.state{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:999px;padding:4px 9px;color:var(--muted);font-size:.75rem;white-space:nowrap}.dot{width:8px;height:8px;border-radius:50%;display:inline-block}.dot.done{background:var(--done-line)}.dot.doing{background:var(--doing-line)}.dot.pending{background:var(--pending-line)}.dot.blocked{background:var(--blocked-line)}
-    .treemap{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));grid-template-rows:repeat(3,minmax(245px,auto));grid-template-areas:"p1 p2 p2 p3" "p4 p2 p2 p3" "p5 p6 p7 p8";gap:10px}.phase{min-width:0;min-height:0;border:1px solid var(--line);border-radius:15px;background:color-mix(in srgb,var(--panel),transparent 4%);padding:13px;display:flex;flex-direction:column;overflow:hidden}.phase[data-phase="1"]{grid-area:p1}.phase[data-phase="2"]{grid-area:p2;border-color:#438d7a;box-shadow:inset 0 3px var(--accent)}.phase[data-phase="3"]{grid-area:p3}.phase[data-phase="4"]{grid-area:p4}.phase[data-phase="5"]{grid-area:p5}.phase[data-phase="6"]{grid-area:p6}.phase[data-phase="7"]{grid-area:p7}.phase[data-phase="8"]{grid-area:p8}.phase-head{display:flex;justify-content:space-between;align-items:start;gap:8px;margin:0 0 9px}.phase h2{font-size:1rem;line-height:1.2;margin:0}.phase-no{color:var(--accent);font-variant-numeric:tabular-nums}.phase-link{font-size:.72rem;white-space:nowrap}.tasks{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));grid-auto-rows:minmax(68px,1fr);gap:7px;flex:1}.phase[data-phase="2"] .tasks,.phase[data-phase="3"] .tasks{grid-template-columns:repeat(2,minmax(0,1fr));grid-auto-rows:minmax(100px,1fr)}.task{min-width:0;border:1px solid var(--pending-line);border-radius:10px;padding:8px 9px;background:var(--pending);overflow:hidden}.task.done{background:var(--done);border-color:color-mix(in srgb,var(--done-line),transparent 35%)}.task.doing{background:var(--doing);border-color:color-mix(in srgb,var(--doing-line),transparent 28%)}.task.blocked{background:var(--blocked);border-color:color-mix(in srgb,var(--blocked-line),transparent 30%)}.task.archived{background:#202127;border-color:#63636d;opacity:.72}.task h3{font-size:.82rem;line-height:1.2;margin:0 0 4px}.task p{font-size:.72rem;line-height:1.3;margin:0;color:#d1dbe3}.sub{display:block;color:#c0ccd6;font-size:.68rem;line-height:1.3;margin-top:4px}.phase-foot{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-top:8px}.phase-foot p{font-size:.7rem;margin:0}.phase-foot a,footer a{color:var(--accent)}.status-word{font-size:.68rem;font-weight:750;letter-spacing:.04em;text-transform:uppercase}.task.done .status-word{color:#a6f0dd}.task.doing .status-word{color:#ffe29a}.task.blocked .status-word{color:#f3b5bd}.task.pending .status-word{color:#c1cfdd}
-    .notes{margin-top:16px;border-top:1px solid var(--line);padding-top:12px;display:flex;gap:10px;flex-wrap:wrap}.note{flex:1 1 260px;border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:#151d27}.note strong{font-size:.8rem}.note p{font-size:.75rem}footer{margin-top:20px;color:var(--muted);font-size:.8rem}
-    .completion{margin:0 0 18px;padding:16px;border:1px solid var(--line);border-radius:15px;background:color-mix(in srgb,var(--panel),transparent 2%)}.completion-head{display:flex;justify-content:space-between;align-items:end;gap:12px}.completion h2{font-size:1rem;margin:0}.completion-head p{font-size:.76rem;margin:4px 0 10px}.completion-score{font-size:1.8rem;font-weight:800;color:var(--accent);font-variant-numeric:tabular-nums}.progress-track{height:16px;display:flex;overflow:hidden;border:1px solid #415064;border-radius:999px;background:#111923}.progress-segment{height:100%;transition:width .25s ease}.progress-segment.done{background:var(--done-line)}.progress-segment.doing{background:var(--doing-line)}.progress-segment.pending{background:#56677b}.progress-segment.blocked{background:var(--blocked-line)}.progress-legend{display:flex;flex-wrap:wrap;gap:8px 16px;margin-top:9px;color:var(--muted);font-size:.72rem}.progress-legend b{color:var(--text);font-variant-numeric:tabular-nums}.tree-title{margin:16px 0 6px;font-size:.82rem}.completion-tree,.completion-branch{list-style:none;margin:0;padding-left:18px}.completion-tree{padding-left:0}.completion-branch{border-left:1px solid #425365;margin-left:7px}.tree-phase{position:relative;padding:5px 0 4px 13px}.tree-phase:before,.tree-task:before{content:"";position:absolute;left:-1px;top:17px;width:9px;border-top:1px solid #425365}.tree-phase:after{content:"";position:absolute;left:5px;top:17px;bottom:-5px;border-left:1px solid #425365}.tree-phase:last-child:after{display:none}.tree-phase>details>summary{cursor:pointer;display:flex;align-items:center;gap:9px;list-style:none}.tree-phase>details>summary::-webkit-details-marker{display:none}.tree-phase>details>summary:before{content:"＋";color:var(--accent);font-size:.75rem}.tree-phase>details[open]>summary:before{content:"−"}.tree-phase-name{min-width:190px;font-size:.76rem;font-weight:700}.tree-phase-count{color:var(--muted);font-size:.68rem;white-space:nowrap}.tree-mini{height:7px;flex:1;min-width:55px;display:flex;overflow:hidden;border-radius:99px;background:#111923}.tree-mini span{height:100%}.tree-mini .done{background:var(--done-line)}.tree-mini .doing{background:var(--doing-line)}.tree-mini .pending{background:#56677b}.tree-mini .blocked{background:var(--blocked-line)}.tree-task{position:relative;display:flex;align-items:center;gap:8px;padding:4px 0 4px 14px;color:var(--muted);font-size:.7rem}.tree-task:before{left:-1px;top:14px}.tree-task .tree-state{width:9px;height:9px;border-radius:50%;background:#56677b;flex:0 0 auto}.tree-task.done .tree-state{background:var(--done-line)}.tree-task.doing .tree-state{background:var(--doing-line)}.tree-task.blocked .tree-state{background:var(--blocked-line)}.tree-task.archived .tree-state{background:#777986}.tree-task .tree-task-name{color:#d1dbe3}.tree-status{margin-left:auto;text-transform:uppercase;font-size:.58rem;letter-spacing:.04em;white-space:nowrap}.tree-task.done .tree-status{color:#a6f0dd}.tree-task.doing .tree-status{color:#ffe29a}.tree-task.pending .tree-status{color:#c1cfdd}.tree-task.blocked .tree-status{color:#f3b5bd}.tree-task.archived .tree-status{color:#a6a6b0}
-    @media(max-width:1050px){.treemap{grid-template-columns:repeat(2,minmax(0,1fr));grid-template-rows:none;grid-template-areas:"p2 p2" "p3 p1" "p3 p4" "p5 p6" "p7 p8"}.phase{min-height:260px}.phase[data-phase="2"],.phase[data-phase="3"]{min-height:430px}}
-    @media(max-width:620px){main{padding:25px 13px 40px}header{display:block}.legend{justify-content:flex-start;margin-top:14px}.treemap{display:flex;flex-direction:column}.phase,.phase[data-phase="2"],.phase[data-phase="3"]{min-height:unset}.tasks,.phase[data-phase="2"] .tasks,.phase[data-phase="3"] .tasks{grid-auto-rows:minmax(82px,auto)}}
-  </style>
+  <link rel="stylesheet" href="map.css">
 </head>
 <body>
 <main>
@@ -22,6 +14,7 @@
       <div class="eyebrow">Mapa de progresso · kernel CarlioOS em Rust · x86-64</div>
       <h1>Fases, tarefas e subtarefas</h1>
       <p>A barra resume as tarefas ativas já validadas; expanda cada fase na árvore para ver o estado de cada tarefa. Os blocos abaixo detalham o trabalho e apontam para evidências.</p>
+      <p class="project-links"><a href="pegasus.html">Progresso do Pegasus DS ↗</a></p>
     </div>
     <nav class="legend" aria-label="Legenda de estados">
       <span class="key"><i class="dot done"></i>Validado</span><span class="key"><i class="dot doing"></i>Em andamento</span><span class="key"><i class="dot pending"></i>Pendente</span><span class="key"><i class="dot blocked"></i>Dependência</span>
@@ -67,9 +60,9 @@
         <div class="task done"><h3>Pilhas IRQ por CPU</h3><p>Handlers IRQ e TLB IPI executam em stack dedicada de 64 KiB, com fatias de 16 KiB.</p><span class="sub">QEMU percorreu stub assembly e vetor 32 aninhado; IF mantém IRQs de hardware não aninhadas</span></div>
         <div class="task done"><h3>Consumo da pilha de syscall</h3><p>Sentinelas opcionais medem a marca acumulada após SYSCALL e int 0x80.</p><span class="sub">Pico observado de 78.728 bytes em SYSCALL e 22.104 bytes em int 0x80, em pilhas de 128 KiB</span></div>
         <div class="task done"><h3>Runtime e quiescência</h3><p>Probes CPL3 executam no BSP e em dois APs; epoch do reaper confere CR3 kernel, stack idle e ACKs.</p><span class="sub">QEMU BIOS e UEFI confirmaram três ACKs e retorno à contagem inicial de frames</span></div>
-        <div class="task blocked"><h3>Revalidação NAS/KVM</h3><p>Repetir BIOS e UEFI no NAS para fechar a fase.</p><span class="sub">Os três endereços SSH configurados estavam inacessíveis em 24/11</span></div>
+        <div class="task done"><h3>Revalidação NAS/KVM</h3><p>BIOS e UEFI com quatro CPUs e 5 GiB confirmaram alocação acima de 4 GiB, preempção e recuperação dos frames.</p><span class="sub">8.192 ciclos em cada um de dois APs na ISO de diagnóstico</span></div>
       </div>
-      <div class="phase-foot"><p><span class="status-word">Critérios locais aprovados</span></p><a href="../reports/logs/fechamento-fase-2-20261124-32G-bios-final.log">Boot 32 GiB ↗</a></div>
+      <div class="phase-foot"><p><span class="status-word">Critérios aprovados em QEMU local e NAS/KVM</span></p><a href="../reports/logs/fase2-nas-kvm-smp-uefi.log">SMP no NAS ↗</a></div>
     </article>
 
     <article class="phase" data-phase="3">
@@ -92,7 +85,9 @@
         <div class="task done"><h3>Login serial e identidade POSIX</h3><p>Duas contas provisionadas foram autenticadas em QEMU/KVM no NAS. O teste verificou isolamento entre UIDs, proteção do banco de contas e leitura após reiniciar.</p></div>
         <div class="task pending"><h3>Processos da sessão</h3><p>Iniciar aplicações com o UID, GID e grupos da sessão autenticada.</p></div>
         <div class="task done"><h3>Diagnóstico UDP em VM</h3><p>Início, resposta e parada do serviço na porta 7704 validados no NAS em BIOS e UEFI.</p></div>
-        <div class="task doing"><h3>DNS e sockets</h3><p>O comando serial resolver recebeu uma resposta de DNS controlada em QEMU local. No NAS, a consulta expirou e devolveu o prompt.</p><span class="sub">DNS para aplicações e transporte por sockets pendentes.</span></div>
+        <div class="task doing"><h3>DNS e sockets</h3><p>O comando serial resolver recebeu uma resposta de DNS controlada em QEMU local. No NAS, a consulta expirou e devolveu o prompt.</p><span class="sub">DNS para aplicações, TCP de saída e espera bloqueante pendentes.</span></div>
+        <div class="task done"><h3>TCP passivo em VM</h3><p>Um cliente externo ao convidado abriu a conexão, trocou dados com um ELF em CPL3 e recebeu FIN sem iniciar o diagnóstico serial. Intel 82574L emulada, IPv4 na LAN.</p><span class="sub"><a href="../reports/logs/carlio-tcp-cpl3-bios.log">Log BIOS ↗</a> · <a href="../reports/logs/carlio-tcp-cpl3-uefi.log">Log UEFI ↗</a></span></div>
+        <div class="task doing"><h3>Pegasus DS</h3><p>O binário de diagnóstico executa operações de diretório em CPL3. O serviço ainda precisa do listener LDAP com TLS, armazenamento persistente, NSS/PAM e integração com dircache.</p><span class="sub">Isolamento de serviços e IPC AF_UNIX SOCK_SEQPACKET pendentes · <a href="pegasus.html">Ver progresso ↗</a></span></div>
         <div class="task pending"><h3>SSH/SFTP e SMB</h3><p>Implementação e reinício dos serviços pendentes.</p></div>
         <div class="task pending"><h3>Rede em hardware físico</h3><p>O NAS usa Realtek RTL8111/8168. Em QEMU/KVM, o driver foi validado com a Intel 82574L emulada.</p></div>
       </div>
@@ -103,8 +98,8 @@
       <div class="phase-head"><h2><span class="phase-no">05</span> · ABI Linux, Arch e Ubuntu</h2><a class="phase-link" href="../reports/fase-4-aplicacoes-linux.md">Plano ↗</a></div>
       <div class="tasks">
         <div class="task doing"><h3>Syscall dispatcher inicial</h3><p>SYSCALL em CPL3 com identidade, relógio, memória e VFS.</p><span class="sub">Execução de ELF em ext4, stat, mutações e fsync verificados em BIOS e UEFI local e no NAS. ABI geral segue em andamento.</span></div>
-        <div class="task doing"><h3>Userlands Arch + Ubuntu</h3><p>Rootfs Arch e Ubuntu Base verificadas no host. Execve transfere controle para um interpretador ELF de teste. O mmap privado de arquivos passou na fixture CPL3.</p><span class="sub">A glibc do Ubuntu ainda falha no carregamento. A cota de páginas e o suporte a mapeamentos fixos continuam pendentes.</span></div>
-        <div class="task doing"><h3>Pacotes</h3><p>Bootstrap Arch verificou assinaturas de pacotes com pacman no host. O planner ALPM próprio resolve dependências nomeadas e versionadas.</p><span class="sub">Instalação, isolamento e rollback no CarlioOS seguem em andamento.</span></div>
+        <div class="task doing"><h3>Userlands Arch + Ubuntu</h3><p>Rootfs Arch e Ubuntu Base verificadas no host. Execve transfere controle para um interpretador ELF de teste. O mmap privado de arquivos passou na fixture CPL3.</p><span class="sub">Em BIOS no NAS, o loader mapeou a glibc do Ubuntu 24.04.5 e parou na alocação do bloco TLS.</span></div>
+        <div class="task doing"><h3>Pacotes</h3><p>Bootstrap Arch verificou assinaturas de pacotes com pacman no host. O planejador ALPM próprio resolve dependências nomeadas e versionadas. Uma cadeia de 110 pacotes passou no teste de host.</p><span class="sub">Instalação, isolamento e rollback no CarlioOS seguem em andamento.</span></div>
         <div class="task doing"><h3>Base Arch + zsh</h3><p>O perfil Arch de 110 pacotes inclui zsh 5.9.2, executado em chroot no Linux do host.</p><span class="sub">Execução de zsh no CarlioOS e boot da userland seguem em andamento.</span></div>
       </div>
     </article>
@@ -113,7 +108,7 @@
       <div class="phase-head"><h2><span class="phase-no">06</span> · Desktop e agentes</h2><a class="phase-link" href="../reports/fase-6-interface-plataformas.md">Plano ↗</a></div>
       <div class="tasks">
         <div class="task done"><h3>Diagnóstico headless em VM</h3><p>O comando serial diagnostico consulta raiz, log persistente, memória livre, framebuffer de firmware e tempo de atividade. Validado em BIOS e UEFI no NAS.</p></div>
-        <div class="task pending"><h3>Plasma / SDDM</h3><p>Não instalável ainda: depende de linker, rootfs/ALPM, libc, threads/futex, DBus, entrada e driver gráfico/compositor.</p></div>
+        <div class="task doing"><h3>Plasma / SDDM</h3><p>A renderização de boot usa composição RGBA por software no framebuffer do firmware.</p><span class="sub">Permanecem abertas a compatibilidade com glibc, a instalação de pacotes no guest, threads/futex, D-Bus, dispositivos de entrada, DRM/KMS e o compositor de sessões.</span></div>
         <div class="task pending"><h3>Agentes</h3><p>ChatGPT/Ollama opcionais.</p><span class="sub">Rede, TLS e credenciais protegidas</span></div>
       </div>
     </article>
@@ -135,100 +130,13 @@
   </section>
 
   <section class="notes" aria-label="Limites e próximos gates">
-    <article class="note"><strong>Fase 5 · três gates de userland em aberto</strong><p>Loader: há parser host de PT_INTERP/DT_NEEDED e resolução host limitada, mas exec ainda não carrega interpretador/.so nem aplica GNU version tables. ABI: BIOS/UEFI local provaram getpid/gettid, clock_gettime/clock_getres monotônicos e brk positivo com mmap/munmap; NAS BIOS passou e NAS UEFI manteve aberto o gate de preempção de duas CR3. Ainda faltam CLOCK_REALTIME, mmap de arquivo, um teste de execve a partir do rootfs, TLS/threads, sinais e cobertura necessária à glibc. Mounts: QEMU BIOS confirmou ext4 e FAT32 em leitura na raiz com imagens MBR descartáveis. Rootfs Arch e execução de glibc/binários no alvo ainda não foram validados. Evidências e limites: <a href="../reports/fase-4-aplicacoes-linux.md">relatório fase 4</a> e <a href="../docs/ROADMAP.md">roadmap</a>.</p></article>
-    <article class="note"><strong>Fase 2 · validação local em 24/11</strong><p>QEMU BIOS e UEFI com quatro CPUs passaram com 5 GiB e 32 GiB. A prova SMP completou 8.192 ciclos por AP em dois APs, isolou dois page faults e recuperou todos os frames de processo. O fechamento aguarda NAS/KVM. Consulte o <a href="../reports/fase-2-memoria-execucao.md">relatório da fase</a>.</p></article>
+    <article class="note"><strong>Fase 5 · compatibilidade da userland</strong><p>O kernel transfere controle para o interpretador PT_INTERP. O NAS/KVM confirmou por fixture em BIOS e UEFI a leitura de duas janelas do mmap de arquivo. O binário real do Ubuntu chegou à inicialização do TLS em BIOS. A execução de aplicações e a instalação de pacotes no guest seguem em aberto. Consulte o <a href="../reports/fase-4-aplicacoes-linux.md">relatório do ABI Linux</a>.</p></article>
+    <article class="note"><strong>Fase 2 · validação local em 24/11</strong><p>QEMU BIOS e UEFI com quatro CPUs passaram com 5 GiB e 32 GiB. A prova SMP completou 8.192 ciclos por AP em dois APs, isolou dois page faults e recuperou todos os frames de processo. A revalidação no NAS/KVM passou em BIOS e UEFI com 5 GiB. Consulte o <a href="../reports/fase-2-memoria-execucao.md">relatório da fase</a>.</p></article>
     <article class="note"><strong>Fase 5 · implementação local ampliada, sem gate</strong><p>ABI Linux/libc recebeu chamadas de metadados, DAC, mutação de diretórios/arquivos e sincronização, além de mprotect parcial e wrappers. O kernel e a libc freestanding foram compilados. Probes CPL3 cobriram mmap, mprotect, munmap e brk. Persistência, semântica de dirfd, timestamps e compatibilidade libc continuam em aberto. Consulte o <a href="../reports/implementation-local-pendente-validacao.md">inventário detalhado</a> e o <a href="../reports/fase-4-aplicacoes-linux.md">relatório da fase 4</a>.</p></article>
     <article class="note"><strong>Fase 3 · aceite em VM concluído</strong><p>O NAS validou montagem ext4/FAT32, recuperação de metadados após corte simulado, overlay VFS persistente, 2 TiB, timeout e remoção do disco SATA com o controlador presente. A validação em equipamento físico segue pendente. Consulte o <a href="../reports/fase-3-bloco-filesystems.md">relatório e os logs</a>.</p></article>
   </section>
-  <footer>Atualizado em 19/11/2026 após boot QEMU BIOS com 4 CPUs. Documentação: <a href="../docs/ROADMAP.md">roadmap</a> · <a href="../docs/ARQUITETURA-KERNEL.md">arquitetura</a> · <a href="../docs/USERLAND.md">layout lógico da userland</a> · <a href="../reports/logs/painel-validacao.md">índice de logs</a>.</footer>
+  <footer>Atualizado em 24/11/2026 após os testes BIOS e UEFI no NAS/KVM. Documentação: <a href="../docs/ROADMAP.md">roadmap</a> · <a href="../docs/ARQUITETURA-KERNEL.md">arquitetura</a> · <a href="../docs/USERLAND.md">layout lógico da userland</a> · <a href="../reports/logs/painel-validacao.md">índice de logs</a>.</footer>
 </main>
-<script>
-  (() => {
-    const statuses = ["done", "doing", "pending", "blocked"];
-    const labels = { done: "Validado", doing: "Em andamento", pending: "Pendente", blocked: "Dependência", archived: "Arquivado" };
-    const phases = [...document.querySelectorAll(".phase")];
-    const totals = Object.fromEntries(statuses.map(status => [status, 0]));
-    const tree = document.getElementById("completion-tree");
-
-    for (const phase of phases) {
-      const heading = phase.querySelector(".phase-head h2").textContent.replace(/^\s*\d+\s*·\s*/, "").trim();
-      const tasks = [...phase.querySelectorAll(".task")];
-      const counts = Object.fromEntries(statuses.map(status => [status, 0]));
-      const leaves = document.createElement("ul");
-      leaves.className = "completion-branch";
-
-      for (const task of tasks) {
-        const status = statuses.find(candidate => task.classList.contains(candidate)) || (task.classList.contains("archived") ? "archived" : "pending");
-        const name = task.querySelector("h3")?.textContent.trim() || "Tarefa sem título";
-        if (status !== "archived") {
-          counts[status]++;
-          totals[status]++;
-        }
-        const leaf = document.createElement("li");
-        leaf.className = `tree-task ${status}`;
-        const marker = document.createElement("i");
-        marker.className = "tree-state";
-        marker.setAttribute("aria-hidden", "true");
-        const taskName = document.createElement("span");
-        taskName.className = "tree-task-name";
-        taskName.textContent = name;
-        const state = document.createElement("span");
-        state.className = "tree-status";
-        state.textContent = labels[status];
-        leaf.append(marker, taskName, state);
-        leaves.append(leaf);
-      }
-
-      const phaseTotal = statuses.reduce((sum, status) => sum + counts[status], 0);
-      const branch = document.createElement("li");
-      branch.className = "tree-phase";
-      const details = document.createElement("details");
-      const summary = document.createElement("summary");
-      const phaseName = document.createElement("span");
-      phaseName.className = "tree-phase-name";
-      phaseName.textContent = heading;
-      const phaseCounts = document.createElement("span");
-      phaseCounts.className = "tree-phase-count";
-      phaseCounts.textContent = `${counts.done}/${phaseTotal} validadas`;
-      const mini = document.createElement("span");
-      mini.className = "tree-mini";
-      mini.setAttribute("aria-label", `Fase ${heading}: ${counts.done} de ${phaseTotal} tarefas validadas`);
-      for (const status of statuses) {
-        const segment = document.createElement("span");
-        segment.className = status;
-        segment.style.width = phaseTotal ? `${counts[status] / phaseTotal * 100}%` : "0%";
-        mini.append(segment);
-      }
-      summary.append(phaseName, phaseCounts, mini);
-      details.append(summary, leaves);
-      branch.append(details);
-      tree.append(branch);
-    }
-
-    const total = statuses.reduce((sum, status) => sum + totals[status], 0);
-    const percent = total ? Math.floor(totals.done / total * 100) : 0;
-    document.getElementById("completion-percent").textContent = `${percent}%`;
-    document.getElementById("completion-summary").textContent = `${totals.done} de ${total} tarefas ativas validadas; tarefas arquivadas ficam fora do cálculo.`;
-    const bar = document.getElementById("completion-bar");
-    bar.setAttribute("aria-valuenow", String(percent));
-    bar.setAttribute("aria-valuetext", `${percent}% concluído: ${totals.done} validadas de ${total} tarefas ativas`);
-    for (const status of statuses) {
-      const segment = bar.querySelector(`[data-status="${status}"]`);
-      segment.style.width = total ? `${totals[status] / total * 100}%` : "0%";
-      segment.title = `${labels[status]}: ${totals[status]}`;
-    }
-    const legend = document.getElementById("completion-legend");
-    for (const status of statuses) {
-      const item = document.createElement("span");
-      const dot = document.createElement("i");
-      dot.className = `dot ${status}`;
-      dot.setAttribute("aria-hidden", "true");
-      const count = document.createElement("b");
-      count.textContent = String(totals[status]);
-      item.append(dot, ` ${labels[status]} `, count);
-      legend.append(item);
-    }
-  })();
-</script>
+<script src="map.js"></script>
 </body>
 </html>

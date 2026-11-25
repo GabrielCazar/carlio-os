@@ -33,9 +33,15 @@ pass-through de `/dev`.
 
 ## Limites de segurança do teste
 
-O teste físico atual deve ser somente de boot e diagnóstico. As provas automáticas
-aparecem pela serial, mas não são persistidas no USB: ainda não há driver USB
-mass-storage nem filesystem gravável conectado ao kernel. Não habilite o teste
+Gere a imagem de diagnóstico com `CARLIO_PHYSICAL_TEST=1 ./scripts/build-iso.sh`.
+A ISO resultante fica em `build/carlio-os-physical-test.iso` e emite
+automaticamente o diagnóstico e a lista de erros do kernel no boot, entre
+`CARLIO-PHYSICAL-REPORT BEGIN` e `CARLIO-PHYSICAL-REPORT END`. O perfil
+dispensa entrada serial durante o boot e desativa a abertura das reservas
+persistentes AHCI e a inicialização do swap.
+Capture a saída pela serial para manter os resultados fora do equipamento testado.
+O kernel ainda precisa de um driver USB mass-storage e de um caminho de escrita
+para devolver o relatório no pendrive. Não habilite o teste
 `storage-test` em hardware físico; ele grava setores no dispositivo AHCI que o
 driver selecionar. Não instale o CarlioOS, não conecte discos com dados
 importantes e não trate o resultado como validação de resistência a ataques.

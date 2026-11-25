@@ -1,5 +1,24 @@
 # Relatório — Fase 4: aplicações e pacotes Linux
 
+### ABI Linux e ALPM — 24/11/2026
+
+O mmap privado lê janelas de até 64 KiB para reduzir as consultas repetidas
+ao ext4 no carregamento. Os frames continuam privados e o trecho após o
+fim do arquivo fica zerado. A fixture CPL3 conferiu dados em duas janelas,
+o final do arquivo, o MAP_FIXED e a limpeza dos mapeamentos.
+[NAS/KVM BIOS](logs/abi-mmap-nas-bios.log) · [NAS/KVM UEFI](logs/abi-mmap-nas-uefi.log).
+
+O echo de uma imagem de teste com binários do Ubuntu Base 24.04.5 chegou
+ao carregador e passou do mapeamento da libc. A glibc encerrou o processo
+com “Cannot allocate TLS block”. O teste usou cópias regulares do
+interpretador e da libc nos caminhos esperados pelo loader.
+[NAS/KVM BIOS](logs/abi-ubuntu-glibc-nas-bios.log).
+
+O planejador ALPM aceita até 4.096 entradas e usa uma pilha de visita no
+heap. Uma cadeia sintética de 110 pacotes validou a ordenação, no tamanho
+do perfil Arch. A extração e as transações de instalação no guest seguem
+pendentes.
+
 ### Bloco 5 — substituição de mapeamentos privados
 
 `MAP_FIXED` substitui páginas de regiões criadas por `mmap`, inclusive

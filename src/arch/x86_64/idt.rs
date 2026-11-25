@@ -682,6 +682,13 @@ unsafe fn enable_linux_syscall_entry(cpu: usize) -> bool {
     true
 }
 
+/// Updates FS on the local CPU. The caller passes a canonical user address
+/// and keeps local IRQs disabled until the selected context is ready.
+pub unsafe fn load_user_fs_base(base: u64) {
+    // IA32_FS_BASE is owned by the current user task.
+    unsafe { wrmsr(0xc000_0100, base) };
+}
+
 unsafe fn rdmsr(msr: u32) -> u64 {
     let low: u32;
     let high: u32;
@@ -737,6 +744,8 @@ pub unsafe fn run_ring3_probe(entry: u64, stack_top: u64) -> u64 {
     if RING3_PROBE_ACTIVE.swap(true, Ordering::AcqRel) {
         return u64::MAX;
     }
+    // The standalone probe has no process TLS and runs with local IRQs disabled.
+    unsafe { load_user_fs_base(0) };
     crate::user_fpu::reset();
     let result = unsafe { carlio_enter_ring3_test(entry, stack_top) };
     RING3_PROBE_ACTIVE.store(false, Ordering::Release);
@@ -1008,6 +1017,7 @@ extern "C" fn exception_dispatch(frame: *mut ExceptionFrame) -> *mut ExceptionFr
                 unsafe { asm!("int 32") };
             }
             let ticks = TICKS.fetch_add(1, Ordering::Relaxed) + 1;
+            crate::console_session::poll_network_tick();
             let heartbeat = HEARTBEAT.load(Ordering::Relaxed);
             if heartbeat != LAST_HEARTBEAT.load(Ordering::Relaxed) {
                 LAST_HEARTBEAT.store(heartbeat, Ordering::Relaxed);
@@ -1053,6 +1063,11 @@ extern "C" fn exception_dispatch(frame: *mut ExceptionFrame) -> *mut ExceptionFr
         }
         return frame;
     }
+    if super::lockdown().hides_diagnostics() {
+        super::record_error(carlio_os::errors::KernelError::CpuException);
+        super::write("\r\nLockdown: detalhes internos da exceção suprimidos.\r\n");
+        stop_cpu();
+    }
     if frame.vector == 13 && frame.error_code == 0x18 && cpu < MAX_CPU_TABLES {
         super::write("Diagnóstico iretq: alvo CPU=");
         super::write_u32(cpu as u32);
@@ -1063,11 +1078,6 @@ extern "C" fn exception_dispatch(frame: *mut ExceptionFrame) -> *mut ExceptionFr
         super::write(" RSP=0x");
         super::write_hex_u64(IRET_TARGET_RSP[cpu].load(Ordering::Acquire));
         super::write(" SS=0x");
-    if super::lockdown().hides_diagnostics() {
-        super::record_error(carlio_os::errors::KernelError::CpuException);
-        super::write("\r\nLockdown: detalhes internos da exceção suprimidos.\r\n");
-        stop_cpu();
-    }
         super::write_hex_u64(IRET_TARGET_SS[cpu].load(Ordering::Acquire));
         super::write(" GDT3=0x");
         super::write_hex_u64(IRET_USER_DATA_DESC[cpu].load(Ordering::Acquire));
@@ -1228,6 +1238,9 @@ fn resume_ring3_probe(frame: &mut ExceptionFrame, result: u64) {
 }
 
 fn report_registers(frame: &ExceptionFrame) {
+    if super::lockdown().hides_diagnostics() {
+        return;
+    }
     super::write("RIP: 0x");
     super::write_hex_u64(frame.rip);
     super::write("  CS: 0x");
@@ -1238,9 +1251,6 @@ fn report_registers(frame: &ExceptionFrame) {
     super::write_hex_u64(frame.rax);
     super::write(" RBX=0x");
     super::write_hex_u64(frame.rbx);
-    if super::lockdown().hides_diagnostics() {
-        return;
-    }
     super::write(" RCX=0x");
     super::write_hex_u64(frame.rcx);
     super::write(" RDX=0x");

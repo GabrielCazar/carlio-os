@@ -210,3 +210,26 @@ fn metadata_redo_rejects_the_wrong_type_target_and_checksum() {
     assert_eq!(disk.sectors[4], data);
     assert_eq!(disk.sectors[1], [0; SECTOR_SIZE]);
 }
+
+#[test]
+fn dircache_audit_survives_reopening_shared_log() {
+    use crate::dircache_socket::Endpoint;
+
+    let mut endpoint = Endpoint::new(true, 100);
+    endpoint.record(37, "register", 13);
+    let event = endpoint.audit().into_iter().flatten().next().unwrap();
+    let mut disk = Disk::default();
+    {
+        let mut log = PersistentLog::open(BlockRegion::new(&mut disk, 0, 8).unwrap()).unwrap();
+        assert_eq!(log.append(b"kernel event"), Ok(1));
+        assert_eq!(log.append(&event.encode()), Ok(2));
+    }
+    let mut log = PersistentLog::open(BlockRegion::new(&mut disk, 0, 8).unwrap()).unwrap();
+    let mut record = [0; MAX_RECORD];
+    assert_eq!(log.read(2, &mut record), Ok(Some(36)));
+    assert_eq!(&record[..8], b"DIRAUD01");
+    assert_eq!(u64::from_le_bytes(record[8..16].try_into().unwrap()), 1);
+    assert_eq!(u64::from_le_bytes(record[16..24].try_into().unwrap()), 37);
+    assert_eq!(u16::from_le_bytes(record[24..26].try_into().unwrap()), 13);
+    assert_eq!(&record[26..36], b"register\0\0");
+}

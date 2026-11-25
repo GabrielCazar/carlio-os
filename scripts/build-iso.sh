@@ -18,6 +18,14 @@ fi
 build_args=(build --release --bin carlio-kernel --target x86_64-unknown-none)
 features=()
 image=build/carlio-os.iso
+if [[ ${CARLIO_PHYSICAL_TEST:-0} == 1 ]]; then
+  features+=(physical-test)
+  image=build/carlio-os-physical-test.iso
+fi
+if [[ ${CARLIO_DIRCACHE:-0} == 1 ]]; then
+  features+=(dircache)
+  image=${image%.iso}-dircache.iso
+fi
 if [[ ${CARLIO_CRASH_TEST:-0} == 1 ]]; then
   features+=(crash-test)
 fi

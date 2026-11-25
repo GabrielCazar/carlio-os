@@ -8,21 +8,38 @@ use carlio_os::userland::{
 use zeroize::Zeroizing;
 
 static NETWORK: IrqSpinLock<Option<(e1000::DhcpLease, u64)>> = IrqSpinLock::new(None);
+static STATUS_ENABLED: AtomicBool = AtomicBool::new(false);
 
 pub(super) fn configure_network(lease: e1000::DhcpLease) {
     *NETWORK.lock() = Some((lease, idt::uptime_ticks()));
 }
 
 pub(super) fn current_lease() -> Option<e1000::DhcpLease> {
-    let (lease, start) = (*NETWORK.lock())?;
+    active_lease(*NETWORK.lock())
+}
+
+fn active_lease(network: Option<(e1000::DhcpLease, u64)>) -> Option<e1000::DhcpLease> {
+    let (lease, start) = network?;
     let duration = u64::from(lease.lease_seconds?) * idt::TICK_RATE_HZ;
     (idt::uptime_ticks().wrapping_sub(start) < duration).then_some(lease)
+}
+
+pub(super) fn poll_network_tick() {
+    let Some(network) = NETWORK.try_lock() else {
+        return;
+    };
+    let lease = active_lease(*network);
+    drop(network);
+    let Some(lease) = lease else {
+        STATUS_ENABLED.store(false, Ordering::Relaxed);
+        return;
+    };
+    e1000::poll_network(lease, STATUS_ENABLED.load(Ordering::Relaxed));
 }
 
 pub(super) struct Console {
     session: Option<Session>,
     after_cr: bool,
-    status_enabled: bool,
 }
 
 impl Console {
@@ -30,7 +47,6 @@ impl Console {
         Self {
             session: None,
             after_cr: false,
-            status_enabled: false,
         }
     }
 
@@ -46,13 +62,6 @@ impl Console {
         let mut len = 0;
         let mut overflow = false;
         loop {
-            if self.status_enabled {
-                if let Some(lease) = current_lease() {
-                    e1000::poll_status(lease);
-                } else {
-                    self.status_enabled = false;
-                }
-            }
             let Ok(byte) = serial_read() else { continue };
             // Serial clients may send CRLF. Consume the LF without submitting another line.
             let paired_lf = self.after_cr && byte == b'\n';
@@ -105,16 +114,16 @@ impl Console {
         }
         match command {
             "rede-status iniciar" => {
-                self.status_enabled =
-                    current_lease().is_some_and(|lease| lease.subnet_mask.is_some());
-                write(if self.status_enabled {
+                let enabled = current_lease().is_some_and(|lease| lease.subnet_mask.is_some());
+                STATUS_ENABLED.store(enabled, Ordering::Relaxed);
+                write(if enabled {
                     "Rede: status UDP ativo na porta 7704.\r\n"
                 } else {
                     "Rede: endereço DHCP indisponível.\r\n"
                 });
             }
             "rede-status parar" => {
-                self.status_enabled = false;
+                STATUS_ENABLED.store(false, Ordering::Relaxed);
                 write("Rede: status UDP parado.\r\n");
             }
             _ => {

@@ -58,6 +58,9 @@ pub const fn allowed(principal: Principal, capability: Capability) -> bool {
 pub mod storage;
 pub use storage as herm_fs;
 pub mod block;
+pub mod dircache;
+pub mod dircache_policy;
+pub mod dircache_socket;
 pub mod dynamic_linker;
 pub mod elf;
 pub mod errors;

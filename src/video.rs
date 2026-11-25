@@ -111,6 +111,60 @@ impl<'a> Framebuffer<'a> {
         true
     }
 
+    /// Compõe uma superfície RGBA de alpha reto sobre a saída RGB.
+    /// A posição pode ser negativa para desenhar uma superfície parcialmente visível.
+    pub fn composite_rgba(
+        &mut self,
+        origin: (isize, isize),
+        dimensions: (usize, usize),
+        pixels: &[[u8; 4]],
+    ) -> Result<(), VideoError> {
+        let (width, height) = dimensions;
+        let needed = width
+            .checked_mul(height)
+            .ok_or(VideoError::ArithmeticOverflow)?;
+        if pixels.len() < needed {
+            return Err(VideoError::BufferTooSmall);
+        }
+
+        let (source_x, target_x, columns) = clip_axis(origin.0, width, self.width);
+        let (source_y, target_y, rows) = clip_axis(origin.1, height, self.height);
+        let bpp = usize::from(self.format.bits_per_pixel / 8);
+        for row in 0..rows {
+            for column in 0..columns {
+                let [red, green, blue, alpha] =
+                    pixels[(source_y + row) * width + source_x + column];
+                if alpha == 0 {
+                    continue;
+                }
+                let x = target_x + column;
+                let y = target_y + row;
+                let mut rgb = [red, green, blue];
+                if alpha < u8::MAX {
+                    let offset = y * self.pitch + x * bpp;
+                    let mut bytes = [0; 4];
+                    bytes[..bpp].copy_from_slice(&self.bytes[offset..offset + bpp]);
+                    let destination = u32::from_le_bytes(bytes);
+                    for (value, (size, shift)) in rgb.iter_mut().zip([
+                        (self.format.red_size, self.format.red_shift),
+                        (self.format.green_size, self.format.green_shift),
+                        (self.format.blue_size, self.format.blue_shift),
+                    ]) {
+                        let max = (1u32 << size) - 1;
+                        let background = ((destination >> shift) & max) * 255 / max;
+                        let alpha = u32::from(alpha);
+                        let blended =
+                            (u32::from(*value) * alpha + background * (255 - alpha) + 127) / 255;
+                        *value =
+                            u8::try_from(blended).map_err(|_| VideoError::ArithmeticOverflow)?;
+                    }
+                }
+                self.write_pixel(x, y, rgb);
+            }
+        }
+        Ok(())
+    }
+
     pub fn fill_rect(&mut self, x: usize, y: usize, width: usize, height: usize, rgb: [u8; 3]) {
         let x_end = x.saturating_add(width).min(self.width);
         let y_end = y.saturating_add(height).min(self.height);
@@ -149,6 +203,18 @@ impl embedded_graphics::geometry::OriginDimensions for Framebuffer<'_> {
     fn size(&self) -> embedded_graphics::geometry::Size {
         embedded_graphics::geometry::Size::new(self.width as u32, self.height as u32)
     }
+}
+
+fn clip_axis(origin: isize, source_length: usize, target_length: usize) -> (usize, usize, usize) {
+    let (source_start, target_start) = if origin < 0 {
+        (origin.unsigned_abs(), 0)
+    } else {
+        (0, origin.unsigned_abs())
+    };
+    let length = source_length
+        .saturating_sub(source_start)
+        .min(target_length.saturating_sub(target_start));
+    (source_start, target_start, length)
 }
 
 fn valid_channel(size: u8, shift: u8, bpp: u8) -> bool {
@@ -246,6 +312,24 @@ mod tests {
         blue_size: 8,
         blue_shift: 0,
     };
+
+    #[test]
+    fn compositor_blends_clipped_layers_and_preserves_pitch_padding() {
+        let mut bytes = [0xFF; 16];
+        let format = PixelFormat {
+            bits_per_pixel: 24,
+            ..RGBX
+        };
+        let mut fb = Framebuffer::new(&mut bytes, 2, 2, 8, format).unwrap();
+        fb.fill_rect(0, 0, 2, 2, [0, 0, 255]);
+        let layer = [[0, 255, 0, 255], [255, 0, 0, 128], [255, 0, 0, 0]];
+        fb.composite_rgba((-1, 1), (3, 1), &layer).unwrap();
+        assert_eq!(
+            fb.composite_rgba((0, 0), (1, 2), &layer[..1]),
+            Err(VideoError::BufferTooSmall)
+        );
+        assert_eq!(&bytes[8..], &[127, 0, 128, 255, 0, 0, 255, 255]);
+    }
 
     #[test]
     fn framebuffer_validates_pitch_and_writes_rgb_pixels() {

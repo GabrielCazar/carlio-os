@@ -1,6 +1,9 @@
 #![cfg_attr(target_os = "none", no_std)]
 #![cfg_attr(target_os = "none", no_main)]
 
+#[cfg(all(target_os = "none", feature = "physical-test", feature = "storage-test"))]
+compile_error!("physical-test não pode ser combinado com storage-test");
+
 #[cfg(target_os = "none")]
 extern crate alloc;
 
@@ -109,6 +112,34 @@ static PROCESS_KERNEL_STACKS: KernelStackPool<64, PROCESS_KERNEL_STACK_SIZE> =
 #[cfg(target_os = "none")]
 static NETWORK_SOCKETS: IrqSpinLock<carlio_os::net::SocketTable<128>> =
     IrqSpinLock::new(carlio_os::net::SocketTable::new());
+#[cfg(target_os = "none")]
+static DIRCACHE: IrqSpinLock<carlio_os::dircache_socket::Endpoint> =
+    IrqSpinLock::new(carlio_os::dircache_socket::Endpoint::new(
+        cfg!(feature = "dircache"),
+        5 * idt::TICK_RATE_HZ,
+    ));
+
+#[cfg(target_os = "none")]
+static DIRCACHE_AUDIT_WRITTEN: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(target_os = "none")]
+fn dircache_operation<T>(
+    pid: u64,
+    operation: &'static str,
+    perform: impl FnOnce(&mut carlio_os::dircache_socket::Endpoint) -> Result<T, u16>,
+) -> Result<T, u16> {
+    let mut endpoint = DIRCACHE.lock();
+    let result = perform(&mut endpoint);
+    if !matches!(result, Err(carlio_os::linux_abi::EAGAIN))
+        && !(operation == "send" && result.is_ok())
+    {
+        endpoint.record(pid, operation, result.as_ref().err().copied().unwrap_or(0));
+    }
+    drop(endpoint);
+    flush_dircache_audit();
+    result
+}
+
 #[cfg(target_os = "none")]
 const PROCESS_VFS_CAPACITY: usize = 40;
 #[cfg(target_os = "none")]
@@ -295,7 +326,8 @@ static AP_PROCESS_SCHEDULING: AtomicBool = AtomicBool::new(false);
 #[cfg(target_os = "none")]
 static PAGE_TABLE_PROBE_PENDING: AtomicBool = AtomicBool::new(false);
 #[cfg(target_os = "none")]
-const PROCESS_VM_PAGE_CAPACITY: usize = 768;
+// Includes the executable, loader, mapped libraries and runtime heap.
+const PROCESS_VM_PAGE_CAPACITY: usize = 4096;
 #[cfg(target_os = "none")]
 const PROCESS_VM_REGION_CAPACITY: usize = 64;
 #[cfg(target_os = "none")]
@@ -1086,7 +1118,9 @@ pub extern "C" fn _start() -> ! {
     enumerate_pci();
     boot_progress(70, "detecção de hardware");
     initialize_vfs_mounts();
-    initialize_persistent_storage();
+    if !cfg!(feature = "physical-test") {
+        initialize_persistent_storage();
+    }
     boot_progress(82, "VFS e rootfs");
     unsafe { idt::install_timer_frame_switch(timer_process_switch) };
     if PAGE_TABLE_PROBE_PENDING.swap(false, Ordering::AcqRel) {
@@ -1114,6 +1148,12 @@ pub extern "C" fn _start() -> ! {
         }
     }
     boot_progress(100, "shell disponível");
+    if cfg!(feature = "physical-test") {
+        write("CARLIO-PHYSICAL-REPORT BEGIN\r\n");
+        report_system_diagnosis();
+        report_errors();
+        write("CARLIO-PHYSICAL-REPORT END\r\n");
+    }
     write("Watchdog PIT ativo: prazo de 5 s sem progresso.\r\n");
     write("Digite 'ajuda' para ver os comandos.\r\n\r\n");
     shell()
@@ -1451,6 +1491,7 @@ fn shell() -> ! {
     let mut line = [0u8; INPUT_LIMIT];
     let mut console = console_session::Console::new();
     loop {
+        flush_dircache_audit();
         flush_persistent_errors();
         write(console.prompt());
         let Some(len) = console.read_line(&mut line, true) else {
@@ -1904,11 +1945,27 @@ fn video_boot_probe() {
             return;
         }
     };
-    let stripe_width = width.min(320) / 4;
+    const STRIPE_MAX_WIDTH: usize = 80;
+    const STRIPE_HEIGHT: usize = 12;
+    const STRIPES: [[[u8; 4]; STRIPE_MAX_WIDTH * STRIPE_HEIGHT]; 3] = [
+        [[230, 75, 75, 255]; STRIPE_MAX_WIDTH * STRIPE_HEIGHT],
+        [[80, 200, 120, 255]; STRIPE_MAX_WIDTH * STRIPE_HEIGHT],
+        [[80, 140, 240, 255]; STRIPE_MAX_WIDTH * STRIPE_HEIGHT],
+    ];
+    let stripe_width = (width / 4).min(STRIPE_MAX_WIDTH);
     framebuffer.fill_rect(0, 0, width.min(320), height.min(32), [20, 28, 45]);
-    framebuffer.fill_rect(8, 8, stripe_width, 12, [230, 75, 75]);
-    framebuffer.fill_rect(8 + stripe_width, 8, stripe_width, 12, [80, 200, 120]);
-    framebuffer.fill_rect(8 + stripe_width * 2, 8, stripe_width, 12, [80, 140, 240]);
+    for (index, stripe) in STRIPES.iter().enumerate() {
+        let Ok(x) = isize::try_from(8 + stripe_width * index) else {
+            return;
+        };
+        if framebuffer
+            .composite_rgba((x, 8), (stripe_width, STRIPE_HEIGHT), stripe)
+            .is_err()
+        {
+            write("Vídeo: composição de boot recusada; modo serial mantido.\r\n");
+            return;
+        }
+    }
     FRAMEBUFFER_ACTIVE.store(true, Ordering::Release);
     write("Framebuffer Limine: RGB ativo; renderização de pixels validada.\r\n");
 }
@@ -2178,7 +2235,7 @@ pub(crate) fn begin_process_switch_probe() -> Option<*mut idt::UserInterruptFram
         return None;
     };
     write("Login de teste: senha incorreta negada e sessão Argon2id emitida.\r\n");
-    let Ok((space_a, entry_a, user_stack_a, _)) = make_process_space(
+    let Ok((space_a, entry_a, user_stack_a, _, _)) = make_process_space(
         root,
         STACK_VA,
         1,
@@ -2421,7 +2478,7 @@ fn make_process_probe_space(
     u64,
     u64,
 )> {
-    let (space, entry, stack, _) = make_process_space(
+    let (space, entry, stack, _, _) = make_process_space(
         kernel_root,
         stack_va,
         1,
@@ -2449,6 +2506,7 @@ fn make_process_space(
         u64,
         u64,
         [(u64, u64); 2],
+        carlio_os::dircache_policy::Domain,
     ),
     u16,
 > {
@@ -2523,13 +2581,16 @@ fn make_process_space(
         }
     }
     let auxv = image.auxv();
-    let stack = match carlio_os::elf::build_initial_user_stack_with_auxv_sized(
+    let mut random = zeroize::Zeroizing::new([0u8; 16]);
+    let random_available = entropy::fill_random(&mut *random).is_some();
+    let stack = match carlio_os::elf::build_initial_user_stack_with_random(
         &mut target,
         stack_top,
         stack_length,
         argv,
         env,
         &auxv,
+        random_available.then_some(&*random),
     ) {
         Ok(stack) => stack,
         Err(carlio_os::elf::ElfError::InvalidArguments) => {
@@ -2548,6 +2609,7 @@ fn make_process_space(
         image.entry,
         stack.stack_pointer,
         image.image_ranges,
+        image.domain,
     ))
 }
 
@@ -2622,6 +2684,14 @@ pub(crate) fn process_runtime_exit(code: u64) -> Option<*mut idt::UserInterruptF
     let cpu = current_scheduler_cpu();
     let previous = PROCESS_SCHEDULER.current(cpu)?;
     PROCESS_SCHEDULER.exit(cpu, code as i64).ok()?;
+    DIRCACHE.lock().close_process(previous.id, false);
+    if cfg!(feature = "disk-exec-test")
+        && previous.id == PROCESS_PROBE_IDS[0].load(Ordering::Acquire)
+    {
+        write("Runtime: prova de execve encerrou com status=");
+        write_u32(u32::try_from(code).unwrap_or(u32::MAX));
+        write(".\r\n");
+    }
     if is_ap_cpl3_probe_id(previous.id) {
         AP_CPL3_RUNNING_MASK.fetch_and(!(1usize << cpu), Ordering::AcqRel);
     }
@@ -2643,6 +2713,7 @@ pub(crate) fn process_runtime_fault(
     PROCESS_SCHEDULER
         .fault(cpu, vector as u8, error_code, cr2)
         .ok()?;
+    DIRCACHE.lock().close_process(victim.id, false);
     if is_ap_cpl3_probe_id(victim.id) {
         AP_CPL3_RUNNING_MASK.fetch_and(!(1usize << cpu), Ordering::AcqRel);
     }
@@ -2746,11 +2817,13 @@ fn linux_syscall_probe_task() -> ([u8; 1024], usize) {
     );
     append_probe_bytes(&mut code, &mut length, &[0xba, 1, 0, 0, 0]);
     append_probe_syscall(&mut code, &mut length, carlio_os::linux_abi::SYS_READ);
-    // read(0) positivo: o harness QEMU envia um byte após o aviso do kernel.
-    append_probe_bytes(&mut code, &mut length, &[0xbf, 0, 0, 0, 0, 0x48, 0xbe]);
-    append_probe_bytes(&mut code, &mut length, &(STACK_VA + 2050).to_le_bytes());
-    append_probe_bytes(&mut code, &mut length, &[0xba, 1, 0, 0, 0]);
-    append_probe_syscall(&mut code, &mut length, carlio_os::linux_abi::SYS_READ);
+    if !cfg!(feature = "physical-test") {
+        // O harness QEMU envia um byte após o aviso do kernel.
+        append_probe_bytes(&mut code, &mut length, &[0xbf, 0, 0, 0, 0, 0x48, 0xbe]);
+        append_probe_bytes(&mut code, &mut length, &(STACK_VA + 2050).to_le_bytes());
+        append_probe_bytes(&mut code, &mut length, &[0xba, 1, 0, 0, 0]);
+        append_probe_syscall(&mut code, &mut length, carlio_os::linux_abi::SYS_READ);
+    }
     // mmap an anonymous private page, write through the returned mapping, and
     // release it again through munmap.
     append_probe_bytes(
@@ -2918,6 +2991,8 @@ fn activate_scheduled_process(cpu: usize, process: carlio_os::process::Process) 
     } {
         return false;
     }
+    // Scheduling runs with local IRQs disabled and the base was validated by arch_prctl.
+    unsafe { idt::load_user_fs_base(process.fs_base) };
     user_fpu::restore(process);
     true
 }
@@ -3165,6 +3240,8 @@ pub(crate) fn dispatch_linux_syscall(
 
 #[cfg(target_os = "none")]
 pub(crate) fn commit_exec_transition(transition: carlio_os::linux_abi::ExecTransition) {
+    // The new image starts with no TLS base. The syscall still owns the local CPU.
+    unsafe { idt::load_user_fs_base(0) };
     user_fpu::reset();
     // The replacement address space keeps the kernel mappings and active
     // syscall stack. CR3 reload is the commit point before releasing old pages.
@@ -3176,6 +3253,8 @@ pub(crate) fn commit_exec_transition(transition: carlio_os::linux_abi::ExecTrans
         );
     }
     OPEN_FILES.lock().close_on_exec(transition.process_id);
+    NETWORK_SOCKETS.lock().close_on_exec(transition.process_id);
+    DIRCACHE.lock().close_process(transition.process_id, true);
     match process_vm_slot(transition.old_resource_slot) {
         Some(storage)
             if destroy_process_vm(
@@ -3220,14 +3299,18 @@ impl KernelLinuxSyscallIo {
         }
         let path = file.path_str().ok_or(carlio_os::linux_abi::EIO)?;
         check_lockdown_path(path)?;
+        if path == carlio_os::dircache_policy::AUDIT_PATH {
+            if process.security.credentials.uid != 0 {
+                return Err(carlio_os::linux_abi::EACCES);
+            }
+            return DIRCACHE.lock().read_audit(offset, destination);
+        }
         let context = process.security.access_context();
         let inline_offset = usize::try_from(offset).map_err(|_| carlio_os::linux_abi::EINVAL)?;
-        let inline = PROCESS_VFS.lock().read_file_range_as(
-            path,
-            context,
-            inline_offset,
-            destination,
-        );
+        let inline =
+            PROCESS_VFS
+                .lock()
+                .read_file_range_as(path, context, inline_offset, destination);
         match inline {
             Ok(amount) => Ok(amount),
             Err(carlio_os::vfs::VfsError::NotFound) => {
@@ -3486,6 +3569,10 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
         use carlio_os::linux_abi::{EACCES, EBADF, EINVAL, EOPNOTSUPP};
         use carlio_os::vma::{MAP_FIXED, MAP_FIXED_NOREPLACE};
 
+        if protection & 4 != 0 && self.process.security.permits_dircache_registration() {
+            return Err(EACCES);
+        }
+
         const MAP_PRIVATE: u64 = 0x02;
         const MAP_ANONYMOUS: u64 = 0x20;
         const MAP_DENYWRITE: u64 = 0x0800;
@@ -3528,25 +3615,47 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
                     .mmap_linux(address, length, protection, flags, descriptor, offset)
                     .map_err(process_vm_errno);
             };
+            const MMAP_READ_WINDOW: usize = 64 * 1024;
+            let page_size = carlio_os::vma::PAGE_SIZE;
+            let rounded_length = length.div_ceil(page_size) * page_size;
+            let mut window = alloc::vec::Vec::new();
+            window
+                .try_reserve_exact(MMAP_READ_WINDOW)
+                .map_err(|_| carlio_os::linux_abi::ENOMEM)?;
+            window.resize(MMAP_READ_WINDOW, 0);
+            let mut available = 0;
             let mut read_error = None;
-            let initialize = |page, physical| {
-                // The frame is zeroed and private until initialization succeeds.
-                let bytes = unsafe { &mut *swap_frame_ptr(physical)? };
-                let mut filled = 0;
-                while filled < bytes.len() {
-                    match Self::read_file_for(
-                        process,
-                        file,
-                        offset + page + filled as u64,
-                        &mut bytes[filled..],
-                    ) {
-                        Ok(0) => break,
-                        Ok(amount) => filled += amount,
-                        Err(errno) => {
-                            read_error = Some(errno);
-                            return Err(FrameError::InvalidPhysicalAddress);
+            let initialize = |page: u64, physical| {
+                let window_offset = usize::try_from(page % MMAP_READ_WINDOW as u64)
+                    .map_err(|_| FrameError::InvalidPhysicalAddress)?;
+                // Mounted file reads repeat path and DAC checks. Read a window
+                // once while still installing each private frame individually.
+                if window_offset == 0 {
+                    let count =
+                        usize::try_from((rounded_length - page).min(MMAP_READ_WINDOW as u64))
+                            .map_err(|_| FrameError::InvalidPhysicalAddress)?;
+                    available = 0;
+                    while available < count {
+                        match Self::read_file_for(
+                            process,
+                            file,
+                            offset + page + available as u64,
+                            &mut window[available..count],
+                        ) {
+                            Ok(0) => break,
+                            Ok(amount) => available += amount,
+                            Err(errno) => {
+                                read_error = Some(errno);
+                                return Err(FrameError::InvalidPhysicalAddress);
+                            }
                         }
                     }
+                }
+                // This frame is private and zeroed until the mapping commits.
+                let bytes = unsafe { &mut *swap_frame_ptr(physical)? };
+                let count = available.saturating_sub(window_offset).min(bytes.len());
+                if count != 0 {
+                    bytes[..count].copy_from_slice(&window[window_offset..window_offset + count]);
                 }
                 idt::heartbeat();
                 Ok(())
@@ -3575,6 +3684,9 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
     }
 
     fn mprotect(&mut self, address: u64, length: u64, protection: u64) -> Result<(), u16> {
+        if protection & 4 != 0 && self.process.security.permits_dircache_registration() {
+            return Err(carlio_os::linux_abi::EACCES);
+        }
         self.restore_user_range(address, length)?;
         self.with_process_vm(|vm| {
             vm.mprotect(address, length, protection)
@@ -3601,6 +3713,19 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
             })
             .map_err(process_vm_errno)
         })
+    }
+
+    fn fs_base(&self) -> u64 {
+        self.process.fs_base
+    }
+
+    fn set_fs_base(&mut self, base: u64) -> Result<(), u16> {
+        PROCESS_SCHEDULER
+            .set_current_fs_base(self.cpu, self.process.id, base)
+            .map_err(|_| carlio_os::linux_abi::EIO)?;
+        // The syscall dispatcher checked the address and local IRQs are disabled.
+        unsafe { idt::load_user_fs_base(base) };
+        Ok(())
     }
 
     fn brk(&mut self, current: u64, requested: u64) -> u64 {
@@ -3661,7 +3786,7 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
             .checked_sub((stack_pages as u64) * 4096)
             .ok_or(carlio_os::linux_abi::E2BIG)?;
         let context = self.process.security.access_context();
-        let (space, instruction_pointer, stack_pointer, image_ranges) = make_process_space(
+        let (space, instruction_pointer, stack_pointer, image_ranges, domain) = make_process_space(
             kernel_root,
             stack_base,
             stack_pages,
@@ -3708,6 +3833,7 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
             new_bundle,
             instruction_pointer,
             stack_pointer,
+            domain,
         ) {
             Ok(bundle) => bundle,
             Err(error) => {
@@ -3734,7 +3860,16 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
     }
 
     fn read(&mut self, descriptor: u64, destination: &mut [u8]) -> Result<usize, u16> {
+        if carlio_os::dircache_socket::is_descriptor(descriptor) {
+            return dircache_operation(self.process.id, "receive", |endpoint| {
+                endpoint.receive(self.process.id, descriptor, destination, idt::uptime_ticks())
+            });
+        }
+
         if descriptor == 0 {
+            if !self.process.has_serial_fd(descriptor) {
+                return Err(carlio_os::linux_abi::EBADF);
+            }
             write("ABI Linux: probe CPL3 aguardando byte de entrada serial.\r\n");
             for (index, output) in destination.iter_mut().enumerate() {
                 let byte = match serial_read() {
@@ -3750,6 +3885,12 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
             return Ok(destination.len());
         }
         let descriptor = u32::try_from(descriptor).map_err(|_| carlio_os::linux_abi::EBADF)?;
+        if descriptor < carlio_os::open_files::FILE_FD_BASE {
+            return NETWORK_SOCKETS
+                .lock()
+                .tcp_read(self.process.id, descriptor, destination)
+                .map_err(network_errno);
+        }
         let file = OPEN_FILES
             .lock()
             .get(self.process.id, descriptor)
@@ -3778,6 +3919,23 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
 
     fn open(&mut self, path: &str, flags: u64, mode: u64) -> Result<u64, u16> {
         check_lockdown_path(path)?;
+        use carlio_os::linux_abi::{EACCES, EBADF, ENFILE, O_CLOEXEC};
+        if path == carlio_os::dircache_policy::AUDIT_PATH {
+            if self.process.security.credentials.uid != 0 || flags & !O_CLOEXEC != 0 {
+                return Err(EACCES);
+            }
+            let owner = self.process.id;
+            let start = DIRCACHE.lock().audit_start();
+            let mut files = OPEN_FILES.lock();
+            let fd = files.reserve(owner, path, true, false, false).map_err(|_| ENFILE)?;
+            if files.set_offset(owner, fd, start).is_err()
+                || files.commit_with_exec_flag(owner, fd, true).is_err()
+            {
+                let _ = files.close(owner, fd);
+                return Err(EBADF);
+            }
+            return Ok(u64::from(fd));
+        }
         let _transaction = VfsMutationGuard::acquire()?;
         let create_mode = if flags & 0x40 != 0 {
             u16::try_from(mode).map_err(|_| carlio_os::linux_abi::EINVAL)?
@@ -3914,7 +4072,16 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
     }
 
     fn write(&mut self, descriptor: u64, bytes: &[u8]) -> Result<usize, u16> {
+        if carlio_os::dircache_socket::is_descriptor(descriptor) {
+            return dircache_operation(self.process.id, "send", |endpoint| {
+                endpoint.send(self.process.id, descriptor, bytes, idt::uptime_ticks())
+            });
+        }
+
         if descriptor == 1 || descriptor == 2 {
+            if !self.process.has_serial_fd(descriptor) {
+                return Err(carlio_os::linux_abi::EBADF);
+            }
             for byte in bytes {
                 if !serial_write(*byte) {
                     return Err(carlio_os::linux_abi::EIO);
@@ -3923,6 +4090,12 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
             return Ok(bytes.len());
         }
         let descriptor = u32::try_from(descriptor).map_err(|_| carlio_os::linux_abi::EBADF)?;
+        if descriptor < carlio_os::open_files::FILE_FD_BASE {
+            return NETWORK_SOCKETS
+                .lock()
+                .tcp_write(self.process.id, descriptor, bytes, idt::uptime_ticks())
+                .map_err(network_errno);
+        }
         let _transaction = VfsMutationGuard::acquire()?;
         let file = OPEN_FILES
             .lock()
@@ -3965,6 +4138,17 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
     }
 
     fn close(&mut self, descriptor: u64) -> Result<(), u16> {
+        if carlio_os::dircache_socket::is_descriptor(descriptor) {
+            let result = DIRCACHE.lock().close(self.process.id, descriptor);
+            flush_dircache_audit();
+            return result;
+        }
+
+        if descriptor < 3 {
+            return PROCESS_SCHEDULER
+                .close_serial_fd(self.cpu, self.process.id, descriptor)
+                .map_err(|_| carlio_os::linux_abi::EBADF);
+        }
         let descriptor = u32::try_from(descriptor).map_err(|_| carlio_os::linux_abi::EBADF)?;
         if descriptor >= carlio_os::open_files::FILE_FD_BASE {
             return OPEN_FILES
@@ -3988,7 +4172,84 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
         commit_vfs_mutation(&transaction)
     }
 
+    fn random_bytes(&mut self, destination: &mut [u8]) -> Result<(), u16> {
+        entropy::fill_random(destination).ok_or(carlio_os::linux_abi::EAGAIN)
+    }
+
+    fn poll_events(&mut self, descriptor: u32, events: u16) -> Result<u16, u16> {
+        if carlio_os::dircache_socket::is_descriptor(u64::from(descriptor)) {
+            return DIRCACHE.lock().poll(self.process.id, u64::from(descriptor), events, idt::uptime_ticks());
+        }
+
+        use carlio_os::linux_abi::{EBADF, POLLIN, POLLOUT};
+        if descriptor < 3 {
+            if !self.process.has_serial_fd(u64::from(descriptor)) {
+                return Err(EBADF);
+            }
+            // SAFETY: read only the line status of the initialized serial port.
+            let status = unsafe { input(COM1 + 5) };
+            let ready = if descriptor == 0 {
+                if status & 1 != 0 { POLLIN } else { 0 }
+            } else if status & 0x20 != 0 {
+                POLLOUT
+            } else {
+                0
+            };
+            return Ok(events & ready);
+        }
+        if descriptor >= carlio_os::open_files::FILE_FD_BASE {
+            OPEN_FILES
+                .lock()
+                .get(self.process.id, descriptor)
+                .map_err(|_| EBADF)?;
+            return Ok(events & (POLLIN | POLLOUT));
+        }
+        let (readable, writable, failed) = NETWORK_SOCKETS
+            .lock()
+            .tcp_events(self.process.id, descriptor)
+            .map_err(network_errno)?;
+        let ready = (if readable { POLLIN } else { 0 }) | (if writable { POLLOUT } else { 0 });
+        Ok((events & ready)
+            | if failed {
+                carlio_os::linux_abi::POLLERR
+            } else {
+                0
+            })
+    }
+
+    fn ignores_sigpipe(&self) -> bool {
+        PROCESS_SCHEDULER.ignores_sigpipe(self.process.thread_group_id)
+    }
+
+    fn set_sigpipe_ignored(&mut self, ignored: bool) -> Result<(), u16> {
+        PROCESS_SCHEDULER
+            .set_sigpipe_ignored(self.process.thread_group_id, ignored)
+            .map_err(|_| carlio_os::linux_abi::EIO)
+    }
+
     fn fstat(&mut self, descriptor: u64) -> Result<carlio_os::linux_abi::LinuxStat, u16> {
+        if descriptor < 3 {
+            if !self.process.has_serial_fd(descriptor) {
+                return Err(carlio_os::linux_abi::EBADF);
+            }
+            let timestamp = carlio_os::linux_abi::Timespec {
+                seconds: 0,
+                nanoseconds: 0,
+            };
+            return Ok(carlio_os::linux_abi::LinuxStat {
+                inode: 1,
+                mode: 0o020600,
+                links: 1,
+                uid: self.process.security.credentials.uid,
+                gid: self.process.security.credentials.gid,
+                size: 0,
+                block_size: 4096,
+                blocks: 0,
+                access_time: timestamp,
+                modification_time: timestamp,
+                change_time: timestamp,
+            });
+        }
         let descriptor = u32::try_from(descriptor).map_err(|_| carlio_os::linux_abi::EBADF)?;
         let file = OPEN_FILES
             .lock()
@@ -4000,6 +4261,22 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
 
     fn stat(&mut self, path: &str) -> Result<carlio_os::linux_abi::LinuxStat, u16> {
         check_lockdown_path(path)?;
+        if path == carlio_os::dircache_policy::AUDIT_PATH {
+            let timestamp = carlio_os::linux_abi::Timespec { seconds: 0, nanoseconds: 0 };
+            return Ok(carlio_os::linux_abi::LinuxStat {
+                inode: u64::MAX - 1,
+                mode: 0o020400,
+                links: 1,
+                uid: 0,
+                gid: 0,
+                size: 0,
+                block_size: 4096,
+                blocks: 0,
+                access_time: timestamp,
+                modification_time: timestamp,
+                change_time: timestamp,
+            });
+        }
         let context = self.process.security.access_context();
         let vfs = PROCESS_VFS.lock();
         let metadata = match vfs.metadata(path, context) {
@@ -4052,6 +4329,13 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
 
     fn access(&mut self, path: &str, mode: u64) -> Result<(), u16> {
         check_lockdown_path(path)?;
+        if path == carlio_os::dircache_policy::AUDIT_PATH {
+            return if mode == 0 || (mode == 4 && self.process.security.credentials.uid == 0) {
+                Ok(())
+            } else {
+                Err(carlio_os::linux_abi::EACCES)
+            };
+        }
         let mode = u8::try_from(mode).map_err(|_| carlio_os::linux_abi::EINVAL)?;
         let requested =
             carlio_os::vfs::Access::from_posix_bits(mode).ok_or(carlio_os::linux_abi::EINVAL)?;
@@ -4200,6 +4484,12 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
     }
 
     fn socket(&mut self, domain: u64, kind: u64, protocol: u64) -> Result<u64, u16> {
+        if domain == 1 {
+            return dircache_operation(self.process.id, "socket", |endpoint| {
+                endpoint.socket(self.process.id, kind, protocol)
+            });
+        }
+
         NETWORK_SOCKETS
             .lock()
             .create(
@@ -4211,6 +4501,17 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
             )
             .map(|fd| fd as u64)
             .map_err(network_errno)
+    }
+
+    fn unix_address(&mut self, fd: u64, path: &[u8], bind: bool) -> Result<(), u16> {
+        let authorized = self.process.security.permits_dircache_registration();
+        dircache_operation(self.process.id, if bind { "register" } else { "connect" }, |endpoint| {
+            endpoint.address(self.process.id, fd, path, bind, authorized)
+        })
+    }
+
+    fn unix_name(&mut self, fd: u64) -> Result<bool, u16> {
+        DIRCACHE.lock().name(self.process.id, fd)
     }
 
     fn bind(&mut self, descriptor: u64, address: [u8; 4], port: u16) -> Result<(), u16> {
@@ -4228,11 +4529,41 @@ impl carlio_os::linux_abi::LinuxSyscallIo for KernelLinuxSyscallIo {
     }
 
     fn listen(&mut self, descriptor: u64, backlog: u16) -> Result<(), u16> {
+        if carlio_os::dircache_socket::is_descriptor(descriptor) {
+            return dircache_operation(self.process.id, "listen", |endpoint| {
+                endpoint.listen(self.process.id, descriptor, backlog)
+            });
+        }
+
         let descriptor = u32::try_from(descriptor).map_err(|_| carlio_os::linux_abi::EBADF)?;
         NETWORK_SOCKETS
             .lock()
             .listen(self.process.id, descriptor, backlog)
             .map_err(network_errno)
+    }
+
+    fn accept(&mut self, descriptor: u64, flags: u64) -> Result<(u64, [u8; 4], u16), u16> {
+        if carlio_os::dircache_socket::is_descriptor(descriptor) {
+            return dircache_operation(self.process.id, "accept", |endpoint| {
+                endpoint.accept(self.process.id, descriptor, flags)
+            }).map(|fd| (fd, [0; 4], 0));
+        }
+
+        let descriptor = u32::try_from(descriptor).map_err(|_| carlio_os::linux_abi::EBADF)?;
+        NETWORK_SOCKETS
+            .lock()
+            .accept_tcp(self.process.id, descriptor, flags)
+            .map(|(fd, peer, port)| (u64::from(fd), peer, port))
+            .map_err(network_errno)
+    }
+
+    fn socket_name(&mut self, descriptor: u64) -> Result<([u8; 4], u16), u16> {
+        let descriptor = u32::try_from(descriptor).map_err(|_| carlio_os::linux_abi::EBADF)?;
+        let socket = NETWORK_SOCKETS
+            .lock()
+            .info(self.process.id, descriptor)
+            .ok_or(carlio_os::linux_abi::EBADF)?;
+        Ok((socket.local_address, socket.local_port))
     }
 }
 
@@ -4259,10 +4590,13 @@ fn process_vm_errno(error: carlio_os::vma::ProcessVmError) -> u16 {
 fn network_errno(error: carlio_os::net::NetworkError) -> u16 {
     use carlio_os::net::NetworkError as N;
     match error {
+        N::WouldBlock => carlio_os::linux_abi::EAGAIN,
+        N::ConnectionReset => carlio_os::linux_abi::ECONNRESET,
         N::AddressInUse => carlio_os::linux_abi::EADDRINUSE,
         N::PermissionDenied => carlio_os::linux_abi::EACCES,
         N::BadDescriptor => carlio_os::linux_abi::EBADF,
         N::UnsupportedSocket => carlio_os::linux_abi::EAFNOSUPPORT,
+        N::PortsExhausted => carlio_os::linux_abi::EADDRNOTAVAIL,
         N::InvalidPort | N::InvalidState => carlio_os::linux_abi::EINVAL,
         _ => carlio_os::linux_abi::ENFILE,
     }
@@ -4512,7 +4846,9 @@ pub(crate) fn process_probe_result() -> u64 {
         write_hex_u64(LINUX_VFS_DENIAL_RESULT.load(Ordering::Acquire));
         write(".\r\n");
     }
-    if abi_probe_mask & 0x100 != 0 {
+    if cfg!(feature = "physical-test") {
+        write("ABI Linux: teste de entrada serial omitido no boot autônomo.\r\n");
+    } else if abi_probe_mask & 0x100 != 0 {
         write("ABI Linux: read(0) CPL3 recebeu entrada serial.\r\n");
     } else {
         write("ABI Linux: read(0) CPL3 não recebeu entrada serial.\r\n");
@@ -4529,10 +4865,15 @@ pub(crate) fn process_probe_result() -> u64 {
         write_hex_u64(LINUX_MUNMAP_RESULT.load(Ordering::Acquire));
         write(".\r\n");
     }
+    let required_abi_probes = if cfg!(feature = "physical-test") {
+        0x7ff & !0x100
+    } else {
+        0x7ff
+    };
     if switches > 0
         && ap_probe_passed
         && LINUX_GETPID_PROBE_PASSED.load(Ordering::Acquire)
-        && abi_probe_mask & 0x7ff == 0x7ff
+        && abi_probe_mask & required_abi_probes == required_abi_probes
         && memory_probe_mask & 0x1f == 0x1f
     {
         0xfff
@@ -4572,6 +4913,7 @@ fn reap_terminal_processes() -> bool {
                 if !process.is_thread() {
                     OPEN_FILES.lock().close_process(process.id);
                     NETWORK_SOCKETS.lock().close_process(process.id);
+                    DIRCACHE.lock().close_process(process.id, false);
                 }
                 Ok(())
             });
@@ -4910,6 +5252,32 @@ fn initialize_persistent_storage() {
 }
 
 #[cfg(target_os = "none")]
+fn flush_dircache_audit() {
+    if !cfg!(feature = "dircache") {
+        return;
+    }
+    let mut storage = PERSISTENT_ERRORS.lock();
+    let Some(log) = storage.as_mut() else {
+        return;
+    };
+    let events = DIRCACHE.lock().audit();
+    let mut written = DIRCACHE_AUDIT_WRITTEN.load(Ordering::Relaxed);
+    for event in events.into_iter().flatten() {
+        if event.sequence <= written {
+            continue;
+        }
+        if log.append(&event.encode()).is_err() {
+            *storage = None;
+            drop(storage);
+            write("Auditoria dircache: falha no log persistente.\r\n");
+            return;
+        }
+        written = event.sequence;
+        DIRCACHE_AUDIT_WRITTEN.store(written, Ordering::Relaxed);
+    }
+}
+
+#[cfg(target_os = "none")]
 fn flush_persistent_errors() {
     let failed = {
         let mut storage = PERSISTENT_ERRORS.lock();
@@ -4945,6 +5313,21 @@ fn report_errors() {
             write("\r\n");
         }
     }
+    report_dircache_audit();
+}
+
+#[cfg(target_os = "none")]
+fn report_dircache_audit() {
+    let audit = DIRCACHE.lock().audit();
+    for event in audit.into_iter().flatten() {
+        write("dircache pid=");
+        write_u64(event.pid);
+        write(" op=");
+        write(event.operation);
+        write(" errno=");
+        write_u32(u32::from(event.errno));
+        write("\r\n");
+    }
 }
 
 #[cfg(target_os = "none")]
@@ -4972,6 +5355,43 @@ fn report_errors_markdown() {
         }
     }
     write("\r\nAviso: captura em RAM, limitada e perdida ao reiniciar; não é log persistente.\r\n");
+    report_dircache_audit();
+    report_persistent_dircache_audit();
+}
+
+#[cfg(target_os = "none")]
+fn report_persistent_dircache_audit() {
+    use carlio_os::persistent_log::MAX_RECORD;
+
+    if !cfg!(feature = "dircache") {
+        return;
+    }
+    let latest = PERSISTENT_ERRORS.lock().as_ref().and_then(|log| log.latest_sequence());
+    let Some(latest) = latest else {
+        return;
+    };
+    let mut record = [0; MAX_RECORD];
+    for sequence in latest.saturating_sub(63).max(1)..=latest {
+        let length = PERSISTENT_ERRORS.lock().as_mut()
+            .and_then(|log| log.read(sequence, &mut record).ok().flatten());
+        if length != Some(36) || &record[..8] != b"DIRAUD01" {
+            continue;
+        }
+        let operation = &record[26..36];
+        let end = operation.iter().position(|&byte| byte == 0).unwrap_or(operation.len());
+        if !operation[..end].iter().all(u8::is_ascii_lowercase) {
+            continue;
+        }
+        write("dircache disco seq=");
+        write_u64(sequence);
+        write(" pid=");
+        write_u64(u64::from_le_bytes(record[16..24].try_into().unwrap()));
+        write(" op=");
+        write(core::str::from_utf8(&operation[..end]).unwrap_or(""));
+        write(" errno=");
+        write_u32(u32::from(u16::from_le_bytes(record[24..26].try_into().unwrap())));
+        write("\r\n");
+    }
 }
 
 #[cfg(target_os = "none")]

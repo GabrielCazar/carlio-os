@@ -8,6 +8,7 @@ use carlio_os::{
         encode_ipv4_udp, ipv4_next_hop,
     },
     pci::PciFunction,
+    sync::SpinLock,
 };
 use core::{
     arch::asm,
@@ -18,6 +19,8 @@ use core::{
 const RX_COUNT: usize = 16;
 const TX_COUNT: usize = 16;
 const BUFFER_SIZE: usize = 2048;
+// Exclusive ownership across a foreground exchange or one timer poll.
+static CONTROLLER: SpinLock<()> = SpinLock::new(());
 const POLL_LIMIT: usize = 2_000_000;
 const CTRL: usize = 0x0000;
 const RCTL: usize = 0x0100;
@@ -236,7 +239,17 @@ pub unsafe fn initialize(
 }
 
 /// Enfileira e aguarda um frame Ethernet, sem fragmentação de software.
-pub fn transmit(frame: &[u8]) -> Result<(), KernelError> {
+fn transmit(frame: &[u8]) -> Result<(), KernelError> {
+    let descriptor = enqueue_transmit(frame)?;
+    for _ in 0..POLL_LIMIT {
+        if unsafe { ptr::read_volatile(ptr::addr_of!((*descriptor).status)) } & TX_DD != 0 {
+            return Ok(());
+        }
+    }
+    Err(KernelError::IoTimeout)
+}
+
+fn enqueue_transmit(frame: &[u8]) -> Result<*mut TxDescriptor, KernelError> {
     if frame.len() < 14 || frame.len() > BUFFER_SIZE {
         return Err(KernelError::ControllerError);
     }
@@ -257,25 +270,15 @@ pub fn transmit(frame: &[u8]) -> Result<(), KernelError> {
         compiler_fence(Ordering::Release);
         write32(nic.registers, TDT, ((index + 1) % TX_COUNT) as u32);
     }
-    let mut complete = false;
-    for _ in 0..POLL_LIMIT {
-        if unsafe { ptr::read_volatile(ptr::addr_of!((*descriptor).status)) } & TX_DD != 0 {
-            complete = true;
-            break;
-        }
-    }
-    if !complete {
-        return Err(KernelError::IoTimeout);
-    }
     nic.tx_index = (index + 1) % TX_COUNT;
     unsafe {
         NIC = Some(nic);
     }
-    Ok(())
+    Ok(descriptor)
 }
 
 /// Recebe um frame completo; retorna None quando a fila está vazia.
-pub fn receive(output: &mut [u8]) -> Result<Option<usize>, KernelError> {
+fn receive(output: &mut [u8]) -> Result<Option<usize>, KernelError> {
     let mut nic = unsafe { NIC }.ok_or(KernelError::DeviceNotFound)?;
     let index = nic.rx_index;
     let descriptor = unsafe { ptr::addr_of_mut!(DMA.rx[index]) };
@@ -312,6 +315,7 @@ pub fn receive(output: &mut [u8]) -> Result<Option<usize>, KernelError> {
 
 /// Executa DHCPv4 DORA em polling e retorna somente após DHCPACK.
 pub fn request_dhcp_lease() -> Result<Option<DhcpLease>, KernelError> {
+    let _controller = CONTROLLER.lock();
     let nic = unsafe { NIC }.ok_or(KernelError::DeviceNotFound)?;
     let mut frame = [0u8; BUFFER_SIZE];
     let discover = build_dhcp_frame(nic.mac, 1, None, None, &mut frame)?;
@@ -337,30 +341,63 @@ pub fn request_dhcp_lease() -> Result<Option<DhcpLease>, KernelError> {
 
 /// Prova a conectividade local com o roteador recebido por DHCP.
 pub fn resolve_gateway(lease: DhcpLease) -> Result<Option<[u8; 6]>, KernelError> {
+    let _controller = CONTROLLER.lock();
     let Some(gateway) = lease.router.filter(|gateway| *gateway != [0; 4]) else {
         return Ok(None);
     };
     resolve_neighbor(lease.address, gateway)
 }
 
-/// The console owns the controller once the boot probes have finished.
-pub fn poll_status(lease: DhcpLease) {
+/// Process a bounded batch without waiting for DMA or other CPUs.
+pub fn poll_network(lease: DhcpLease, status_enabled: bool) {
+    let Some(_controller) = CONTROLLER.try_lock() else {
+        return;
+    };
     let (Some(nic), Some(mask)) = (unsafe { NIC }, lease.subnet_mask) else {
         return;
     };
+    let now = super::idt::uptime_ticks();
     let mut frame = [0; BUFFER_SIZE];
     let mut reply = [0; 60];
     for _ in 0..RX_COUNT {
         let Ok(Some(length)) = receive(&mut frame) else {
             break;
         };
-        if let Some(length) =
-            carlio_os::net::status_reply(&frame[..length], nic.mac, lease.address, mask, &mut reply)
-        {
-            if transmit(&reply[..length]).is_err() {
+        let frame = &frame[..length];
+        let handled = crate::NETWORK_SOCKETS.try_lock().is_none_or(|mut sockets| {
+            sockets.tcp_receive(frame, nic.mac, lease.address, mask, now, || {
+                let mut sequence = [0; 4];
+                super::entropy::fill_random(&mut sequence)?;
+                Some(u32::from_ne_bytes(sequence))
+            })
+        });
+        if handled {
+            continue;
+        }
+        let length = carlio_os::net::tcp_closed_port_reply(
+            frame,
+            nic.mac,
+            lease.address,
+            mask,
+            |_| false,
+            &mut reply,
+        )
+        .or_else(|| {
+            let is_arp = EthernetFrame::parse(frame).is_ok_and(|frame| frame.ethertype == 0x0806);
+            if status_enabled || is_arp {
+                carlio_os::net::status_reply(frame, nic.mac, lease.address, mask, &mut reply)
+            } else {
+                None
+            }
+        });
+        if let Some(length) = length {
+            if enqueue_transmit(&reply[..length]).is_err() {
                 break;
             }
         }
+    }
+    if let Some(mut sockets) = crate::NETWORK_SOCKETS.try_lock() {
+        sockets.tcp_transmit(nic.mac, now, |frame| enqueue_transmit(frame).is_ok());
     }
 }
 
@@ -408,8 +445,9 @@ fn resolve_neighbor(
     Ok(None)
 }
 
-/// Consulta o DNS do DHCP. O chamador deve ser o dono da interface e manter o PIT ativo.
+/// Consulta o DNS do DHCP. O chamador deve manter o PIT ativo.
 pub fn resolve_dns_a(lease: DhcpLease, name: &str) -> Result<Option<[u8; 4]>, KernelError> {
+    let _controller = CONTROLLER.lock();
     let mut query = [0; 271];
     let stamp = unsafe { core::arch::x86_64::_rdtsc() };
     let source_port = 49152 | ((stamp >> 16) as u16 & 0x3fff);

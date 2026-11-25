@@ -63,7 +63,7 @@ positivos, negativos e de falha; modelos host e detecção PCI não bastam.
 | VFS | Rootfs ext4 prioritário/FAT32 alternativo detectado em MBR/GPT e montado no boot; leitura, stat/access, ELF loader por mount, `execve` transacional limitado e copy-up/escrita em overlay persistente em mídia dedicada; Hermione arquivado | Escrita nativa ext4/FAT32, whiteouts/rename/unlink, limites atuais de 16 KiB e 40 nós, nomes longos FAT, recursos ext4 completos, validação QEMU/NAS do execve e enforcement integral de inode/processo |
 | Rede | NICs alvo identificadas; prova limitada do Intel 82574L em QEMU | Drivers físicos, pilha TCP/IP integrada, DNS e serviços de servidor pendentes; rede de servidor não está disponível |
 | Syscalls (SCI) | Entrada x86-64 `SYSCALL`; CPL3 valida identidade/grupos, `getpid`/`gettid`, `clock_gettime`/`clock_getres` monotônicos, `brk` positivo, `mmap/munmap`, `execve` transacional limitado, VFS e serial; `mprotect` parcial foi conectado, validação suspensa | NAS UEFI smoke aberto: a prova de duas CR3 não observou preempção de timer e o probe de page tables falhou ([relatório](../reports/fase-4-aplicacoes-linux.md), [log](../reports/logs/fase4-linux-abi-timers-nas-20261119-021821-qemu-kvm-uefi.log)). Ainda faltam gates de `execve`, `CLOCK_REALTIME`, dependências ELF completas, relocations/glibc, GNU version tables, TLS, sinais, futex, chamadas completas de threads, mapeamento de arquivo, mounts no VFS e compatibilidade geral glibc/systemd |
-| pegasusDS / servidor de diretório | Contrato ABI v1 congelado como documento; crate local `libcarlio` define interface Rust segura sem transporte de syscall | ABI implementada, capacidades, sandbox, hooks LSM, keyring, AF_UNIX/SCM_RIGHTS, IPv6/TCP/epoll, canais opt-in, verified boot e workload QEMU/NAS; não executar servidor de rede |
+| Pegasus DS / servidor de diretório | Operações do diretório em memória pelo executável dinâmico em CPL3 sobre ext4, com status zero em BIOS e UEFI no QEMU local e no NAS/KVM. Contrato ABI v1 e interface Rust `libcarlio` documentados. [Integração](PEGASUS-DS.md) | Serviço de diretório funcional, transporte de `libcarlio`, capabilities, sandbox, LSM, keyring, AF_UNIX/SCM_RIGHTS, IPv6/TCP/epoll, canais opt-in, verified boot e validação do serviço no NAS |
 | Interrupções | IDT/exceções, PIT/watchdog, timer LAPIC e IPI de TLB com ACK | IRQs de teclado, USB, rede e disco ligados a drivers; tratamento/recovery físico |
 
 A prioridade física é NAS-first para AHCI `8086:1c02`, RTL8111 `10ec:8168`,
@@ -503,6 +503,17 @@ runtime continuam pendentes.
 com filas DMA em polling TX/RX e DHCPv4 DORA aprovado no QEMU. O dispatcher
 Linux liga `socket`, `bind`, `listen` e `close` a uma tabela bounded IPv4
 TCP/UDP por processo, com colisão de portas e restrição de portas privilegiadas.
+O módulo de rede codifica e decodifica segmentos TCP/IPv4, com verificação de
+comprimento e checksum. Durante uma concessão DHCP válida, o PIT processa
+um lote limitado da Intel 82574L por tick sem esperar por DMA. A consulta
+DNS em primeiro plano detém acesso exclusivo às filas durante a transação.
+O TCP passivo IPv4 aceita conexões unicast da LAN com janela e filas fixas,
+reenvio de SYN e dados, e encerramento por FIN. O diagnóstico UDP continua
+opt-in. O teste `scripts/test-tcp-qemu.py` confirmou handshake, entrega e
+envio de dados em CPL3 e FIN em BIOS e UEFI. A ABI oferece `accept`,
+`accept4`, `read`, `write`, `sendto`, `recvfrom` e `poll` imediato para
+essa rota. TCP de saída, espera bloqueante e validação física permanecem
+em aberto.
 O boot consulta via ARP o gateway anunciado por DHCP e valida a resposta
 Ethernet/ARP. O smoke em QEMU BIOS e UEFI exige confirmação de DHCP e ARP.
 O diagnóstico DNS usa a máscara e a rota padrão do DHCP para selecionar o

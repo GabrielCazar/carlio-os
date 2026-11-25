@@ -4,13 +4,16 @@ _start:
     movq %xmm7, %rax
     test %rax, %rax                # execve clears the previous image state
     jne failed
-    cmpq $0, (%rsp)
+    cmpq $1, (%rsp)
     jne failed
-    cmpq $0, 8(%rsp)
+    mov 8(%rsp), %rax
+    cmpb $0, (%rax)
     jne failed
     cmpq $0, 16(%rsp)
     jne failed
-    lea 24(%rsp), %rsi             # auxv follows empty argv and envp
+    cmpq $0, 24(%rsp)
+    jne failed
+    lea 32(%rsp), %rsi             # auxv follows argv[0], argv and envp terminators
     xor %r8d, %r8d                 # AT_BASE
     xor %r9d, %r9d                 # AT_ENTRY
     mov $6, %edx
@@ -32,6 +35,16 @@ advance:
     test %r9, %r9
     je failed
 
+    lea relro_page(%rip), %rdi
+    mov $4096, %esi
+    mov $1, %edx                   # PROT_READ over a page from PT_LOAD
+    mov $10, %eax
+    syscall
+    test %rax, %rax
+    jne failed
+    cmpb $42, relro_page(%rip)
+    jne failed
+
     mov $1, %eax
     mov $1, %edi
     lea message(%rip), %rsi
@@ -49,4 +62,7 @@ failed:
 
 message: .ascii "execve: PT_INTERP e auxv verificados em CPL3\n"
 .set message_len, . - message
+.data
+.balign 4096
+relro_page: .byte 42
 .section .note.GNU-stack,"",@progbits

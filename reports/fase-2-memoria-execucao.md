@@ -1,7 +1,6 @@
 # Relatório — Fase 2: memória e execução
 
-**Estado em 24/11/2026:** critérios locais aprovados. O fechamento integral
-aguarda revalidação no NAS/KVM, conforme `CORRECT.md` §§3, 4 e 7.
+**Estado:** critérios da árvore aprovados em QEMU local e NAS/KVM. O NAS executou BIOS e UEFI com quatro CPUs virtuais e 5 GiB.
 
 ### Correção — preempção da fixture e validação acima de 4 GiB — 24/11/2026
 
@@ -14,7 +13,8 @@ alocação, escrita, leitura e liberação acima de 4 GiB.
 - [x] Formatação, 192 testes host e Clippy com as cinco features de diagnóstico. [Host](logs/fechamento-fases-1-2-20261124-host.txt) · [Clippy](logs/fechamento-fases-1-2-20261124-clippy.txt).
 - [x] ISO padrão com quatro CPUs e `--expect-high-frame`. Preempção, isolamento, shootdowns e retorno dos frames ao baseline passaram. [5 GiB BIOS](logs/fechamento-fase-2-20261124-5G-bios-final.log) · [5 GiB UEFI](logs/fechamento-fase-2-20261124-5G-uefi-final.log) · [32 GiB BIOS](logs/fechamento-fase-2-20261124-32G-bios-final.log) · [32 GiB UEFI](logs/fechamento-fase-2-20261124-32G-uefi-final.log).
 - [x] `scripts/test-disk-exec-qemu.sh` com `--smp-cycles 8192 --expect-runtime-stress` na ISO com `smp-stress-test,stack-watermark,disk-exec-test`. Dois APs completaram 8.192 ciclos cada e terminaram com page faults isolados. O reaper confirmou três ACKs e restaurou a contagem de frames. O BSP executou o ELF estático do ext4. [BIOS](logs/fechamento-fase-2-20261124-smp-bios.log) · [UEFI](logs/fechamento-fase-2-20261124-smp-uefi.log).
-- [ ] Repetir BIOS e UEFI em NAS/KVM. Os três endereços SSH configurados ficaram inacessíveis. [Conectividade NAS](logs/fechamento-fases-1-2-20261124-nas.txt).
+- [x] NAS/KVM com a ISO padrão e `--expect-high-frame`: alocação, escrita, leitura e liberação acima de 4 GiB, além da preempção entre duas CR3. [BIOS](logs/fase2-nas-kvm-5g-bios.log) · [UEFI](logs/fase2-nas-kvm-5g-uefi.log).
+- [x] NAS/KVM com a ISO de diagnóstico: 8.192 ciclos em cada um dos dois APs, duas faltas de página isoladas, três ACKs do reaper, frames de volta ao baseline e execução estática em ext4. [BIOS](logs/fase2-nas-kvm-smp-bios.log) · [UEFI](logs/fase2-nas-kvm-smp-uefi.log).
 
 O reaper foi validado no ciclo de boot. Guard pages de pilha, swap e
 validação física seguem fora da cobertura desta rodada.

@@ -50,3 +50,14 @@ remoto ou suporte ARM64. Há framebuffer RGB de firmware com desenho por CPU e
 um buffer de texto VGA em memória; ainda não há modesetting Intel nem desktop.
 Plasma/Budgie/Omarchy e os protocolos SSH/SFTP, SMB, FTP, HTTP e HTTPS seguem
 planejados. Consulte o [relatório de vídeo](fase-video.md).
+
+
+## Composição no framebuffer de boot
+
+O kernel usa o framebuffer RGB fornecido pelo Limine para compor superfícies
+RGBA em software. O teste de host cobre recorte de posição negativa,
+transparência, mistura por pixel e preservação do espaçamento entre linhas.
+O boot desenha as faixas de diagnóstico pela mesma rotina.
+
+O login no Plasma/SDDM ainda depende de dispositivos de entrada, DRM/KMS,
+compositor de sessões, D-Bus, threads/futex e compatibilidade da userland.

@@ -1,9 +1,91 @@
-//! Quadros Ethernet, ARP, IPv4, UDP, opções DHCP e descritores de sockets.
+//! Quadros Ethernet, ARP, IPv4, TCP, UDP, opções DHCP e descritores de sockets.
 
 pub const ETHERNET_HEADER_LEN: usize = 14;
 pub const IPV4_MIN_HEADER_LEN: usize = 20;
 pub const UDP_HEADER_LEN: usize = 8;
 pub const STATUS_PORT: u16 = 7704;
+
+/// Resposta TCP para uma porta local sem listener. Ignora RST e tráfego fora da LAN.
+pub fn tcp_closed_port_reply(
+    frame: &[u8],
+    mac: [u8; 6],
+    address: [u8; 4],
+    mask: [u8; 4],
+    is_listening: impl FnOnce(u16) -> bool,
+    output: &mut [u8; 60],
+) -> Option<usize> {
+    const FIN: u8 = 0x01;
+    const SYN: u8 = 0x02;
+    const RST: u8 = 0x04;
+    const ACK: u8 = 0x10;
+
+    let (peer_mac, peer_ip, request) = local_tcp(frame, mac, address, mask)?;
+    if request.flags & RST != 0 || is_listening(request.destination_port) {
+        return None;
+    }
+    let (sequence, acknowledgement, flags) = if request.flags & ACK != 0 {
+        (request.acknowledgement, 0, RST)
+    } else {
+        let length = request.payload.len() as u32
+            + u32::from(request.flags & SYN != 0)
+            + u32::from(request.flags & FIN != 0);
+        (0, request.sequence.wrapping_add(length), RST | ACK)
+    };
+    let response = TcpSegment {
+        source_port: request.destination_port,
+        destination_port: request.source_port,
+        sequence,
+        acknowledgement,
+        flags,
+        window: 0,
+        urgent_pointer: 0,
+        options: &[],
+        payload: &[],
+    };
+    tcp_frame(mac, peer_mac, address, peer_ip, &response, output)
+}
+
+fn local_tcp(
+    frame: &[u8],
+    mac: [u8; 6],
+    address: [u8; 4],
+    mask: [u8; 4],
+) -> Option<([u8; 6], [u8; 4], TcpSegment<'_>)> {
+    let ethernet = EthernetFrame::parse(frame).ok()?;
+    if ethernet.ethertype != 0x0800
+        || ethernet.destination != mac
+        || ethernet.source == [0; 6]
+        || ethernet.source == mac
+        || ethernet.source[0] & 1 != 0
+    {
+        return None;
+    }
+    let ip = Ipv4Packet::parse(ethernet.payload).ok()?;
+    if ip.destination != address
+        || ip.ttl == 0
+        || ipv4_next_hop(address, Some(mask), None, ip.source).is_none()
+    {
+        return None;
+    }
+    Some((ethernet.source, ip.source, TcpSegment::parse(&ip).ok()?))
+}
+
+fn tcp_frame(
+    mac: [u8; 6],
+    peer_mac: [u8; 6],
+    address: [u8; 4],
+    peer_ip: [u8; 4],
+    segment: &TcpSegment<'_>,
+    output: &mut [u8],
+) -> Option<usize> {
+    let length = 14 + encode_ipv4_tcp(address, peer_ip, segment, output.get_mut(14..)?).ok()?;
+    let padded = length.max(60);
+    output.get_mut(length..padded)?.fill(0);
+    output[..6].copy_from_slice(&peer_mac);
+    output[6..12].copy_from_slice(&mac);
+    output[12..14].copy_from_slice(&0x0800u16.to_be_bytes());
+    Some(padded)
+}
 
 /// Bounded, opt-in LAN health check. Replies cannot exceed the request size.
 pub fn status_reply(
@@ -220,31 +302,25 @@ pub fn encode_ipv4_udp(
     payload: &[u8],
     output: &mut [u8],
 ) -> Result<usize, NetworkError> {
+    if payload.len() > 1500 - IPV4_MIN_HEADER_LEN - UDP_HEADER_LEN {
+        return Err(NetworkError::InvalidLength);
+    }
     let total = IPV4_MIN_HEADER_LEN + UDP_HEADER_LEN + payload.len();
-    if total > 1500 || total > output.len() {
+    if total > output.len() {
         return Err(NetworkError::InvalidLength);
     }
     if source_port == 0 || destination_port == 0 {
         return Err(NetworkError::InvalidPort);
     }
     let (ip, udp) = output[..total].split_at_mut(IPV4_MIN_HEADER_LEN);
-    ip.fill(0);
-    ip[0] = 0x45;
-    ip[2..4].copy_from_slice(&(total as u16).to_be_bytes());
-    ip[6] = 0x40;
-    ip[8] = 64;
-    ip[9] = 17;
-    ip[12..16].copy_from_slice(&source);
-    ip[16..20].copy_from_slice(&destination);
-    let header_checksum = checksum(ip);
-    ip[10..12].copy_from_slice(&header_checksum.to_be_bytes());
+    encode_ipv4_header(source, destination, 17, total, ip);
     let udp_len = udp.len() as u16;
     udp[..2].copy_from_slice(&source_port.to_be_bytes());
     udp[2..4].copy_from_slice(&destination_port.to_be_bytes());
     udp[4..6].copy_from_slice(&udp_len.to_be_bytes());
     udp[6..8].fill(0);
     udp[8..].copy_from_slice(payload);
-    let transport_checksum = udp_checksum(source, destination, udp);
+    let transport_checksum = ipv4_transport_checksum(source, destination, 17, udp);
     let transport_checksum = if transport_checksum == 0 {
         u16::MAX
     } else {
@@ -252,6 +328,114 @@ pub fn encode_ipv4_udp(
     };
     udp[6..8].copy_from_slice(&transport_checksum.to_be_bytes());
     Ok(total)
+}
+
+const TCP_MIN_HEADER_LEN: usize = 20;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TcpSegment<'a> {
+    pub source_port: u16,
+    pub destination_port: u16,
+    pub sequence: u32,
+    pub acknowledgement: u32,
+    pub flags: u8,
+    pub window: u16,
+    pub urgent_pointer: u16,
+    pub options: &'a [u8],
+    pub payload: &'a [u8],
+}
+
+impl<'a> TcpSegment<'a> {
+    pub fn parse(ip: &Ipv4Packet<'a>) -> Result<Self, NetworkError> {
+        if ip.protocol != 6 {
+            return Err(NetworkError::Unsupported);
+        }
+        let bytes = ip.payload;
+        if bytes.len() < TCP_MIN_HEADER_LEN {
+            return Err(NetworkError::Truncated);
+        }
+        let header_len = usize::from(bytes[12] >> 4) * 4;
+        if header_len < TCP_MIN_HEADER_LEN || header_len > bytes.len() {
+            return Err(NetworkError::InvalidLength);
+        }
+        if ipv4_transport_checksum(ip.source, ip.destination, 6, bytes) != 0 {
+            return Err(NetworkError::InvalidChecksum);
+        }
+        let source_port = u16be(bytes, 0);
+        let destination_port = u16be(bytes, 2);
+        if source_port == 0 || destination_port == 0 {
+            return Err(NetworkError::InvalidPort);
+        }
+        Ok(Self {
+            source_port,
+            destination_port,
+            sequence: u32::from_be_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
+            acknowledgement: u32::from_be_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]),
+            flags: bytes[13],
+            window: u16be(bytes, 14),
+            urgent_pointer: u16be(bytes, 18),
+            options: &bytes[TCP_MIN_HEADER_LEN..header_len],
+            payload: &bytes[header_len..],
+        })
+    }
+}
+
+pub fn encode_ipv4_tcp(
+    source: [u8; 4],
+    destination: [u8; 4],
+    segment: &TcpSegment<'_>,
+    output: &mut [u8],
+) -> Result<usize, NetworkError> {
+    if segment.source_port == 0 || segment.destination_port == 0 {
+        return Err(NetworkError::InvalidPort);
+    }
+    if segment.options.len() > 40 || !segment.options.len().is_multiple_of(4) {
+        return Err(NetworkError::InvalidOption);
+    }
+    let header_len = TCP_MIN_HEADER_LEN + segment.options.len();
+    let total = IPV4_MIN_HEADER_LEN + header_len;
+    if segment.payload.len() > 1500 - total {
+        return Err(NetworkError::InvalidLength);
+    }
+    let total = total + segment.payload.len();
+    if total > output.len() {
+        return Err(NetworkError::InvalidLength);
+    }
+    let (ip, tcp) = output[..total].split_at_mut(IPV4_MIN_HEADER_LEN);
+    encode_ipv4_header(source, destination, 6, total, ip);
+    tcp[..TCP_MIN_HEADER_LEN].fill(0);
+    tcp[..2].copy_from_slice(&segment.source_port.to_be_bytes());
+    tcp[2..4].copy_from_slice(&segment.destination_port.to_be_bytes());
+    tcp[4..8].copy_from_slice(&segment.sequence.to_be_bytes());
+    tcp[8..12].copy_from_slice(&segment.acknowledgement.to_be_bytes());
+    tcp[12] = ((header_len / 4) as u8) << 4;
+    tcp[13] = segment.flags;
+    tcp[14..16].copy_from_slice(&segment.window.to_be_bytes());
+    tcp[18..20].copy_from_slice(&segment.urgent_pointer.to_be_bytes());
+    tcp[TCP_MIN_HEADER_LEN..header_len].copy_from_slice(segment.options);
+    tcp[header_len..].copy_from_slice(segment.payload);
+    let tcp_checksum = ipv4_transport_checksum(source, destination, 6, tcp);
+    tcp[16..18].copy_from_slice(&tcp_checksum.to_be_bytes());
+    Ok(total)
+}
+
+fn encode_ipv4_header(
+    source: [u8; 4],
+    destination: [u8; 4],
+    protocol: u8,
+    total: usize,
+    ip: &mut [u8],
+) {
+    ip.fill(0);
+    ip[0] = 0x45;
+    ip[2..4].copy_from_slice(&(total as u16).to_be_bytes());
+    ip[6] = 0x40;
+    ip[8] = 64;
+    ip[9] = protocol;
+    ip[12..16].copy_from_slice(&source);
+    ip[16..20].copy_from_slice(&destination);
+    let header_checksum = checksum(ip);
+    ip[10..12].copy_from_slice(&header_checksum.to_be_bytes());
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -264,11 +448,14 @@ pub enum NetworkError {
     InvalidAddress,
     InvalidOption,
     AddressInUse,
+    PortsExhausted,
     PermissionDenied,
     BadDescriptor,
     UnsupportedSocket,
     InvalidPort,
     InvalidState,
+    WouldBlock,
+    ConnectionReset,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -282,6 +469,7 @@ pub enum SocketState {
     Created,
     Bound,
     Listening,
+    Connected,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -293,12 +481,18 @@ pub struct SocketInfo {
     pub local_address: [u8; 4],
     pub local_port: u16,
     pub backlog: u16,
+    pub nonblocking: bool,
 }
+
+const SOCK_NONBLOCK: u64 = 0x800;
+const SOCK_CLOEXEC: u64 = 0x80000;
+const EPHEMERAL_PORTS: core::ops::RangeInclusive<u16> = 49152..=65535;
 
 #[derive(Clone, Copy)]
 struct SocketEntry {
     info: SocketInfo,
     occupied: bool,
+    close_on_exec: bool,
 }
 impl SocketEntry {
     const EMPTY: Self = Self {
@@ -310,20 +504,27 @@ impl SocketEntry {
             local_address: [0; 4],
             local_port: 0,
             backlog: 0,
+            nonblocking: false,
         },
         occupied: false,
+        close_on_exec: false,
     };
 }
 
-/// Tabela bounded de endpoints IPv4 e portas de transporte, por processo.
-/// Ainda não move pacotes; RX/TX depende do driver físico.
+#[path = "net_tcp.rs"]
+mod tcp;
+use tcp::Connection;
+
+/// Tabela limitada de endpoints IPv4 e conexões por processo.
 pub struct SocketTable<const N: usize> {
     entries: [SocketEntry; N],
+    connections: [Connection; 16],
 }
 impl<const N: usize> SocketTable<N> {
     pub const fn new() -> Self {
         Self {
             entries: [SocketEntry::EMPTY; N],
+            connections: [Connection::EMPTY; 16],
         }
     }
 
@@ -335,10 +536,10 @@ impl<const N: usize> SocketTable<N> {
         kind: u64,
         protocol: u64,
     ) -> Result<u32, NetworkError> {
-        if domain != 2 || (kind != 1 && kind != 2) {
+        if domain != 2 {
             return Err(NetworkError::UnsupportedSocket);
         }
-        let transport = match (kind, protocol) {
+        let transport = match (kind & !(SOCK_NONBLOCK | SOCK_CLOEXEC), protocol) {
             (1, 0 | 6) => SocketProtocol::Tcp,
             (2, 0 | 17) => SocketProtocol::Udp,
             _ => return Err(NetworkError::UnsupportedSocket),
@@ -360,6 +561,7 @@ impl<const N: usize> SocketTable<N> {
             .ok_or(NetworkError::InvalidState)?;
         self.entries[slot] = SocketEntry {
             occupied: true,
+            close_on_exec: kind & SOCK_CLOEXEC != 0,
             info: SocketInfo {
                 process_id,
                 descriptor,
@@ -368,6 +570,7 @@ impl<const N: usize> SocketTable<N> {
                 local_address: [0; 4],
                 local_port: 0,
                 backlog: 0,
+                nonblocking: kind & SOCK_NONBLOCK != 0,
             },
         };
         Ok(descriptor)
@@ -381,29 +584,36 @@ impl<const N: usize> SocketTable<N> {
         address: [u8; 4],
         port: u16,
     ) -> Result<(), NetworkError> {
-        if port == 0 {
-            return Err(NetworkError::InvalidPort);
-        }
-        if port < 1024 && uid != 0 {
-            return Err(NetworkError::PermissionDenied);
-        }
         let index = self
             .find(process_id, descriptor)
             .ok_or(NetworkError::BadDescriptor)?;
         if self.entries[index].info.state != SocketState::Created {
             return Err(NetworkError::InvalidState);
         }
-        let candidate = self.entries[index].info;
-        if self.entries.iter().any(|entry| {
-            entry.occupied
-                && entry.info.protocol == candidate.protocol
-                && entry.info.local_port == port
-                && (address == [0; 4]
-                    || entry.info.local_address == [0; 4]
-                    || entry.info.local_address == address)
-        }) {
-            return Err(NetworkError::AddressInUse);
+        if port != 0 && port < 1024 && uid != 0 {
+            return Err(NetworkError::PermissionDenied);
         }
+        let candidate = self.entries[index].info;
+        let port_in_use = |port| {
+            self.entries.iter().any(|entry| {
+                entry.occupied
+                    && entry.info.protocol == candidate.protocol
+                    && entry.info.local_port == port
+                    && (address == [0; 4]
+                        || entry.info.local_address == [0; 4]
+                        || entry.info.local_address == address)
+            })
+        };
+        let port = if port == 0 {
+            let mut ports = EPHEMERAL_PORTS;
+            ports
+                .find(|port| !port_in_use(*port))
+                .ok_or(NetworkError::PortsExhausted)?
+        } else if port_in_use(port) {
+            return Err(NetworkError::AddressInUse);
+        } else {
+            port
+        };
         self.entries[index].info.local_address = address;
         self.entries[index].info.local_port = port;
         self.entries[index].info.state = SocketState::Bound;
@@ -433,6 +643,7 @@ impl<const N: usize> SocketTable<N> {
         let index = self
             .find(process_id, descriptor)
             .ok_or(NetworkError::BadDescriptor)?;
+        self.release_connections(process_id, Some(descriptor));
         self.entries[index] = SocketEntry::EMPTY;
         Ok(())
     }
@@ -441,6 +652,7 @@ impl<const N: usize> SocketTable<N> {
         if process_id == 0 {
             return 0;
         }
+        self.release_connections(process_id, None);
         let mut closed = 0usize;
         for entry in &mut self.entries {
             if entry.occupied && entry.info.process_id == process_id {
@@ -451,9 +663,28 @@ impl<const N: usize> SocketTable<N> {
         closed
     }
 
+    pub fn close_on_exec(&mut self, process_id: u64) {
+        for index in 0..N {
+            let entry = self.entries[index];
+            if entry.occupied && entry.info.process_id == process_id && entry.close_on_exec {
+                self.release_connections(process_id, Some(entry.info.descriptor));
+                self.entries[index] = SocketEntry::EMPTY;
+            }
+        }
+    }
+
     pub fn info(&self, process_id: u64, descriptor: u32) -> Option<SocketInfo> {
         self.find(process_id, descriptor)
             .map(|index| self.entries[index].info)
+    }
+
+    pub fn is_listening(&self, address: [u8; 4], port: u16) -> bool {
+        self.entries.iter().any(|entry| {
+            entry.occupied
+                && entry.info.state == SocketState::Listening
+                && entry.info.local_port == port
+                && (entry.info.local_address == [0; 4] || entry.info.local_address == address)
+        })
     }
 
     fn find(&self, process_id: u64, descriptor: u32) -> Option<usize> {
@@ -611,7 +842,9 @@ impl<'a> UdpDatagram<'a> {
             return Err(NetworkError::Truncated);
         }
         let checksum_field = u16be(bytes, 6);
-        if checksum_field != 0 && udp_checksum(source, destination, &bytes[..length]) != 0 {
+        if checksum_field != 0
+            && ipv4_transport_checksum(source, destination, 17, &bytes[..length]) != 0
+        {
             return Err(NetworkError::InvalidChecksum);
         }
         Ok(Self {
@@ -728,15 +961,20 @@ pub fn checksum(bytes: &[u8]) -> u16 {
     !(sum as u16)
 }
 
-fn udp_checksum(source: [u8; 4], destination: [u8; 4], udp: &[u8]) -> u16 {
+fn ipv4_transport_checksum(
+    source: [u8; 4],
+    destination: [u8; 4],
+    protocol: u8,
+    transport: &[u8],
+) -> u16 {
     let mut sum = 0u32;
     for address in [source, destination] {
         sum += u16::from_be_bytes([address[0], address[1]]) as u32;
         sum += u16::from_be_bytes([address[2], address[3]]) as u32;
     }
-    sum += 17;
-    sum += udp.len() as u32;
-    let (chunks, remainder) = udp.as_chunks::<2>();
+    sum += u32::from(protocol);
+    sum += transport.len() as u32;
+    let (chunks, remainder) = transport.as_chunks::<2>();
     for pair in chunks {
         sum += u16::from_be_bytes([pair[0], pair[1]]) as u32;
     }
@@ -845,6 +1083,125 @@ mod tests {
     use super::*;
 
     #[test]
+    fn tcp_closed_port_resets_only_local_unicast_without_a_listener() {
+        let mac = [2, 0, 0, 0, 0, 1];
+        let peer = [2, 0, 0, 0, 0, 2];
+        let address = [192, 0, 2, 1];
+        let source = [192, 0, 2, 2];
+        let mask = [255, 255, 255, 0];
+        let mut request = TcpSegment {
+            source_port: 49152,
+            destination_port: 389,
+            sequence: u32::MAX,
+            acknowledgement: 42,
+            flags: 0x02,
+            window: 4096,
+            urgent_pointer: 0,
+            options: &[],
+            payload: &[],
+        };
+        let mut frame = [0; 60];
+        frame[..6].copy_from_slice(&mac);
+        frame[6..12].copy_from_slice(&peer);
+        frame[12..14].copy_from_slice(&0x0800u16.to_be_bytes());
+        let mut reply = [0; 60];
+        let mut table = SocketTable::<2>::new();
+        let socket = table.create(8, 0, 2, 1, 0).unwrap();
+        table.bind(8, 0, socket, [0; 4], 389).unwrap();
+        encode_ipv4_tcp(source, address, &request, &mut frame[14..]).unwrap();
+        assert_eq!(
+            tcp_closed_port_reply(
+                &frame,
+                mac,
+                address,
+                mask,
+                |p| table.is_listening(address, p),
+                &mut reply
+            ),
+            Some(60)
+        );
+        assert_eq!(&reply[..6], &peer);
+        let ip = Ipv4Packet::parse(&reply[14..]).unwrap();
+        assert_eq!(ip.destination, source);
+        let reset = TcpSegment::parse(&ip).unwrap();
+        assert_eq!((reset.source_port, reset.destination_port), (389, 49152));
+        assert_eq!(
+            (reset.flags, reset.sequence, reset.acknowledgement),
+            (0x14, 0, 0)
+        );
+
+        table.listen(8, socket, 2).unwrap();
+        assert_eq!(
+            tcp_closed_port_reply(
+                &frame,
+                mac,
+                address,
+                mask,
+                |p| table.is_listening(address, p),
+                &mut reply
+            ),
+            None
+        );
+        request.flags = 0x10;
+        encode_ipv4_tcp(source, address, &request, &mut frame[14..]).unwrap();
+        assert_eq!(
+            tcp_closed_port_reply(&frame, mac, address, mask, |_| false, &mut reply),
+            Some(60)
+        );
+        let reset = TcpSegment::parse(&Ipv4Packet::parse(&reply[14..]).unwrap()).unwrap();
+        assert_eq!(
+            (reset.flags, reset.sequence, reset.acknowledgement),
+            (0x04, 42, 0)
+        );
+        request.flags = 0x04;
+        encode_ipv4_tcp(source, address, &request, &mut frame[14..]).unwrap();
+        assert_eq!(
+            tcp_closed_port_reply(&frame, mac, address, mask, |_| false, &mut reply),
+            None
+        );
+        request.flags = 0x02;
+        encode_ipv4_tcp([192, 0, 3, 2], address, &request, &mut frame[14..]).unwrap();
+        assert_eq!(
+            tcp_closed_port_reply(&frame, mac, address, mask, |_| false, &mut reply),
+            None
+        );
+    }
+
+    #[test]
+    fn tcp_ipv4_round_trip_and_rejects_corruption() {
+        let source = [192, 0, 2, 20];
+        let destination = [198, 51, 100, 9];
+        let segment = TcpSegment {
+            source_port: 49152,
+            destination_port: 389,
+            sequence: 0x1234_5678,
+            acknowledgement: 0x8765_4321,
+            flags: 0x18,
+            window: 4096,
+            urgent_pointer: 0,
+            options: &[1, 1, 1, 0],
+            payload: b"abc",
+        };
+        let mut packet = [0u8; 64];
+        let length = encode_ipv4_tcp(source, destination, &segment, &mut packet).unwrap();
+        assert_eq!(length, 47);
+        assert_eq!(&packet[36..38], &[0xe8, 0x57]);
+        let ip = Ipv4Packet::parse(&packet[..length]).unwrap();
+        assert_eq!(TcpSegment::parse(&ip), Ok(segment));
+
+        packet[length - 1] ^= 1;
+        let ip = Ipv4Packet::parse(&packet[..length]).unwrap();
+        assert_eq!(TcpSegment::parse(&ip), Err(NetworkError::InvalidChecksum));
+        packet[32] = 0xf0;
+        let ip = Ipv4Packet::parse(&packet[..length]).unwrap();
+        assert_eq!(TcpSegment::parse(&ip), Err(NetworkError::InvalidLength));
+        assert_eq!(
+            encode_ipv4_tcp(source, destination, &segment, &mut packet[..length - 1]),
+            Err(NetworkError::InvalidLength)
+        );
+    }
+
+    #[test]
     fn parses_ethernet_arp_and_ipv4_udp() {
         let mut arp = [0u8; 28];
         arp[0..2].copy_from_slice(&1u16.to_be_bytes());
@@ -926,5 +1283,28 @@ mod tests {
         );
         assert_eq!(table.close(10, tcp), Ok(()));
         assert_eq!(table.info(10, tcp), None);
+    }
+
+    #[test]
+    fn socket_table_assigns_ephemeral_ports_and_releases_close_on_exec() {
+        let mut table = SocketTable::<4>::new();
+        let first = table
+            .create(10, 1000, 2, 1 | SOCK_CLOEXEC | SOCK_NONBLOCK, 0)
+            .unwrap();
+        let second = table.create(11, 1000, 2, 1, 0).unwrap();
+        table.bind(10, 1000, first, [0; 4], 0).unwrap();
+        table.bind(11, 1000, second, [127, 0, 0, 1], 0).unwrap();
+        let first_info = table.info(10, first).unwrap();
+        let second_info = table.info(11, second).unwrap();
+        assert!(first_info.nonblocking);
+        assert_ne!(first_info.local_port, second_info.local_port);
+        table.close_on_exec(11);
+        assert_eq!(table.info(11, second), Some(second_info));
+        table.close_on_exec(10);
+        assert_eq!(table.info(10, first), None);
+        let replacement = table.create(10, 1000, 2, 1, 0).unwrap();
+        table
+            .bind(10, 1000, replacement, [0; 4], first_info.local_port)
+            .unwrap();
     }
 }

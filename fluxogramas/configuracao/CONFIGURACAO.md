@@ -5,6 +5,7 @@
 | Variável | Efeito |
 | --- | --- |
 | `CARLIO_TEST_PHASE` | Prefixo da fase usado nos nomes dos logs dos testes locais/NAS. |
+| `CARLIO_TEST_ISO` | Imagem ISO usada por `scripts/test-nas.sh`. O padrão é `build/carlio-os.iso`. |
 | `CARLIO_TEST_OVMF` | Caminho para `OVMF_CODE` quando o harness testa UEFI. |
 | `CARLIO_STORAGE_TEST=1` | Acrescenta teste Hermione/AHCI em disco descartável ao harness NAS. |
 | `CARLIO_CRASH_TEST=1` | Ativa comandos de injeção de falhas de kernel na build de diagnóstico. |

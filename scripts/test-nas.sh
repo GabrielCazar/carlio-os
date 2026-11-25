@@ -8,6 +8,7 @@ done
 host=${CARLIO_TEST_SSH_TARGET:-nas-manjaro}
 stamp=$(date -u +%Y%m%d-%H%M%S)
 phase=${CARLIO_TEST_PHASE:-fase-1}
+iso=${CARLIO_TEST_ISO:-$root_dir/build/carlio-os.iso}
 qemu_only=${CARLIO_TEST_QEMU_ONLY:-0}
 [[ $qemu_only == 0 || $qemu_only == 1 ]] || {
   echo "CARLIO_TEST_QEMU_ONLY deve ser 0 ou 1." >&2
@@ -50,8 +51,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-test -s "$root_dir/build/carlio-os.iso" || {
-  echo "ISO ausente; execute scripts/build-iso.sh antes." >&2
+test -s "$iso" || {
+  echo "ISO ausente em $iso; execute scripts/build-iso.sh antes." >&2
   exit 1
 }
 
@@ -60,7 +61,7 @@ tar -czf "$archive" -C "$root_dir" \
   --exclude='./.agents' --exclude='./.codex' --exclude='./.aws' .
 ssh "${ssh_config_arg[@]}" -o BatchMode=yes "$host" "mkdir -p '$remote_dir/src'"
 scp "${ssh_config_arg[@]}" -q "$archive" "$host:$remote_dir/source.tar.gz"
-scp "${ssh_config_arg[@]}" -q "$root_dir/build/carlio-os.iso" "$host:$remote_dir/carlio-os.iso"
+scp "${ssh_config_arg[@]}" -q -- "$iso" "$host:$remote_dir/carlio-os.iso"
 
 set +e
 ssh "${ssh_config_arg[@]}" -o BatchMode=yes "$host" "
@@ -92,8 +93,10 @@ ssh "${ssh_config_arg[@]}" -o BatchMode=yes "$host" "
     cargo test --locked --all-targets
     cargo run --locked --bin herm-fs -- status
   fi
-  python3 scripts/qemu-smoke.py --iso '$remote_dir/carlio-os.iso' --disk-image '$vm_disk' --accel kvm --memory '$qemu_memory' --timeout 25 --log '$remote_dir/qemu-kvm-bios.log'
-  python3 scripts/qemu-smoke.py --iso '$remote_dir/carlio-os.iso' --disk-image '$vm_disk' --accel kvm --firmware '$firmware' --memory '$qemu_memory' --timeout 35 --log '$remote_dir/qemu-kvm-uefi.log'
+  boot_failed=0
+  python3 scripts/qemu-smoke.py --iso '$remote_dir/carlio-os.iso' --disk-image '$vm_disk' --accel kvm --memory '$qemu_memory' --timeout 25 --log '$remote_dir/qemu-kvm-bios.log' || boot_failed=1
+  python3 scripts/qemu-smoke.py --iso '$remote_dir/carlio-os.iso' --disk-image '$vm_disk' --accel kvm --firmware '$firmware' --memory '$qemu_memory' --timeout 35 --log '$remote_dir/qemu-kvm-uefi.log' || boot_failed=1
+  exit \$boot_failed
 " 2>&1 | tee "$report"
 result=${PIPESTATUS[0]}
 set -e

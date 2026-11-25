@@ -12,6 +12,8 @@ resolver = "2"
 [features]
 crash-test = []
 storage-test = []
+physical-test = []
+dircache = []
 stack-watermark = []
 smp-stress-test = []
 disk-exec-test = []

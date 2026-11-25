@@ -418,7 +418,7 @@ impl<A: crate::memory::PageTableAccess, const PAGES: usize, const REGIONS: usize
         Ok(())
     }
 
-    /// Altera permissões de um intervalo contido em uma única VMA anônima.
+    /// Altera permissões em uma VMA de mmap ou torna páginas da imagem somente leitura.
     /// W+X e PROT_NONE ficam indisponíveis até que a política e o rollback de
     /// páginas não presentes sejam implementados.
     pub fn mprotect(
@@ -444,6 +444,14 @@ impl<A: crate::memory::PageTableAccess, const PAGES: usize, const REGIONS: usize
             .checked_add(aligned_length)
             .filter(|end| *end <= USER_TOP)
             .ok_or(ProcessVmError::Vma(VmaError::InvalidRange))?;
+        if self.vmas.regions().any(|region| {
+            region.kind == RegionKind::Image && address >= region.start && end <= region.end
+        }) {
+            if protection != 1 {
+                return Err(ProcessVmError::PermissionDenied);
+            }
+            return self.protect_image_read_only(address, end);
+        }
         let mut staged = self.vmas;
         let index = staged
             .regions()
@@ -508,6 +516,44 @@ impl<A: crate::memory::PageTableAccess, const PAGES: usize, const REGIONS: usize
             page += PAGE_SIZE;
         }
         self.vmas = staged;
+        Ok(())
+    }
+
+    /// ELF image VMAs reserve the full span. Check each owned leaf first
+    /// because a gap inside the span can have no backing page.
+    fn protect_image_read_only(&mut self, start: u64, end: u64) -> Result<(), ProcessVmError> {
+        use crate::memory::FrameError;
+
+        let page_count = usize::try_from((end - start) / PAGE_SIZE)
+            .map_err(|_| ProcessVmError::Memory(FrameError::CapacityExceeded))?;
+        if page_count > self.owned_user_pages() {
+            return Err(ProcessVmError::Memory(FrameError::NotMapped));
+        }
+        let mut old_flags = alloc::vec::Vec::new();
+        old_flags
+            .try_reserve_exact(page_count)
+            .map_err(|_| ProcessVmError::Memory(FrameError::CapacityExceeded))?;
+        let mask = page_flags(0b010);
+        for page in (start..end).step_by(PAGE_SIZE as usize) {
+            let mapping = self
+                .address_space
+                .mapping(page)
+                .map_err(ProcessVmError::Memory)?;
+            old_flags.push(mapping.flags & mask);
+        }
+        for (index, page) in (start..end).step_by(PAGE_SIZE as usize).enumerate() {
+            if let Err(error) = self.address_space.protect_user(page, page_flags(1)) {
+                for (rollback, flags) in (start..page)
+                    .step_by(PAGE_SIZE as usize)
+                    .zip(old_flags[..index].iter().copied())
+                {
+                    if self.address_space.protect_user(rollback, flags).is_err() {
+                        return Err(ProcessVmError::RollbackFailed);
+                    }
+                }
+                return Err(ProcessVmError::Memory(error));
+            }
+        }
         Ok(())
     }
 

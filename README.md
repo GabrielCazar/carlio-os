@@ -57,6 +57,7 @@ Markdown para cada fase em [`reports/`](reports/). Painel: [`progress/index.html
 Hardware de referência local e do NAS: [`docs/HARDWARE-BASE.md`](docs/HARDWARE-BASE.md).
 Camadas e contratos de segurança: [`docs/ARQUITETURA-KERNEL.md`](docs/ARQUITETURA-KERNEL.md).
 Estrutura da userland e limites do login/apps: [`docs/USERLAND.md`](docs/USERLAND.md).
+Teste de inicialização do Pegasus DS em CPL3: [`docs/PEGASUS-DS.md`](docs/PEGASUS-DS.md).
 Matrizes de formato, operações e gates de pacotes:
 [`docs/MATRIZ-PACOTES.md`](docs/MATRIZ-PACOTES.md).
 Fluxogramas, imagens, manual e configuração: [`fluxogramas/README.md`](fluxogramas/README.md).

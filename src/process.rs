@@ -273,6 +273,9 @@ pub struct Process {
     pub entry: u64,
     pub user_stack: u64,
     pub context: CpuContext,
+    pub fs_base: u64,
+    serial_fds: u8,
+    ignores_sigpipe: bool,
     /// Topo da pilha privilegiada exclusiva; 16-byte aligned, endereço virtual.
     pub kernel_stack_top: u64,
     /// Índice da pilha possuída no KernelStackPool; None apenas no modelo host.
@@ -299,6 +302,8 @@ pub struct ProcessResourceBundle {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ProcessSecurityContext {
+    domain: crate::dircache_policy::Domain,
+    capabilities: u64,
     pub credentials: Credentials,
     pub supplementary_groups: [u32; 8],
     pub group_count: u8,
@@ -307,6 +312,8 @@ pub struct ProcessSecurityContext {
 
 impl ProcessSecurityContext {
     pub const ROOT: Self = Self {
+        domain: crate::dircache_policy::Domain::Ordinary,
+        capabilities: 0,
         credentials: Credentials { uid: 0, gid: 0 },
         supplementary_groups: [0; 8],
         group_count: 0,
@@ -320,11 +327,25 @@ impl ProcessSecurityContext {
         let mut supplementary_groups = [0; 8];
         supplementary_groups[..groups.len()].copy_from_slice(groups);
         Some(Self {
+            domain: crate::dircache_policy::Domain::Ordinary,
+            capabilities: 0,
             credentials,
             supplementary_groups,
             group_count: groups.len() as u8,
             umask: umask & 0o777,
         })
+    }
+
+    fn set_executable_domain(&mut self, domain: crate::dircache_policy::Domain) {
+        self.domain = domain;
+        self.capabilities = match domain {
+            crate::dircache_policy::Domain::DirectoryBackend => crate::dircache_policy::CAP_DAC_OVERRIDE,
+            crate::dircache_policy::Domain::Ordinary => 0,
+        };
+    }
+
+    pub fn permits_dircache_registration(self) -> bool {
+        self.domain.permits_registration(self.capabilities)
     }
 
     pub fn groups(&self) -> &[u32] {
@@ -358,6 +379,10 @@ impl Process {
         self.id != self.thread_group_id
     }
 
+    pub fn has_serial_fd(&self, fd: u64) -> bool {
+        fd < 3 && (self.serial_fds & (1 << fd)) != 0
+    }
+
     const EMPTY: Self = Self {
         id: 0,
         thread_group_id: 0,
@@ -367,6 +392,9 @@ impl Process {
         page_table: 0,
         entry: 0,
         user_stack: 0,
+        fs_base: 0,
+        serial_fds: 0,
+        ignores_sigpipe: false,
         context: CpuContext {
             rax: 0,
             rbx: 0,
@@ -821,6 +849,9 @@ impl<const P: usize, const C: usize, R> Scheduler<P, C, R> {
             page_table,
             entry: context.rip,
             user_stack: context.rsp,
+            fs_base: 0,
+            serial_fds: 0b111,
+            ignores_sigpipe: false,
             context,
             kernel_stack_top,
             kernel_stack_owner,
@@ -1124,6 +1155,7 @@ impl<const P: usize, const C: usize, R> Scheduler<P, C, R> {
         bundle: ProcessResourceBundle,
         instruction_pointer: u64,
         stack_pointer: u64,
+        domain: crate::dircache_policy::Domain,
     ) -> Result<ProcessResourceBundle, ProcessError> {
         if cpu >= C
             || bundle.page_table == 0
@@ -1166,6 +1198,13 @@ impl<const P: usize, const C: usize, R> Scheduler<P, C, R> {
         }
         let old = process.resources.ok_or(ProcessError::NotRunnable)?;
         let process = &mut state.processes[slot];
+        let domain = if process.security.credentials.uid == 0 {
+            domain
+        } else {
+            crate::dircache_policy::Domain::Ordinary
+        };
+        process.security.set_executable_domain(domain);
+        process.fs_base = 0;
         process.page_table = bundle.page_table;
         process.entry = instruction_pointer;
         process.user_stack = stack_pointer;
@@ -1227,6 +1266,61 @@ impl<const P: usize, const C: usize, R> Scheduler<P, C, R> {
         state.ready_next[slot] = P;
         state.ready_queued[slot] = false;
         push_slot(&mut state, slot, cpu)
+    }
+
+    /// Updates the TLS base only for the task running on this CPU.
+    pub fn set_current_fs_base(&self, cpu: usize, id: u64, base: u64) -> Result<(), ProcessError> {
+        let mut state = self.state.lock();
+        let slot = *state
+            .current_slot
+            .get(cpu)
+            .ok_or(ProcessError::InvalidCpu)?;
+        let process = state
+            .processes
+            .get_mut(slot)
+            .ok_or(ProcessError::NotRunnable)?;
+        if process.id != id || process.state != (ProcessState::Running { cpu }) {
+            return Err(ProcessError::NotRunnable);
+        }
+        process.fs_base = base;
+        Ok(())
+    }
+
+    pub fn ignores_sigpipe(&self, thread_group_id: u64) -> bool {
+        let state = self.state.lock();
+        find(&state.processes, thread_group_id)
+            .is_some_and(|slot| state.processes[slot].ignores_sigpipe)
+    }
+
+    pub fn set_sigpipe_ignored(
+        &self,
+        thread_group_id: u64,
+        ignored: bool,
+    ) -> Result<(), ProcessError> {
+        let mut state = self.state.lock();
+        let leader = find(&state.processes, thread_group_id).ok_or(ProcessError::UnknownProcess)?;
+        state.processes[leader].ignores_sigpipe = ignored;
+        Ok(())
+    }
+
+    pub fn close_serial_fd(&self, cpu: usize, id: u64, fd: u64) -> Result<(), ProcessError> {
+        let mut state = self.state.lock();
+        let slot = *state
+            .current_slot
+            .get(cpu)
+            .ok_or(ProcessError::InvalidCpu)?;
+        let process = state
+            .processes
+            .get_mut(slot)
+            .ok_or(ProcessError::NotRunnable)?;
+        if process.id != id
+            || process.state != (ProcessState::Running { cpu })
+            || !process.has_serial_fd(fd)
+        {
+            return Err(ProcessError::NotRunnable);
+        }
+        process.serial_fds &= !(1 << fd);
+        Ok(())
     }
 
     pub fn current(&self, cpu: usize) -> Option<Process> {
