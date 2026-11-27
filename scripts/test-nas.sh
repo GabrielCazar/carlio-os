@@ -40,7 +40,7 @@ firmware=${CARLIO_TEST_OVMF:-/usr/share/edk2/x64/OVMF_CODE.4m.fd}
 ssh_config_arg=()
 if [[ -n ${CARLIO_TEST_SSH_CONFIG:-} ]]; then
   ssh_config_arg=(-F "$CARLIO_TEST_SSH_CONFIG")
-elif [[ $host == nas-manjaro && -f $HOME/.ssh/config_lab ]]; then
+elif [[ ( $host == nas-manjaro || $host == nas-manjaro-cabo ) && -f $HOME/.ssh/config_lab ]]; then
   ssh_config_arg=(-F "$HOME/.ssh/config_lab")
 fi
 mkdir -p "$root_dir/build" "$report_dir"

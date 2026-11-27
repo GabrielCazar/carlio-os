@@ -19,7 +19,8 @@ implementada ou suportada além das evidências anexadas.
 - Alterações existentes no workspace pertencem ao usuário: inspecionar
   `git status`, preservá-las e não incluí-las em commits desta tarefa.
 - I/O de teste autorizado no NAS limita-se a arquivos temporários em
-  `/tmp/carlioos-*`, acessados por `nas-wifi` ou `CARLIO_TEST_SSH_TARGET`.
+  `/tmp/carlioos-*`, acessados por `nas-manjaro` ou pelo alias cabeado
+  `nas-manjaro-cabo`, selecionado com `CARLIO_TEST_SSH_TARGET`.
   Leitura de dados do usuário, I/O fora desse prefixo e acesso a dispositivos
   físicos continuam proibidos, exceto o gate MQ01 estritamente condicionado
   descrito abaixo. Inventário de drivers/dispositivos é read-only.
@@ -84,8 +85,10 @@ Gates, nesta ordem:
 2. `scripts/test-local-iso.sh`: QEMU BIOS e UEFI; anexar ambos os logs.
 3. Build de diagnóstico com testes intencionais de `#UD`, panic, watchdog e
    double fault. Cada cenário deve ser identificado no log.
-4. Conectividade NAS: `ssh nas-wifi 'uname -a'` ou
-   `CARLIO_TEST_SSH_TARGET`. Auditar o script antes da execução. Arquivos de
+4. Conectividade NAS: `ssh -F ~/.ssh/config_lab nas-manjaro 'uname -a'`.
+   Para a rota cabeada, use `nas-manjaro-cabo` e configure
+   `CARLIO_TEST_SSH_TARGET=nas-manjaro-cabo` no script de teste.
+   Auditar o script antes da execução. Arquivos de
    teste remotos podem ser criados, lidos e removidos somente sob
    `/tmp/carlioos-*`; capturas finais devem ser salvas localmente. Recusar acesso
    a dados do usuário, caminhos fora desse prefixo ou dispositivos físicos.
