@@ -17,8 +17,22 @@ pub struct KernelStackPool<const N: usize, const BYTES: usize> {
     used: IrqSpinLock<[bool; N]>,
 }
 
+/// Pilha descendente com uma página exclusiva imediatamente abaixo dos bytes úteis.
 #[repr(C, align(4096))]
-struct KernelStackStorage<const BYTES: usize>(UnsafeCell<[u8; BYTES]>);
+pub struct GuardedKernelStack<const BYTES: usize>([u8; 4096], pub [u8; BYTES]);
+
+impl<const BYTES: usize> GuardedKernelStack<BYTES> {
+    pub const ZERO: Self = Self([0; 4096], [0; BYTES]);
+}
+
+struct KernelStackStorage<const BYTES: usize>(UnsafeCell<GuardedKernelStack<BYTES>>);
+
+impl<const BYTES: usize> KernelStackStorage<BYTES> {
+    fn bytes(&self) -> *mut u8 {
+        // Compute the field address without accessing the unmapped guard.
+        unsafe { core::ptr::addr_of_mut!((*self.0.get()).1).cast() }
+    }
+}
 
 // Allocation and release serialize ownership. Only the CPU that owns a
 // live stack may touch its bytes until it has switched to another stack.
@@ -130,7 +144,7 @@ impl KernelStack {
 impl<const N: usize, const BYTES: usize> KernelStackPool<N, BYTES> {
     pub const fn new() -> Self {
         Self {
-            stacks: [const { KernelStackStorage(UnsafeCell::new([0; BYTES])) }; N],
+            stacks: [const { KernelStackStorage(UnsafeCell::new(GuardedKernelStack::ZERO)) }; N],
             used: IrqSpinLock::new([false; N]),
         }
     }
@@ -143,13 +157,7 @@ impl<const N: usize, const BYTES: usize> KernelStackPool<N, BYTES> {
         let slot = used.iter().position(|used| !used)?;
         let top = self.stack_base(slot).checked_add(BYTES as u64)?;
         // The metadata lock still owns this unpublished slot.
-        unsafe {
-            self.stacks[slot]
-                .0
-                .get()
-                .cast::<u8>()
-                .write_bytes(0xa5, BYTES)
-        };
+        unsafe { self.stacks[slot].bytes().write_bytes(0xa5, BYTES) };
         used[slot] = true;
         Some(KernelStack { slot, top })
     }
@@ -164,7 +172,7 @@ impl<const N: usize, const BYTES: usize> KernelStackPool<N, BYTES> {
         let slot = used.iter().enumerate().find_map(|(slot, used)| {
             (*used && self.stack_base(slot) + BYTES as u64 == top).then_some(slot)
         })?;
-        let stack = self.stacks[slot].0.get().cast::<u8>();
+        let stack = self.stacks[slot].bytes();
         let first_modified = (0..BYTES)
             .position(|offset| unsafe { stack.add(offset).read_volatile() } != 0xa5)
             .unwrap_or(BYTES);
@@ -188,10 +196,15 @@ impl<const N: usize, const BYTES: usize> KernelStackPool<N, BYTES> {
         Ok(())
     }
 
+    #[cfg(target_os = "none")]
+    pub fn guard_pages(&self) -> impl Iterator<Item = u64> + '_ {
+        self.stacks.iter().map(|stack| stack.0.get() as u64)
+    }
+
     fn stack_base(&self, slot: usize) -> u64 {
         #[cfg(target_os = "none")]
         {
-            self.stacks[slot].0.get() as u64
+            self.stacks[slot].bytes() as u64
         }
         #[cfg(not(target_os = "none"))]
         {
@@ -263,12 +276,15 @@ pub struct CpuContext {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Process {
     pub id: u64,
+    pub parent_id: Option<u64>,
     /// Identificador do processo líder compartilhado pelas threads do mesmo grupo.
     pub thread_group_id: u64,
     /// Alvo aguardado pela thread, até ela consumir o resultado do join.
     pub join_target: Option<u64>,
     join_claimed: bool,
     joinable: bool,
+    fixed_cpu: Option<usize>,
+    resume_cpu: Option<usize>,
     pub page_table: u64,
     pub entry: u64,
     pub user_stack: u64,
@@ -339,13 +355,22 @@ impl ProcessSecurityContext {
     fn set_executable_domain(&mut self, domain: crate::dircache_policy::Domain) {
         self.domain = domain;
         self.capabilities = match domain {
-            crate::dircache_policy::Domain::DirectoryBackend => crate::dircache_policy::CAP_DAC_OVERRIDE,
+            crate::dircache_policy::Domain::DirectoryBackend => {
+                crate::dircache_policy::CAP_DIRCACHE_REGISTER
+            }
             crate::dircache_policy::Domain::Ordinary => 0,
         };
     }
 
     pub fn permits_dircache_registration(self) -> bool {
         self.domain.permits_registration(self.capabilities)
+    }
+
+    /// Applies the domain returned by the trusted ELF loader to a supervised
+    /// launch. The domain grants only registration with the dircache broker.
+    pub fn supervised_image(mut self, domain: crate::dircache_policy::Domain) -> Self {
+        self.set_executable_domain(domain);
+        self
     }
 
     pub fn groups(&self) -> &[u32] {
@@ -374,6 +399,12 @@ pub enum JoinStatus {
     Faulted,
 }
 
+pub enum CredentialChange<'a> {
+    User(u32),
+    Group(u32),
+    SupplementaryGroups(&'a [u32]),
+}
+
 impl Process {
     pub const fn is_thread(&self) -> bool {
         self.id != self.thread_group_id
@@ -385,10 +416,13 @@ impl Process {
 
     const EMPTY: Self = Self {
         id: 0,
+        parent_id: None,
         thread_group_id: 0,
         join_target: None,
         join_claimed: false,
         joinable: false,
+        fixed_cpu: None,
+        resume_cpu: None,
         page_table: 0,
         entry: 0,
         user_stack: 0,
@@ -719,18 +753,35 @@ impl<const P: usize, const C: usize, R> Scheduler<P, C, R> {
         context: CpuContext,
         security: ProcessSecurityContext,
     ) -> Result<u64, ProcessError> {
+        self.create_with_stack_pool_inner(pool, page_table, context, security, None, false)
+    }
+
+    fn create_with_stack_pool_inner<const N: usize, const BYTES: usize>(
+        &self,
+        pool: &KernelStackPool<N, BYTES>,
+        page_table: u64,
+        context: CpuContext,
+        security: ProcessSecurityContext,
+        initial_cpu: Option<usize>,
+        suspended: bool,
+    ) -> Result<u64, ProcessError> {
         let stack = pool.allocate().ok_or(ProcessError::Full)?;
         let Some(frame) = stack.top.checked_sub(USER_INTERRUPT_FRAME_BYTES) else {
             let _ = pool.release(stack);
             return Err(ProcessError::NotRunnable);
         };
-        match self.create_with_owned_execution_resources(
-            page_table,
-            context,
-            stack.top,
-            frame,
-            security,
-            Some(stack.slot),
+        match self.insert_process_on_cpu(
+            ProcessInit {
+                page_table,
+                context,
+                kernel_stack_top: stack.top,
+                interrupt_frame: frame,
+                security,
+                kernel_stack_owner: Some(stack.slot),
+                thread_parent: None,
+            },
+            initial_cpu,
+            suspended,
         ) {
             Ok(id) => Ok(id),
             Err(error) => {
@@ -742,6 +793,32 @@ impl<const P: usize, const C: usize, R> Scheduler<P, C, R> {
                 Err(error)
             }
         }
+    }
+
+    /// Queues a foreground process on the CPU that owns its kernel continuation.
+    /// The caller must prevent dispatch on that CPU until resources are attached.
+    pub fn create_foreground_with_stack<const N: usize, const BYTES: usize>(
+        &self,
+        pool: &KernelStackPool<N, BYTES>,
+        cpu: usize,
+        page_table: u64,
+        context: CpuContext,
+        security: ProcessSecurityContext,
+    ) -> Result<u64, ProcessError> {
+        self.create_with_stack_pool_inner(pool, page_table, context, security, Some(cpu), false)
+    }
+
+    /// Allocates an AP-bound task without publishing it to a ready queue.
+    /// The launcher prepares its frame and attaches its VM before waking it.
+    pub fn create_suspended_with_stack<const N: usize, const BYTES: usize>(
+        &self,
+        pool: &KernelStackPool<N, BYTES>,
+        cpu: usize,
+        page_table: u64,
+        context: CpuContext,
+        security: ProcessSecurityContext,
+    ) -> Result<u64, ProcessError> {
+        self.create_with_stack_pool_inner(pool, page_table, context, security, Some(cpu), true)
     }
 
     /// Cria uma thread persistente no grupo de `parent_id`, compartilhando
@@ -778,6 +855,18 @@ impl<const P: usize, const C: usize, R> Scheduler<P, C, R> {
     }
 
     fn insert_process(&self, init: ProcessInit) -> Result<u64, ProcessError> {
+        self.insert_process_on_cpu(init, None, false)
+    }
+
+    fn insert_process_on_cpu(
+        &self,
+        init: ProcessInit,
+        initial_cpu: Option<usize>,
+        suspended: bool,
+    ) -> Result<u64, ProcessError> {
+        if initial_cpu.is_some_and(|cpu| cpu >= C) {
+            return Err(ProcessError::InvalidCpu);
+        }
         let ProcessInit {
             page_table,
             context,
@@ -838,6 +927,7 @@ impl<const P: usize, const C: usize, R> Scheduler<P, C, R> {
         s.next_id = s.next_id.checked_add(1).ok_or(ProcessError::Full)?;
         s.processes[slot] = Process {
             id,
+            parent_id: None,
             thread_group_id: if thread_group_id == 0 {
                 id
             } else {
@@ -846,21 +936,32 @@ impl<const P: usize, const C: usize, R> Scheduler<P, C, R> {
             join_target: None,
             join_claimed: false,
             joinable,
+            fixed_cpu: initial_cpu,
+            resume_cpu: None,
             page_table,
             entry: context.rip,
             user_stack: context.rsp,
             fs_base: 0,
-            serial_fds: 0b111,
+            serial_fds: if suspended { 0 } else { 0b111 },
             ignores_sigpipe: false,
             context,
             kernel_stack_top,
             kernel_stack_owner,
             interrupt_frame,
-            state: ProcessState::Ready,
+            state: if suspended {
+                ProcessState::Blocked
+            } else {
+                ProcessState::Ready
+            },
             security,
             resources: None,
         };
-        let cpu = least_loaded_queue(&mut s).ok_or(ProcessError::InvalidCpu)?;
+        if suspended {
+            return Ok(id);
+        }
+        let cpu = initial_cpu
+            .or_else(|| least_loaded_queue(&mut s))
+            .ok_or(ProcessError::InvalidCpu)?;
         push_slot(&mut s, slot, cpu)?;
         Ok(id)
     }
@@ -1010,6 +1111,7 @@ impl<const P: usize, const C: usize, R> Scheduler<P, C, R> {
                 continue;
             }
             s.processes[queued].state = ProcessState::Running { cpu };
+            s.processes[queued].resume_cpu = None;
             s.current_slot[cpu] = queued;
             s.prefer_steal[cpu] = false;
             return Ok(Some(s.processes[queued]));
@@ -1019,6 +1121,21 @@ impl<const P: usize, const C: usize, R> Scheduler<P, C, R> {
 
     pub fn block(&self, cpu: usize) -> Result<(), ProcessError> {
         self.stop_current(cpu, ProcessState::Blocked)
+    }
+
+    /// Saves a user frame and parks the current task. Its first dispatch after
+    /// waking stays on this CPU, which still owns the kernel stack.
+    pub fn block_frame(&self, cpu: usize, frame: u64) -> Result<(), ProcessError> {
+        let mut s = self.state.lock();
+        let slot = *s.current_slot.get(cpu).ok_or(ProcessError::InvalidCpu)?;
+        if slot >= P || s.processes[slot].state != (ProcessState::Running { cpu }) {
+            return Err(ProcessError::NotRunnable);
+        }
+        s.processes[slot].interrupt_frame = frame;
+        s.processes[slot].resume_cpu = Some(cpu);
+        s.processes[slot].state = ProcessState::Blocked;
+        s.current_slot[cpu] = P;
+        Ok(())
     }
 
     pub fn wake(&self, id: u64) -> Result<(), ProcessError> {
@@ -1031,7 +1148,11 @@ impl<const P: usize, const C: usize, R> Scheduler<P, C, R> {
             return Err(ProcessError::Full);
         }
         s.processes[slot].state = ProcessState::Ready;
-        let cpu = least_loaded_queue(&mut s).ok_or(ProcessError::InvalidCpu)?;
+        let cpu = s.processes[slot]
+            .resume_cpu
+            .or(s.processes[slot].fixed_cpu)
+            .or_else(|| least_loaded_queue(&mut s))
+            .ok_or(ProcessError::InvalidCpu)?;
         push_slot(&mut s, slot, cpu)
     }
 
@@ -1111,6 +1232,31 @@ impl<const P: usize, const C: usize, R> Scheduler<P, C, R> {
         })
     }
 
+    /// Report one waitable child, or None while matching children are alive.
+    pub fn wait_child(
+        &self,
+        parent: u64,
+        target: Option<u64>,
+    ) -> Result<Option<Process>, ProcessError> {
+        let state = self.state.lock();
+        let mut children = state
+            .processes
+            .iter()
+            .filter(|task| task.parent_id == Some(parent) && target.is_none_or(|id| id == task.id))
+            .peekable();
+        if children.peek().is_none() {
+            return Err(ProcessError::UnknownProcess);
+        }
+        Ok(children
+            .find(|task| {
+                matches!(
+                    task.state,
+                    ProcessState::Exited { .. } | ProcessState::Faulted { .. }
+                )
+            })
+            .copied())
+    }
+
     /// Associa ao processo o token do bundle mantido pelo backend de memória.
     /// A associação é permitida somente enquanto a tarefa ainda está pronta,
     /// antes de qualquer CPU poder despachá-la.
@@ -1134,7 +1280,8 @@ impl<const P: usize, const C: usize, R> Scheduler<P, C, R> {
             return Err(ProcessError::Duplicate);
         }
         let process = &mut state.processes[slot];
-        if process.state != ProcessState::Ready
+        if !(process.state == ProcessState::Ready
+            || (process.state == ProcessState::Blocked && process.resume_cpu.is_none()))
             || process.resources.is_some()
             || process.page_table != bundle.page_table
             || process.user_stack != bundle.user_stack
@@ -1229,6 +1376,13 @@ impl<const P: usize, const C: usize, R> Scheduler<P, C, R> {
         if state.processes[slot].state != ProcessState::Ready || !state.ready_queued[slot] {
             return Err(ProcessError::NotRunnable);
         }
+        if state.processes[slot]
+            .resume_cpu
+            .or(state.processes[slot].fixed_cpu)
+            .is_some_and(|owner| owner != cpu)
+        {
+            return Err(ProcessError::NotRunnable);
+        }
         let source = (0..C)
             .find(|&queue| {
                 let mut cursor = state.ready_head[queue];
@@ -1286,6 +1440,97 @@ impl<const P: usize, const C: usize, R> Scheduler<P, C, R> {
         Ok(())
     }
 
+    pub fn change_current_credentials(
+        &self,
+        cpu: usize,
+        id: u64,
+        change: CredentialChange<'_>,
+    ) -> Result<(), u16> {
+        use crate::linux_abi::{EBUSY, EINVAL, EPERM, ESRCH};
+        let mut state = self.state.lock();
+        let slot = *state.current_slot.get(cpu).ok_or(ESRCH)?;
+        let task = state.processes.get(slot).ok_or(ESRCH)?;
+        if task.id != id || task.state != (ProcessState::Running { cpu }) {
+            return Err(ESRCH);
+        }
+        let mut security = task.security;
+        if security.credentials.uid != 0 {
+            return match change {
+                CredentialChange::User(uid) if uid == security.credentials.uid => Ok(()),
+                CredentialChange::Group(gid) if gid == security.credentials.gid => Ok(()),
+                _ => Err(EPERM),
+            };
+        }
+        if task.is_thread()
+            || state
+                .processes
+                .iter()
+                .any(|other| other.is_thread() && other.thread_group_id == id)
+        {
+            return Err(EBUSY);
+        }
+        match change {
+            CredentialChange::User(uid) => {
+                if uid != 0 {
+                    security.set_executable_domain(crate::dircache_policy::Domain::Ordinary);
+                }
+                security.credentials.uid = uid;
+            }
+            CredentialChange::Group(gid) => security.credentials.gid = gid,
+            CredentialChange::SupplementaryGroups(groups) => {
+                if groups.len() > security.supplementary_groups.len() {
+                    return Err(EINVAL);
+                }
+                security.supplementary_groups.fill(0);
+                security.supplementary_groups[..groups.len()].copy_from_slice(groups);
+                security.group_count = groups.len() as u8;
+            }
+        }
+        state.processes[slot].security = security;
+        Ok(())
+    }
+
+    pub fn can_fork(&self, parent: u64) -> bool {
+        let state = self.state.lock();
+        find(&state.processes, parent).is_some_and(|slot| {
+            let task = state.processes[slot];
+            !task.is_thread() && task.fixed_cpu.is_some()
+        }) && !state
+            .processes
+            .iter()
+            .any(|p| p.thread_group_id == parent && p.is_thread())
+    }
+
+    pub fn prepare_fork_child(&self, cpu: usize, child: u64) -> Result<(), ProcessError> {
+        let mut state = self.state.lock();
+        let parent_slot = *state
+            .current_slot
+            .get(cpu)
+            .ok_or(ProcessError::InvalidCpu)?;
+        let parent = *state
+            .processes
+            .get(parent_slot)
+            .ok_or(ProcessError::NotRunnable)?;
+        let child_slot = find(&state.processes, child).ok_or(ProcessError::UnknownProcess)?;
+        if parent.is_thread()
+            || parent.fixed_cpu != Some(cpu)
+            || state
+                .processes
+                .iter()
+                .any(|p| p.thread_group_id == parent.id && p.is_thread())
+            || state.processes[child_slot].state != ProcessState::Blocked
+            || state.processes[child_slot].fixed_cpu != Some(cpu)
+        {
+            return Err(ProcessError::NotRunnable);
+        }
+        let child = &mut state.processes[child_slot];
+        child.parent_id = Some(parent.id);
+        child.fs_base = parent.fs_base;
+        child.serial_fds = parent.serial_fds;
+        child.ignores_sigpipe = parent.ignores_sigpipe;
+        Ok(())
+    }
+
     pub fn ignores_sigpipe(&self, thread_group_id: u64) -> bool {
         let state = self.state.lock();
         find(&state.processes, thread_group_id)
@@ -1300,6 +1545,18 @@ impl<const P: usize, const C: usize, R> Scheduler<P, C, R> {
         let mut state = self.state.lock();
         let leader = find(&state.processes, thread_group_id).ok_or(ProcessError::UnknownProcess)?;
         state.processes[leader].ignores_sigpipe = ignored;
+        Ok(())
+    }
+
+    /// Connects the console to a suspended task before its initial dispatch.
+    pub fn attach_initial_serial_fds(&self, id: u64) -> Result<(), ProcessError> {
+        let mut state = self.state.lock();
+        let slot = find(&state.processes, id).ok_or(ProcessError::UnknownProcess)?;
+        let process = &mut state.processes[slot];
+        if process.state != ProcessState::Blocked || process.resume_cpu.is_some() {
+            return Err(ProcessError::NotRunnable);
+        }
+        process.serial_fds = 0b111;
         Ok(())
     }
 
@@ -1665,7 +1922,10 @@ fn wake_joiners<const P: usize, const C: usize>(
             return Err(ProcessError::Full);
         }
         state.processes[slot].state = ProcessState::Ready;
-        let cpu = least_loaded_queue(state).ok_or(ProcessError::InvalidCpu)?;
+        let cpu = state.processes[slot]
+            .fixed_cpu
+            .or_else(|| least_loaded_queue(state))
+            .ok_or(ProcessError::InvalidCpu)?;
         push_slot(state, slot, cpu)?;
     }
     Ok(())
@@ -1698,17 +1958,19 @@ fn next_ready_queue<const P: usize, const C: usize>(
     if cpu >= C {
         return None;
     }
-    if prefer_steal {
-        (1..C)
-            .map(|offset| (cpu + offset) % C)
-            .find(|&queue| s.ready_len[queue] != 0)
-            .or_else(|| (s.ready_len[cpu] != 0).then_some(cpu))
-    } else {
-        (s.ready_len[cpu] != 0).then_some(cpu).or_else(|| {
-            (1..C)
-                .map(|offset| (cpu + offset) % C)
-                .find(|&q| s.ready_len[q] != 0)
+    let local = (s.ready_len[cpu] != 0).then_some(cpu);
+    let steal = || {
+        (1..C).map(|offset| (cpu + offset) % C).find(|&queue| {
+            let head = s.ready_head[queue];
+            head < P
+                && s.processes[head].fixed_cpu.is_none()
+                && s.processes[head].resume_cpu.is_none()
         })
+    };
+    if prefer_steal {
+        steal().or(local)
+    } else {
+        local.or_else(steal)
     }
 }
 #[cfg(test)]
@@ -1903,6 +2165,44 @@ mod tests {
         scheduler.schedule(0).unwrap();
         scheduler.exit(0, 0).unwrap();
         assert_eq!(scheduler.destroy(id, 1), Err(ProcessError::NotRunnable));
+    }
+
+    #[test]
+    fn current_process_can_drop_root_and_cannot_regain_it() {
+        let scheduler = Scheduler::<2, 1>::new();
+        let id = scheduler.create(0x1000, 0x400000, 0x800000).unwrap();
+        scheduler.schedule(0).unwrap();
+        scheduler
+            .change_current_credentials(0, id, CredentialChange::SupplementaryGroups(&[42]))
+            .unwrap();
+        scheduler
+            .change_current_credentials(0, id, CredentialChange::Group(1001))
+            .unwrap();
+        scheduler
+            .change_current_credentials(0, id, CredentialChange::User(1000))
+            .unwrap();
+        let security = scheduler.current(0).unwrap().security;
+        assert_eq!(
+            security.credentials,
+            Credentials {
+                uid: 1000,
+                gid: 1001
+            }
+        );
+        assert_eq!(security.groups(), &[42]);
+        assert_eq!(
+            scheduler.change_current_credentials(0, id, CredentialChange::User(0)),
+            Err(crate::linux_abi::EPERM)
+        );
+        assert_eq!(
+            scheduler.change_current_credentials(
+                0,
+                id,
+                CredentialChange::SupplementaryGroups(&[0])
+            ),
+            Err(crate::linux_abi::EPERM)
+        );
+        assert_eq!(scheduler.current(0).unwrap().security, security);
     }
 
     #[test]
@@ -2148,6 +2448,55 @@ mod tests {
         q.block(0).unwrap();
         assert_eq!(q.schedule(0).unwrap(), None);
         q.wake(id).unwrap();
+        assert_eq!(q.schedule(0).unwrap().unwrap().id, id);
+    }
+
+    #[test]
+    fn suspended_frame_resumes_on_its_owner_cpu() {
+        let q = Scheduler::<2, 2>::new();
+        let id = q.create(0x1000, 0x400000, 0x800000).unwrap();
+        assert_eq!(q.schedule(0).unwrap().unwrap().id, id);
+        q.block_frame(0, 0x9000).unwrap();
+        assert_eq!(q.schedule(0).unwrap(), None);
+
+        q.wake(id).unwrap();
+        assert_eq!(q.pin_ready_to_cpu(id, 1), Err(ProcessError::NotRunnable));
+        assert_eq!(q.schedule(1).unwrap(), None);
+        let task = q.schedule(0).unwrap().unwrap();
+        assert_eq!(task.id, id);
+        assert_eq!(task.interrupt_frame, 0x9000);
+        assert_eq!(task.resume_cpu, None);
+    }
+
+    #[test]
+    fn foreground_task_stays_on_the_cpu_that_owns_its_continuation() {
+        let q = Scheduler::<2, 2>::new();
+        let id = q
+            .insert_process_on_cpu(
+                ProcessInit {
+                    page_table: 0x1000,
+                    context: CpuContext {
+                        rip: 0x400000,
+                        rsp: 0x800000,
+                        rflags: 0x202,
+                        ..CpuContext::default()
+                    },
+                    kernel_stack_top: 0,
+                    interrupt_frame: 0,
+                    security: ProcessSecurityContext::ROOT,
+                    kernel_stack_owner: None,
+                    thread_parent: None,
+                },
+                Some(0),
+                false,
+            )
+            .unwrap();
+
+        assert_eq!(q.schedule(1).unwrap(), None);
+        assert_eq!(q.schedule(0).unwrap().unwrap().id, id);
+        q.block(0).unwrap();
+        q.wake(id).unwrap();
+        assert_eq!(q.schedule(1).unwrap(), None);
         assert_eq!(q.schedule(0).unwrap().unwrap().id, id);
     }
 

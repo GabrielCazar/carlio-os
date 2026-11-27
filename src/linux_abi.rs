@@ -6,6 +6,14 @@
 //! continuam sendo conectados por etapas.
 
 pub const SYS_WRITE: u64 = 1;
+pub const SYS_PIPE: u64 = 22;
+pub const SYS_DUP: u64 = 32;
+pub const SYS_DUP2: u64 = 33;
+pub const SYS_DUP3: u64 = 292;
+pub const SYS_FCNTL: u64 = 72;
+pub const SYS_PIPE2: u64 = 293;
+// CarlioOS extension in a separate range from Linux syscall numbers.
+pub const SYS_CARLIO_RESOLVE_IPV4: u64 = 0x4341_0001;
 pub const SYS_GETRANDOM: u64 = 318;
 pub const SYS_STATX: u64 = 332;
 pub const SYS_PREAD64: u64 = 17;
@@ -23,15 +31,43 @@ pub const SYS_READ: u64 = 0;
 pub const SYS_OPEN: u64 = 2;
 pub const SYS_FSTAT: u64 = 5;
 pub const SYS_POLL: u64 = 7;
+pub const SYS_PPOLL: u64 = 271;
 pub const SYS_RT_SIGACTION: u64 = 13;
+pub const SYS_FUTEX: u64 = 202;
 pub const POLLIN: u16 = 0x001;
 pub const POLLOUT: u16 = 0x004;
 pub const POLLERR: u16 = 0x008;
+pub const POLLHUP: u16 = 0x010;
 pub const POLLNVAL: u16 = 0x020;
+pub const POLLRDHUP: u16 = 0x2000;
 pub const SIGPIPE: u64 = 13;
+
+#[derive(Clone, Copy)]
+pub enum DescriptorControl {
+    GetDescriptorFlags,
+    SetCloseOnExec(bool),
+    GetStatusFlags,
+    SetNonblocking(bool),
+}
+
+impl DescriptorControl {
+    pub fn apply(self, access_mode: u64, cloexec: &mut bool, nonblocking: &mut bool) -> u64 {
+        match self {
+            Self::GetDescriptorFlags => return u64::from(*cloexec),
+            Self::GetStatusFlags => return access_mode | if *nonblocking { 0x800 } else { 0 },
+            Self::SetCloseOnExec(value) => *cloexec = value,
+            Self::SetNonblocking(value) => *nonblocking = value,
+        }
+        0
+    }
+}
 pub const SYS_ACCESS: u64 = 21;
 pub const SYS_NEWFSTATAT: u64 = 262;
 pub const SYS_GETPID: u64 = 39;
+pub const SYS_CLONE: u64 = 56;
+pub const SYS_FORK: u64 = 57;
+pub const SYS_WAIT4: u64 = 61;
+pub const SYS_GETPPID: u64 = 110;
 pub const SYS_UNAME: u64 = 63;
 pub const SYS_OPENAT: u64 = 257;
 pub const SYS_GETUID: u64 = 102;
@@ -39,18 +75,24 @@ pub const SYS_GETGID: u64 = 104;
 pub const SYS_GETEUID: u64 = 107;
 pub const SYS_GETEGID: u64 = 108;
 pub const SYS_GETGROUPS: u64 = 115;
+pub const SYS_SETUID: u64 = 105;
+pub const SYS_SETGID: u64 = 106;
+pub const SYS_SETGROUPS: u64 = 116;
 pub const SYS_EXIT: u64 = 60;
 pub const SYS_EXECVE: u64 = 59;
 pub const SYS_EXIT_GROUP: u64 = 231;
 pub const SYS_SOCKET: u64 = 41;
+pub const SYS_SOCKETPAIR: u64 = 53;
 pub const SYS_CONNECT: u64 = 42;
 pub const SYS_ACCEPT: u64 = 43;
 pub const SYS_SENDTO: u64 = 44;
+pub const SYS_SHUTDOWN: u64 = 48;
 pub const SYS_RECVFROM: u64 = 45;
 pub const SYS_ACCEPT4: u64 = 288;
 pub const SYS_BIND: u64 = 49;
 pub const SYS_LISTEN: u64 = 50;
 pub const SYS_GETSOCKNAME: u64 = 51;
+pub const SYS_GETPEERNAME: u64 = 52;
 pub const SYS_CLOCK_GETTIME: u64 = 228;
 pub const SYS_CLOCK_GETRES: u64 = 229;
 pub const SYS_ARCH_PRCTL: u64 = 158;
@@ -81,12 +123,16 @@ pub const EBADF: u16 = 9;
 pub const E2BIG: u16 = 7;
 pub const EPERM: u16 = 1;
 pub const ENOENT: u16 = 2;
+pub const ESRCH: u16 = 3;
+pub const ECHILD: u16 = 10;
 pub const ENOEXEC: u16 = 8;
 pub const ENOTDIR: u16 = 20;
 pub const ENOTEMPTY: u16 = 39;
 pub const EFAULT: u16 = 14;
 pub const EIO: u16 = 5;
 pub const EINVAL: u16 = 22;
+pub const EMFILE: u16 = 24;
+pub const EPIPE: u16 = 32;
 pub const EISDIR: u16 = 21;
 pub const EFBIG: u16 = 27;
 pub const ENOMEM: u16 = 12;
@@ -95,6 +141,7 @@ pub const EACCES: u16 = 13;
 pub const EAFNOSUPPORT: u16 = 97;
 pub const EADDRINUSE: u16 = 98;
 pub const EADDRNOTAVAIL: u16 = 99;
+pub const ENETUNREACH: u16 = 101;
 pub const ENFILE: u16 = 23;
 pub const EOPNOTSUPP: u16 = 95;
 pub const EROFS: u16 = 30;
@@ -106,11 +153,15 @@ pub const ESPIPE: u16 = 29;
 pub const EMSGSIZE: u16 = 90;
 pub const ENOTCONN: u16 = 107;
 pub const ETIMEDOUT: u16 = 110;
+pub const EISCONN: u16 = 106;
+pub const EALREADY: u16 = 114;
+pub const EINPROGRESS: u16 = 115;
 pub const ECONNREFUSED: u16 = 111;
 pub const ECONNRESET: u16 = 104;
 pub const EAGAIN: u16 = 11;
 pub const EBUSY: u16 = 16;
 
+pub const MAX_POLL_FDS: usize = 256;
 const WRITE_CHUNK_SIZE: usize = 256;
 const PATH_BUFFER_SIZE: usize = crate::vfs::VFS_PATH_MAX;
 const EXEC_VECTOR_LIMIT: usize = 8;
@@ -269,6 +320,9 @@ pub trait LinuxSyscallIo {
     fn rmdir(&mut self, _path: &str) -> Result<(), u16> {
         Err(ENOSYS)
     }
+    fn resolve_ipv4(&mut self, _name: &str) -> Result<[u8; 4], u16> {
+        Err(ENOSYS)
+    }
     fn socket(&mut self, _domain: u64, _kind: u64, _protocol: u64) -> Result<u64, u16> {
         Err(EOPNOTSUPP)
     }
@@ -277,6 +331,9 @@ pub trait LinuxSyscallIo {
     }
     fn unix_name(&mut self, _fd: u64) -> Result<bool, u16> {
         Err(EBADF)
+    }
+    fn connect(&mut self, _descriptor: u64, _address: [u8; 4], _port: u16) -> Result<(), u16> {
+        Err(EOPNOTSUPP)
     }
     fn bind(&mut self, _descriptor: u64, _address: [u8; 4], _port: u16) -> Result<(), u16> {
         Err(EOPNOTSUPP)
@@ -289,6 +346,36 @@ pub trait LinuxSyscallIo {
     }
     fn socket_name(&mut self, _descriptor: u64) -> Result<([u8; 4], u16), u16> {
         Err(EOPNOTSUPP)
+    }
+    fn is_pipe(&self, fd: u64) -> bool {
+        crate::pipe::is_descriptor(fd)
+    }
+    fn duplicate_fd_to(&mut self, _fd: u64, _target: u64, _cloexec: bool) -> Result<u64, u16> {
+        Err(ENOSYS)
+    }
+    fn duplicate_fd(&mut self, _fd: u64, _minimum: u64, _cloexec: bool) -> Result<u64, u16> {
+        Err(ENOSYS)
+    }
+    fn fcntl(&mut self, _fd: u64, _operation: DescriptorControl) -> Result<u64, u16> {
+        Err(ENOSYS)
+    }
+    fn pipe(&mut self, _nonblocking: bool, _cloexec: bool) -> Result<[u32; 2], u16> {
+        Err(ENOSYS)
+    }
+    fn socketpair(&mut self, _nonblocking: bool, _cloexec: bool) -> Result<[u32; 2], u16> {
+        Err(ENOSYS)
+    }
+    fn is_local_stream(&self, _fd: u64) -> bool {
+        false
+    }
+    fn shutdown(&mut self, _fd: u64, _how: u32) -> Result<(), u16> {
+        Err(EOPNOTSUPP)
+    }
+    fn change_credentials(&mut self, _change: crate::process::CredentialChange<'_>) -> Result<(), u16> {
+        Err(ENOSYS)
+    }
+    fn peer_name(&mut self, _descriptor: u64) -> Result<([u8; 4], u16), u16> {
+        Err(EBADF)
     }
     fn seek(&mut self, _descriptor: u64, _offset: i64, _whence: u64) -> Result<u64, u16> {
         Err(EBADF)
@@ -339,6 +426,18 @@ pub fn dispatch<I: LinuxSyscallIo>(
     io: &mut I,
 ) -> SyscallOutcome {
     match number {
+        SYS_FUTEX => {
+            let operation = arguments[1] as u32;
+            if !matches!(operation, 1 | 129) {
+                return errno(ENOSYS);
+            }
+            if arguments[0] & 3 != 0 {
+                return errno(EINVAL);
+            }
+            let mut word = [0; 4];
+            // The ABI does not yet enqueue user-space futex waiters.
+            result(io.copy_from_user(arguments[0], &mut word).map(|()| 0))
+        }
         SYS_EXECVE => execve_syscall(arguments[0], arguments[1], arguments[2], io),
         SYS_READ => read_syscall(arguments[0], arguments[1], arguments[2], None, io),
         SYS_PREAD64 => read_syscall(
@@ -352,6 +451,11 @@ pub fn dispatch<I: LinuxSyscallIo>(
         SYS_FSTAT => fstat_syscall(arguments[0], arguments[1], io),
         SYS_GETRANDOM => getrandom_syscall(arguments[0], arguments[1], arguments[2] as u32, io),
         SYS_POLL => poll_syscall(arguments[0], arguments[1], arguments[2] as i32, io),
+        SYS_PPOLL => match ppoll_timeout(arguments[2], arguments[3], arguments[4], io) {
+            Ok(Some(0)) => poll_syscall(arguments[0], arguments[1], 0, io),
+            Ok(_) => errno(ENOSYS),
+            Err(error) => errno(error),
+        },
         SYS_RT_SIGACTION => {
             sigaction_syscall(arguments[0], arguments[1], arguments[2], arguments[3], io)
         }
@@ -369,7 +473,71 @@ pub fn dispatch<I: LinuxSyscallIo>(
         ),
         SYS_OPENAT => open_syscall(arguments[0], arguments[1], arguments[2], arguments[3], io),
         SYS_CLOSE => result(io.close(arguments[0]).map(|_| 0)),
+        SYS_DUP => result(io.duplicate_fd(arguments[0], 0, false)),
+        SYS_DUP2 | SYS_DUP3 => {
+            let fd = u64::from(arguments[0] as u32);
+            let target = u64::from(arguments[1] as u32);
+            let flags = if number == SYS_DUP3 { arguments[2] as u32 } else { 0 };
+            if flags & !0x80000 != 0 || (number == SYS_DUP3 && fd == target) {
+                return errno(EINVAL);
+            }
+            if target > i32::MAX as u64 {
+                return errno(EBADF);
+            }
+            result(io.duplicate_fd_to(fd, target, flags != 0))
+        }
+        SYS_FCNTL => {
+            let operation = match arguments[1] as u32 {
+                0 | 1030 => return result(io.duplicate_fd(
+                    arguments[0], u64::from(arguments[2] as u32), arguments[1] as u32 == 1030,
+                )),
+                1 => DescriptorControl::GetDescriptorFlags,
+                2 => DescriptorControl::SetCloseOnExec(arguments[2] & 1 != 0),
+                3 => DescriptorControl::GetStatusFlags,
+                4 => DescriptorControl::SetNonblocking(arguments[2] & 0x800 != 0),
+                _ => return errno(EINVAL),
+            };
+            result(io.fcntl(arguments[0], operation))
+        }
+        SYS_PIPE | SYS_PIPE2 | SYS_SOCKETPAIR => {
+            let (flags, output) = if number == SYS_SOCKETPAIR {
+                if arguments[0] as u32 != 1 {
+                    return errno(EAFNOSUPPORT);
+                }
+                if arguments[1] as u32 & 0xf != 1 || arguments[2] as u32 != 0 {
+                    return errno(EOPNOTSUPP);
+                }
+                (arguments[1] as u32 & !0xf, arguments[3])
+            } else {
+                (if number == SYS_PIPE2 { arguments[1] as u32 } else { 0 }, arguments[0])
+            };
+            if flags & !(0x800 | 0x80000) != 0 {
+                return errno(EINVAL);
+            }
+            let nonblocking = flags & 0x800 != 0;
+            let cloexec = flags & 0x80000 != 0;
+            let pair = if number == SYS_SOCKETPAIR {
+                io.socketpair(nonblocking, cloexec)
+            } else {
+                io.pipe(nonblocking, cloexec)
+            };
+            let fds = match pair {
+                Ok(fds) => fds,
+                Err(error) => return errno(error),
+            };
+            let mut bytes = [0; 8];
+            bytes[..4].copy_from_slice(&fds[0].to_le_bytes());
+            bytes[4..].copy_from_slice(&fds[1].to_le_bytes());
+            if let Err(error) = io.copy_to_user(output, &bytes) {
+                for fd in fds {
+                    let _ = io.close(u64::from(fd));
+                }
+                return errno(error);
+            }
+            SyscallOutcome::Return(0)
+        }
         SYS_FSYNC => result(io.fsync(arguments[0]).map(|_| 0)),
+        SYS_CARLIO_RESOLVE_IPV4 => resolve_ipv4_syscall(arguments[0], arguments[1], arguments[2], io),
         SYS_SOCKET => result(io.socket(arguments[0], arguments[1], arguments[2])),
         SYS_ACCEPT | SYS_ACCEPT4 => accept_syscall(
             arguments[0],
@@ -382,7 +550,8 @@ pub fn dispatch<I: LinuxSyscallIo>(
             },
             io,
         ),
-        SYS_SENDTO | SYS_RECVFROM if !crate::dircache_socket::is_descriptor(arguments[0]) && io.socket_name(arguments[0]).is_err() => errno(ENOTSOCK),
+        SYS_SENDTO | SYS_RECVFROM if !crate::dircache_socket::is_descriptor(arguments[0])
+            && !io.is_local_stream(arguments[0]) && io.socket_name(arguments[0]).is_err() => errno(ENOTSOCK),
         SYS_SENDTO if arguments[3] & !(0x4000 | 0x40) == 0 && arguments[4] == 0 => {
             write_syscall(arguments[0], arguments[1], arguments[2], io)
         }
@@ -390,12 +559,23 @@ pub fn dispatch<I: LinuxSyscallIo>(
             read_syscall(arguments[0], arguments[1], arguments[2], None, io)
         }
         SYS_SENDTO | SYS_RECVFROM => errno(EOPNOTSUPP),
+        SYS_SHUTDOWN => result(io.shutdown(arguments[0], arguments[1] as u32).map(|()| 0)),
         SYS_BIND | SYS_CONNECT if crate::dircache_socket::is_descriptor(arguments[0]) => {
             unix_address_syscall(arguments[0], arguments[1], arguments[2], number == SYS_BIND, io)
         }
-        SYS_CONNECT => errno(EOPNOTSUPP),
-        SYS_BIND => bind_syscall(arguments[0], arguments[1], arguments[2], io),
+        SYS_CONNECT | SYS_BIND => ipv4_address_syscall(
+            arguments[0], arguments[1], arguments[2], number == SYS_BIND, io,
+        ),
+        SYS_GETSOCKNAME | SYS_GETPEERNAME if io.is_local_stream(arguments[0]) => {
+            result(write_unix_name(arguments[1], arguments[2], false, io).map(|()| 0))
+        }
         SYS_GETSOCKNAME => getsockname_syscall(arguments[0], arguments[1], arguments[2], io),
+        SYS_GETPEERNAME => {
+            let endpoint = io.peer_name(arguments[0]);
+            result(endpoint.and_then(|(ip, port)| {
+                write_sockaddr(arguments[1], arguments[2], ip, port, io).map(|()| 0)
+            }))
+        }
         SYS_LISTEN => {
             if (arguments[1] as i64) <= 0 {
                 errno(EINVAL)
@@ -482,6 +662,44 @@ pub fn dispatch<I: LinuxSyscallIo>(
         SYS_CLOCK_GETRES => clock_syscall(arguments[0], arguments[1], true, io),
         SYS_UNAME => uname_syscall(arguments[0], io),
         SYS_GETUID | SYS_GETEUID => SyscallOutcome::Return(context.uid as u64),
+        SYS_SETUID | SYS_SETGID => {
+            use crate::process::CredentialChange;
+            let id = arguments[0] as u32;
+            if id == u32::MAX {
+                return errno(EINVAL);
+            }
+            let change = if number == SYS_SETUID {
+                CredentialChange::User(id)
+            } else {
+                CredentialChange::Group(id)
+            };
+            result(io.change_credentials(change).map(|()| 0))
+        }
+        SYS_SETGROUPS => {
+            if context.uid != 0 {
+                return errno(EPERM);
+            }
+            let count = arguments[0] as u32 as usize;
+            let mut bytes = [0u8; 32];
+            let mut groups = [0u32; 8];
+            if count > groups.len() {
+                return errno(EINVAL);
+            }
+            if count != 0 {
+                if let Err(error) = io.copy_from_user(arguments[1], &mut bytes[..count * 4]) {
+                    return errno(error);
+                }
+            }
+            for (group, raw) in groups[..count].iter_mut().zip(bytes.as_chunks::<4>().0) {
+                *group = u32::from_le_bytes(*raw);
+                if *group == u32::MAX {
+                    return errno(EINVAL);
+                }
+            }
+            result(io.change_credentials(crate::process::CredentialChange::SupplementaryGroups(
+                &groups[..count],
+            )).map(|()| 0))
+        }
         SYS_GETGID | SYS_GETEGID => SyscallOutcome::Return(context.gid as u64),
         SYS_GETGROUPS => getgroups_syscall(
             arguments[0],
@@ -573,13 +791,46 @@ fn getrandom_syscall<I: LinuxSyscallIo>(
     SyscallOutcome::Return(copied as u64)
 }
 
+/// Converts the relative ppoll deadline to milliseconds, rounding up.
+pub fn ppoll_timeout<I: LinuxSyscallIo>(
+    timeout: u64,
+    mask: u64,
+    mask_size: u64,
+    io: &mut I,
+) -> Result<Option<u64>, u16> {
+    if mask != 0 {
+        if mask_size != 8 {
+            return Err(EINVAL);
+        }
+        let mut bytes = [0; 8];
+        io.copy_from_user(mask, &mut bytes)?;
+        if bytes != [0; 8] {
+            return Err(EOPNOTSUPP);
+        }
+    }
+    if timeout == 0 {
+        return Ok(None);
+    }
+    let mut bytes = [0; 16];
+    io.copy_from_user(timeout, &mut bytes)?;
+    let seconds = i64::from_le_bytes(bytes[..8].try_into().unwrap());
+    let nanos = i64::from_le_bytes(bytes[8..].try_into().unwrap());
+    if seconds < 0 || !(0..1_000_000_000).contains(&nanos) {
+        return Err(EINVAL);
+    }
+    Ok(Some(
+        (seconds as u64)
+            .saturating_mul(1000)
+            .saturating_add((nanos as u64).div_ceil(1_000_000)),
+    ))
+}
+
 fn poll_syscall<I: LinuxSyscallIo>(
     address: u64,
     count: u64,
     timeout: i32,
     io: &mut I,
 ) -> SyscallOutcome {
-    const MAX_POLL_FDS: usize = 256;
     if timeout != 0 {
         return errno(ENOSYS);
     }
@@ -1102,10 +1353,11 @@ fn unix_address_syscall<I: LinuxSyscallIo>(
     result(io.unix_address(fd, &path[..end], bind).map(|()| 0))
 }
 
-fn bind_syscall<I: LinuxSyscallIo>(
+fn ipv4_address_syscall<I: LinuxSyscallIo>(
     descriptor: u64,
     address: u64,
     length: u64,
+    bind: bool,
     io: &mut I,
 ) -> SyscallOutcome {
     if length < 16 {
@@ -1119,14 +1371,13 @@ fn bind_syscall<I: LinuxSyscallIo>(
         return errno(EAFNOSUPPORT);
     }
     let port = u16::from_be_bytes([sockaddr[2], sockaddr[3]]);
-    result(
-        io.bind(
-            descriptor,
-            sockaddr[4..8].try_into().unwrap_or([0; 4]),
-            port,
-        )
-        .map(|_| 0),
-    )
+    let ip = [sockaddr[4], sockaddr[5], sockaddr[6], sockaddr[7]];
+    let operation = if bind {
+        io.bind(descriptor, ip, port)
+    } else {
+        io.connect(descriptor, ip, port)
+    };
+    result(operation.map(|_| 0))
 }
 
 fn open_syscall<I: LinuxSyscallIo>(
@@ -1156,6 +1407,35 @@ fn open_syscall<I: LinuxSyscallIo>(
         return errno(EBADF);
     }
     result(io.open(path, flags, mode))
+}
+
+fn resolve_ipv4_syscall<I: LinuxSyscallIo>(
+    name_address: u64,
+    name_length: u64,
+    output_address: u64,
+    io: &mut I,
+) -> SyscallOutcome {
+    fn resolve<I: LinuxSyscallIo>(
+        name_address: u64,
+        name_length: u64,
+        output_address: u64,
+        io: &mut I,
+    ) -> Result<u64, u16> {
+        // Up to 253 bytes for the name plus an optional final dot.
+        if !(1..=254).contains(&name_length) {
+            return Err(EINVAL);
+        }
+        let mut name = [0; 254];
+        let name = &mut name[..name_length as usize];
+        io.copy_from_user(name_address, name)?;
+        let name = core::str::from_utf8(name).map_err(|_| EINVAL)?;
+        io.validate_user_write(output_address, 4)?;
+        let address = io.resolve_ipv4(name)?;
+        io.copy_to_user(output_address, &address)?;
+        Ok(0)
+    }
+
+    result(resolve(name_address, name_length, output_address, io))
 }
 
 fn execve_syscall<I: LinuxSyscallIo>(
@@ -1442,6 +1722,13 @@ fn write_syscall<I: LinuxSyscallIo>(
     if requested == 0 {
         return SyscallOutcome::Return(0);
     }
+    if io.is_pipe(descriptor) {
+        let mut bytes = [0; crate::pipe::CAPACITY];
+        let bytes = &mut bytes[..requested.min(crate::pipe::CAPACITY as u64) as usize];
+        return result(io.copy_from_user(address, bytes)
+            .and_then(|()| io.write(descriptor, bytes))
+            .map(|amount| amount as u64));
+    }
     if crate::dircache_socket::is_descriptor(descriptor) {
         let mut packet = [0; crate::dircache_socket::PACKET_SIZE];
         if requested > packet.len() as u64 {
@@ -1608,6 +1895,15 @@ mod tests {
             Ok(count)
         }
 
+        fn resolve_ipv4(&mut self, name: &str) -> Result<[u8; 4], u16> {
+            self.opened_path = String::from(name);
+            if name == "example.test" {
+                Ok([192, 0, 2, 42])
+            } else {
+                Err(ETIMEDOUT)
+            }
+        }
+
         fn socket(&mut self, domain: u64, kind: u64, protocol: u64) -> Result<u64, u16> {
             if domain == 2 && matches!((kind, protocol), (1, 0 | 6) | (2, 0 | 17)) {
                 Ok(5)
@@ -1679,6 +1975,44 @@ mod tests {
     }
 
     #[test]
+    fn carlio_dns_dispatch_validates_user_buffers_and_preserves_output_on_failure() {
+        let mut io = fake_io();
+        let context = ProcessContext {
+            process_id: 3,
+            thread_id: 3,
+            uid: 1000,
+            gid: 1000,
+            supplementary_groups: [0; 8],
+            group_count: 0,
+            program_break: 0,
+        };
+        let base = io.base;
+        let output = base + 32;
+        let mut resolve = |name_address, length, output_address| {
+            dispatch(
+                SYS_CARLIO_RESOLVE_IPV4,
+                [name_address, length, output_address, 0, 0, 0],
+                context,
+                &mut io,
+            )
+        };
+        assert_eq!(resolve(base, 255, output), errno(EINVAL));
+        assert_eq!(resolve(base - 1, 12, output), errno(EFAULT));
+        assert_eq!(resolve(base, 12, base + 4094), errno(EFAULT));
+        assert_eq!(resolve(base, 12, output), errno(ETIMEDOUT));
+        assert_eq!(&io.user[32..36], &[0; 4]);
+
+        io.opened_path.clear();
+        io.user[..12].copy_from_slice(b"example.test");
+        io.user[0] = 0xff;
+        assert_eq!(resolve_ipv4_syscall(base, 12, output, &mut io), errno(EINVAL));
+        assert!(io.opened_path.is_empty());
+        io.user[0] = b'e';
+        assert_eq!(resolve_ipv4_syscall(base, 12, output, &mut io), SyscallOutcome::Return(0));
+        assert_eq!(&io.user[32..36], &[192, 0, 2, 42]);
+    }
+
+    #[test]
     fn statx_empty_path_uses_descriptor_and_marks_unavailable_fields() {
         let mut io = fake_io();
         let base = io.base;
@@ -1721,6 +2055,22 @@ mod tests {
         assert_eq!(&io.user[22..24], &[0, 0]);
         assert_eq!(poll_syscall(base, 3, 1, &mut io), errno(ENOSYS));
         assert_eq!(poll_syscall(0, 1, 0, &mut io), errno(EFAULT));
+    }
+
+    #[test]
+    fn ppoll_validates_timespec_and_signal_mask() {
+        let mut io = fake_io();
+        let base = io.base;
+        io.user[..24].fill(0);
+        io.user[8..16].copy_from_slice(&1i64.to_le_bytes());
+        assert_eq!(ppoll_timeout(base, base + 16, 8, &mut io), Ok(Some(1)));
+        assert_eq!(ppoll_timeout(0, 0, 0, &mut io), Ok(None));
+        assert_eq!(ppoll_timeout(1, 0, 0, &mut io), Err(EFAULT));
+        assert_eq!(ppoll_timeout(base, base + 16, 4, &mut io), Err(EINVAL));
+        io.user[16] = 1;
+        assert_eq!(ppoll_timeout(base, base + 16, 8, &mut io), Err(EOPNOTSUPP));
+        io.user[8..16].copy_from_slice(&1_000_000_000i64.to_le_bytes());
+        assert_eq!(ppoll_timeout(base, 0, 0, &mut io), Err(EINVAL));
     }
 
     #[test]

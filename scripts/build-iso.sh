@@ -2,7 +2,7 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
-for tool in cargo rustup limine xorriso; do
+for tool in cargo rustup limine xorriso flock; do
   command -v "$tool" >/dev/null || { echo "Ferramenta ausente: $tool" >&2; exit 1; }
 done
 
@@ -28,9 +28,11 @@ if [[ ${CARLIO_DIRCACHE:-0} == 1 ]]; then
 fi
 if [[ ${CARLIO_CRASH_TEST:-0} == 1 ]]; then
   features+=(crash-test)
+  image=${image%.iso}-crash-test.iso
 fi
 if [[ ${CARLIO_STORAGE_TEST:-0} == 1 ]]; then
   features+=(storage-test)
+  image=${image%.iso}-storage-test.iso
 fi
 if [[ ${CARLIO_STACK_WATERMARK:-0} == 1 ]]; then
   features+=(stack-watermark)
@@ -40,9 +42,11 @@ if [[ ${CARLIO_SMP_STRESS_TEST:-0} == 1 ]]; then
 fi
 if [[ ${CARLIO_DISK_EXEC_TEST:-0} == 1 ]]; then
   features+=(disk-exec-test)
+  image=${image%.iso}-disk-exec-test.iso
 fi
 if [[ ${CARLIO_DISK_READ_TEST:-0} == 1 ]]; then
   features+=(disk-read-test)
+  image=${image%.iso}-disk-read-test.iso
 fi
 lockdown_mode=${CARLIO_LOCKDOWN:-none}
 case "$lockdown_mode" in
@@ -66,41 +70,33 @@ if ((${#features[@]})); then
   feature_list=$(IFS=,; echo "${features[*]}")
   build_args+=(--features "$feature_list")
 fi
-if [[ -n ${RUSTUP_HOME:-} || -n ${CARGO_HOME:-} ]]; then
-  # Honor isolated toolchain/cache locations when the caller configured them.
-  # Otherwise use rustup's normal installation; forcing an empty /tmp rustup
-  # home made a correctly provisioned developer machine fail to build.
-  if [[ -n ${RUSTUP_HOME:-} && -n ${CARGO_HOME:-} ]]; then
-    RUSTUP_HOME="$RUSTUP_HOME" CARGO_HOME="$CARGO_HOME" \
-      rustup run nightly cargo "${build_args[@]}"
-  elif [[ -n ${RUSTUP_HOME:-} ]]; then
-    RUSTUP_HOME="$RUSTUP_HOME" rustup run nightly cargo "${build_args[@]}"
-  else
-    CARGO_HOME="$CARGO_HOME" rustup run nightly cargo "${build_args[@]}"
-  fi
-else
-  rustup run nightly cargo "${build_args[@]}"
-fi
+mkdir -p build
+# Keep the Cargo artifact stable until it has been copied into the ISO tree.
+exec 9>build/.iso-build.lock
+flock 9
+rustup run nightly cargo "${build_args[@]}"
 limine_root=/usr/share/limine
 test -f "$limine_root/limine-bios.sys" || { echo "Arquivos do Limine ausentes em $limine_root" >&2; exit 1; }
 
-rm -rf build/iso-root
-mkdir -p build/iso-root/boot build/iso-root/EFI/BOOT
-cp target/x86_64-unknown-none/release/carlio-kernel build/iso-root/boot/carlio-kernel
-cp limine.conf build/iso-root/limine.conf
+work_dir=$(mktemp -d build/.iso-build.XXXXXXXX)
+trap 'rm -rf -- "$work_dir"' EXIT
+iso_root=$work_dir/root
+mkdir -p "$iso_root/boot" "$iso_root/EFI/BOOT"
+cp "${CARGO_TARGET_DIR:-target}/x86_64-unknown-none/release/carlio-kernel" "$iso_root/boot/carlio-kernel"
+cp limine.conf "$iso_root/limine.conf"
 if [[ $lockdown_mode != none ]]; then
-  printf '    cmdline: lockdown=%s\n' "$lockdown_mode" >> build/iso-root/limine.conf
+  printf '    cmdline: lockdown=%s\n' "$lockdown_mode" >> "$iso_root/limine.conf"
 fi
 cp "$limine_root/limine-bios.sys" "$limine_root/limine-bios-cd.bin" \
-   "$limine_root/limine-uefi-cd.bin" build/iso-root/boot/
-cp "$limine_root/BOOTX64.EFI" build/iso-root/EFI/BOOT/
+   "$limine_root/limine-uefi-cd.bin" "$iso_root/boot/"
+cp "$limine_root/BOOTX64.EFI" "$iso_root/EFI/BOOT/"
 if [[ ${CARLIO_SECURE_BOOT_STAGE:-0} == 1 ]]; then
   stage=${image%.iso}-uefi-stage
   mkdir -p "$stage/EFI/BOOT" "$stage/boot"
-  cp build/iso-root/boot/carlio-kernel "$stage/boot/"
-  cp build/iso-root/EFI/BOOT/BOOTX64.EFI "$stage/EFI/BOOT/"
+  cp "$iso_root/boot/carlio-kernel" "$stage/boot/"
+  cp "$iso_root/EFI/BOOT/BOOTX64.EFI" "$stage/EFI/BOOT/"
   read -r kernel_hash _ < <(b2sum "$stage/boot/carlio-kernel")
-  sed "s|/boot/carlio-kernel$|/boot/carlio-kernel#$kernel_hash|" build/iso-root/limine.conf > "$stage/limine.conf"
+  sed "s|/boot/carlio-kernel$|/boot/carlio-kernel#$kernel_hash|" "$iso_root/limine.conf" > "$stage/limine.conf"
   read -r config_hash _ < <(b2sum "$stage/limine.conf")
   limine enroll-config "$stage/EFI/BOOT/BOOTX64.EFI" "$config_hash"
   echo "Estágio UEFI criado em $stage. Assine EFI/BOOT/BOOTX64.EFI antes de instalar."
@@ -108,6 +104,7 @@ fi
 xorriso -as mkisofs -R -r -J -b boot/limine-bios-cd.bin \
   -no-emul-boot -boot-load-size 4 -boot-info-table --efi-boot boot/limine-uefi-cd.bin \
   -efi-boot-part --efi-boot-image --protective-msdos-label \
-  build/iso-root -o "$image"
-limine bios-install "$image"
+  "$iso_root" -o "$work_dir/carlio.iso"
+limine bios-install "$work_dir/carlio.iso"
+mv -f -- "$work_dir/carlio.iso" "$image"
 echo "Imagem criada: $image"

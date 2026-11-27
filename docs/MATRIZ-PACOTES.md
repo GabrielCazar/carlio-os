@@ -83,3 +83,22 @@ remota pelo procedimento do projeto.
 - Flatpak: [conceitos básicos](https://docs.flatpak.org/en/latest/basic-concepts.html), [permissões de sandbox](https://docs.flatpak.org/en/latest/sandbox-permissions.html) e [implementação interna](https://docs.flatpak.org/en/latest/under-the-hood.html).
 - Snap: [confinamento](https://documentation.ubuntu.com/security/security-features/privilege-restriction/snap-confinement/) e [segurança e atualizações](https://documentation.ubuntu.com/core/explanation/security-and-sandboxing/).
 - AppImage: [arquitetura](https://docs.appimage.org/reference/architecture.html) e [FUSE/extração](https://docs.appimage.org/user-guide/troubleshooting/fuse.html).
+
+### Provas iniciais de Samba e pacman em CPL3
+
+Com os binários x86-64 do host instalados, gere a ISO com
+`CARLIO_DISK_EXEC_TEST=1 ./scripts/build-iso.sh` e rode as consultas de versão:
+
+```bash
+for app in smbd pacman; do
+  bash scripts/test-package-qemu.sh "$app" build/carlio-os-disk-exec-test.iso \
+    "target/$app-version.log" --timeout 45
+done
+```
+
+Cada teste copia o ELF e suas dependências para um disco ext4 descartável.
+O QEMU exige a saída de versão seguida de status zero do processo CPL3.
+O perfil mede carregamento ELF, bibliotecas e inicialização. O aceite de
+Samba exige autenticação, autorização e transferência pelo cliente SMB.
+O aceite de pacman exige validação de assinatura, instalação, atualização e
+recuperação de uma transação interrompida em um rootfs descartável.

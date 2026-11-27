@@ -1,0 +1,56 @@
+    Checking carlio-os v0.1.0 (/home/gabriel/Work/Patmos/carlio-os)
+error: you should consider adding a `Default` implementation for `PipeTable`
+   --> src/pipe.rs:173:5
+    |
+173 | /     pub const fn new() -> Self {
+174 | |         Self {
+175 | |             entries: [const { Pipe::EMPTY }; SLOTS],
+176 | |             descriptors: [None; DESCRIPTORS],
+177 | |         }
+178 | |     }
+    | |_____^
+    |
+    = help: for further information visit https://clippy.rust-lang.org/main/index.html#new_without_default
+    = note: `-D clippy::new-without-default` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::new_without_default)]`
+help: try adding this
+    |
+515 ~ }
+516 + 
+517 + impl Default for PipeTable {
+518 +     fn default() -> Self {
+519 +         Self::new()
+520 +     }
+521 + }
+    |
+
+error: could not compile `carlio-os` (lib) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `carlio-os` (lib) due to 1 previous error
+error: items after a test module
+   --> src/pipe.rs:14:1
+    |
+ 14 | mod tests {
+    | ^^^^^^^^^
+...
+137 | struct PipeDescriptor {
+    | ^^^^^^^^^^^^^^^^^^^^^
+...
+145 | struct Pipe {
+    | ^^^^^^^^^^^
+...
+155 | impl Pipe {
+    | ^^^^^^^^^
+...
+167 | pub struct PipeTable {
+    | ^^^^^^^^^^^^^^^^^^^^
+...
+172 | impl PipeTable {
+    | ^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://clippy.rust-lang.org/main/index.html#items_after_test_module
+    = note: `-D clippy::items-after-test-module` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::items_after_test_module)]`
+    = help: move the items to before the test module was defined
+
+error: could not compile `carlio-os` (lib test) due to 2 previous errors

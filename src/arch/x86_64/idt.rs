@@ -89,38 +89,36 @@ carlio_syscall_entry:
         swapgs
         movq %rsp, %gs:8
         movq %gs:0, %rsp
-        pushq %rax
+        pushq ${user_ss}
+        pushq %gs:8
+        pushq %r11
+        pushq ${user_cs}
+        pushq %rcx
+        pushq $0
+        pushq $0
+        pushq %r15
+        pushq %r14
+        pushq %r13
+        pushq %r12
+        pushq %r11
+        pushq %r10
+        pushq %r9
+        pushq %r8
         pushq %rdi
         pushq %rsi
+        pushq %rbp
+        pushq %rbx
         pushq %rdx
-        pushq %r10
-        pushq %r8
-        pushq %r9
         pushq %rcx
-        pushq %r11
-        movq %gs:8, %rax
         pushq %rax
         movq %rsp, %rdi
-        # The user RFLAGS snapshot is already saved. Allow local IPIs while
-        # kernel syscalls wait on remote TLB shootdowns or blocking I/O.
+        # Allow interrupts while a syscall accesses kernel resources.
         sti
         call carlio_syscall_dispatch
         cli
-        movq %rax, 72(%rsp)
-        movq 24(%rsp), %r9
-        movq 32(%rsp), %r8
-        movq 40(%rsp), %r10
-        movq 48(%rsp), %rdx
-        movq 56(%rsp), %rsi
-        movq 64(%rsp), %rdi
-        movq 16(%rsp), %rcx
-        movq 8(%rsp), %r11
-        movq 0(%rsp), %rax
-        movq %rax, %gs:8
-        movq 72(%rsp), %rax
-        movq %gs:8, %rsp
+        movq %rax, (%rsp)
         swapgs
-        sysretq
+        jmp .Lrestore_interrupt_frame
 
     .global carlio_ring3_test_resume
 carlio_ring3_test_resume:
@@ -144,6 +142,29 @@ carlio_resume_ring3_after_syscall:
         popq %rbp
         popq %rbx
         retq
+
+    .global carlio_with_kernel_stack
+carlio_with_kernel_stack:
+        pushq %r12
+        movq %rsp, %r12
+        movq %rdi, %rsp
+        movq %rsi, %rdi
+        call *%rdx
+        movq %r12, %rsp
+        popq %r12
+        retq
+
+    .global carlio_enter_foreground_process
+carlio_enter_foreground_process:
+        pushq %rbx
+        pushq %rbp
+        pushq %r12
+        pushq %r13
+        pushq %r14
+        pushq %r15
+        movq %rsp, CARLIO_RING3_SAVED_RSP(%rip)
+        movq %rdi, %rsp
+        jmp .Lrestore_interrupt_frame
 
     .global carlio_enter_ring3_test
 carlio_enter_ring3_test:
@@ -208,13 +229,13 @@ exception_common:
         movq %rax, %r12
         call carlio_irq_stack_leave
         movq %r12, %rsp
-        jmp 3f
+        jmp .Lrestore_interrupt_frame
     2:
         movq %rsp, %r12
         andq $-16, %rsp
         call exception_dispatch
         movq %rax, %rsp
-    3:
+    .Lrestore_interrupt_frame:
         popq %rax
         popq %rcx
         popq %rdx
@@ -250,6 +271,8 @@ exception_stub_table:
     .quad exception_stub_24, exception_stub_25, exception_stub_26, exception_stub_27
     .quad exception_stub_28, exception_stub_29, exception_stub_30, exception_stub_31
     "#,
+    user_ss = const USER_DATA_SELECTOR,
+    user_cs = const USER_CODE_SELECTOR,
     options(att_syntax)
 );
 
@@ -374,20 +397,6 @@ pub struct UserInterruptFrame {
     pub user_ss: u64,
 }
 
-#[repr(C)]
-struct LinuxSyscallFrame {
-    user_rsp: u64,
-    rflags: u64,
-    user_rip: u64,
-    r9: u64,
-    r8: u64,
-    r10: u64,
-    rdx: u64,
-    rsi: u64,
-    rdi: u64,
-    number: u64,
-}
-
 #[repr(C, align(16))]
 struct SyscallCpuLocal {
     kernel_rsp: u64,
@@ -407,27 +416,41 @@ static mut SYSCALL_LOCALS: [SyscallCpuLocal; MAX_CPU_TABLES] = [const {
         user_rsp: 0,
     }
 }; MAX_CPU_TABLES];
-#[repr(align(16))]
-struct DoubleFaultStack([u8; 16 * 1024]);
-static mut DOUBLE_FAULT_STACK: DoubleFaultStack = DoubleFaultStack([0; 16 * 1024]);
-#[repr(align(16))]
-struct Ring0EntryStack([u8; 16 * 1024]);
-static mut RING0_ENTRY_STACK: Ring0EntryStack = Ring0EntryStack([0; 16 * 1024]);
-#[repr(align(16))]
-struct CpuEntryStack([u8; 16 * 1024]);
-static mut CPU_ENTRY_STACKS: [CpuEntryStack; MAX_CPU_TABLES] =
-    [const { CpuEntryStack([0; 16 * 1024]) }; MAX_CPU_TABLES];
-#[repr(align(16))]
-struct CpuDoubleFaultStack([u8; 16 * 1024]);
-static mut CPU_DOUBLE_FAULT_STACKS: [CpuDoubleFaultStack; MAX_CPU_TABLES] =
-    [const { CpuDoubleFaultStack([0; 16 * 1024]) }; MAX_CPU_TABLES];
-const IRQ_STACK_SIZE: usize = 64 * 1024;
+type EntryStack = carlio_os::process::GuardedKernelStack<{ 16 * 1024 }>;
+static mut DOUBLE_FAULT_STACK: EntryStack = EntryStack::ZERO;
+static mut RING0_ENTRY_STACK: EntryStack = EntryStack::ZERO;
+static mut CPU_ENTRY_STACKS: [EntryStack; MAX_CPU_TABLES] =
+    [const { EntryStack::ZERO }; MAX_CPU_TABLES];
+static mut CPU_DOUBLE_FAULT_STACKS: [EntryStack; MAX_CPU_TABLES] =
+    [const { EntryStack::ZERO }; MAX_CPU_TABLES];
 const IRQ_NESTING_SLOT_SIZE: usize = 16 * 1024;
-const IRQ_NESTING_SLOTS: usize = IRQ_STACK_SIZE / IRQ_NESTING_SLOT_SIZE;
-#[repr(align(16))]
-struct CpuIrqStack([u8; IRQ_STACK_SIZE]);
-static mut CPU_IRQ_STACKS: [CpuIrqStack; MAX_CPU_TABLES] =
-    [const { CpuIrqStack([0; IRQ_STACK_SIZE]) }; MAX_CPU_TABLES];
+const IRQ_NESTING_SLOTS: usize = 4;
+type IrqStack = carlio_os::process::GuardedKernelStack<IRQ_NESTING_SLOT_SIZE>;
+static mut CPU_IRQ_STACKS: [[IrqStack; IRQ_NESTING_SLOTS]; MAX_CPU_TABLES] =
+    [const { [const { IrqStack::ZERO }; IRQ_NESTING_SLOTS] }; MAX_CPU_TABLES];
+
+pub fn stack_guard_pages() -> impl Iterator<Item = u64> {
+    let entry = core::ptr::addr_of!(CPU_ENTRY_STACKS) as u64;
+    let double_fault = core::ptr::addr_of!(CPU_DOUBLE_FAULT_STACKS) as u64;
+    let irq = core::ptr::addr_of!(CPU_IRQ_STACKS) as u64;
+    let entry_stride = core::mem::size_of::<EntryStack>() as u64;
+    let irq_stride = core::mem::size_of::<IrqStack>() as u64;
+    [
+        core::ptr::addr_of!(DOUBLE_FAULT_STACK) as u64,
+        core::ptr::addr_of!(RING0_ENTRY_STACK) as u64,
+    ]
+    .into_iter()
+    .chain((0..MAX_CPU_TABLES as u64).flat_map(move |cpu| {
+        [
+            entry + cpu * entry_stride,
+            double_fault + cpu * entry_stride,
+        ]
+    }))
+    .chain(
+        (0..(MAX_CPU_TABLES * IRQ_NESTING_SLOTS) as u64).map(move |slot| irq + slot * irq_stride),
+    )
+}
+
 static CPU_IRQ_NESTING: [AtomicUsize; MAX_CPU_TABLES] =
     [const { AtomicUsize::new(0) }; MAX_CPU_TABLES];
 static CPU_IRQ_MAX_NESTING: [AtomicUsize; MAX_CPU_TABLES] =
@@ -460,8 +483,9 @@ extern "C" fn carlio_irq_stack_enter() -> u64 {
         return 0;
     }
     CPU_IRQ_MAX_NESTING[cpu].fetch_max(depth + 1, Ordering::Relaxed);
-    let base = unsafe { core::ptr::addr_of_mut!(CPU_IRQ_STACKS[cpu].0).cast::<u8>() as u64 };
-    base + IRQ_STACK_SIZE as u64 - depth as u64 * IRQ_NESTING_SLOT_SIZE as u64
+    // A profundidade reserva exclusivamente esta fatia para o handler atual.
+    let base = unsafe { core::ptr::addr_of_mut!(CPU_IRQ_STACKS[cpu][depth].1) as u64 };
+    base + IRQ_NESTING_SLOT_SIZE as u64
 }
 
 #[no_mangle]
@@ -491,7 +515,8 @@ pub fn irq_stack_nesting_selftest() -> bool {
         return false;
     }
     let inner = carlio_irq_stack_enter();
-    let valid = inner != 0 && outer.saturating_sub(inner) == IRQ_NESTING_SLOT_SIZE as u64;
+    let valid =
+        inner != 0 && inner.checked_sub(outer) == Some(core::mem::size_of::<IrqStack>() as u64);
     if inner != 0 {
         carlio_irq_stack_leave();
     }
@@ -539,6 +564,12 @@ unsafe extern "C" {
     static carlio_ring3_test_int80_stub: u8;
     static carlio_ring3_test_resume: u8;
     static carlio_syscall_entry: u8;
+    fn carlio_with_kernel_stack(
+        stack_top: *mut u8,
+        request: *mut core::ffi::c_void,
+        launch: extern "C" fn(*mut core::ffi::c_void),
+    );
+    fn carlio_enter_foreground_process(frame: *mut UserInterruptFrame) -> u64;
     fn carlio_enter_ring3_test(entry: u64, stack_top: u64) -> u64;
     fn carlio_resume_ring3_after_syscall(result: u64) -> !;
 }
@@ -601,12 +632,12 @@ pub unsafe fn load_shared_kernel_gdt(cpu: usize) -> bool {
         return false;
     }
     let stack_top = unsafe {
-        core::ptr::addr_of_mut!(CPU_ENTRY_STACKS[cpu].0)
+        core::ptr::addr_of_mut!(CPU_ENTRY_STACKS[cpu].1)
             .cast::<u8>()
             .add(16 * 1024) as u64
     };
     let double_fault_top = unsafe {
-        core::ptr::addr_of_mut!(CPU_DOUBLE_FAULT_STACKS[cpu].0)
+        core::ptr::addr_of_mut!(CPU_DOUBLE_FAULT_STACKS[cpu].1)
             .cast::<u8>()
             .add(16 * 1024) as u64
     };
@@ -661,7 +692,7 @@ unsafe fn enable_linux_syscall_entry(cpu: usize) -> bool {
         return false;
     }
     let initial_stack = unsafe {
-        core::ptr::addr_of_mut!(CPU_ENTRY_STACKS[cpu].0)
+        core::ptr::addr_of_mut!(CPU_ENTRY_STACKS[cpu].1)
             .cast::<u8>()
             .add(16 * 1024) as u64
     };
@@ -752,6 +783,22 @@ pub unsafe fn run_ring3_probe(entry: u64, stack_top: u64) -> u64 {
     result
 }
 
+/// Calls a kernel routine on a dedicated stack. The caller owns the stack
+/// exclusively and must provide a 16-byte-aligned top.
+pub unsafe fn with_kernel_stack(
+    stack_top: *mut u8,
+    request: *mut core::ffi::c_void,
+    launch: extern "C" fn(*mut core::ffi::c_void),
+) {
+    unsafe { carlio_with_kernel_stack(stack_top, request, launch) };
+}
+
+/// Runs a scheduled foreground job on the bootstrap CPU. Local IRQs must be
+/// disabled on entry. The saved kernel continuation is shared with the boot probe.
+pub unsafe fn run_foreground_process(frame: *mut UserInterruptFrame) -> u64 {
+    unsafe { carlio_enter_foreground_process(frame) }
+}
+
 /// Instala o CR3 e o RSP0 para o próximo processo. O caller precisa estar com
 /// IRQs locais desabilitadas e garantir que o kernel, IDT, TSS e a pilha atual
 /// estejam mapeados identicamente nos dois espaços. O frame de retorno deve
@@ -815,11 +862,14 @@ pub unsafe fn enter_user_frame(frame: *mut UserInterruptFrame) -> ! {
 /// the kernel's saved caller context.
 pub unsafe fn restore_bootstrap_kernel_stack() {
     let top = unsafe {
-        core::ptr::addr_of_mut!(RING0_ENTRY_STACK.0)
+        core::ptr::addr_of_mut!(RING0_ENTRY_STACK.1)
             .cast::<u8>()
             .add(16 * 1024) as u64
     };
-    unsafe { core::ptr::addr_of_mut!(TSS.rsp[0]).write_unaligned(top) };
+    unsafe {
+        core::ptr::addr_of_mut!(TSS.rsp[0]).write_unaligned(top);
+        core::ptr::addr_of_mut!(SYSCALL_LOCALS[0].kernel_rsp).write_volatile(top);
+    }
 }
 
 /// Instala o callback executado a cada IRQ0 que interrompe código user. Ele
@@ -883,14 +933,8 @@ extern "C" fn exception_dispatch(frame: *mut ExceptionFrame) -> *mut ExceptionFr
         .and_then(crate::cpu_index_for_lapic)
         .unwrap_or(0);
     if frame.vector == 128 && frame.cs & 3 == 3 && crate::scheduler_has_current_process(cpu) {
-        if let Some(outcome) = crate::dispatch_linux_syscall(
-            frame.rax,
-            [
-                frame.rdi, frame.rsi, frame.rdx, frame.r10, frame.r8, frame.r9,
-            ],
-            cpu,
-            true,
-        ) {
+        let user = unsafe { &mut *(frame as *mut ExceptionFrame as *mut UserInterruptFrame) };
+        if let Some(outcome) = dispatch_user_syscall(user, cpu, true) {
             match outcome {
                 carlio_os::linux_abi::SyscallOutcome::Return(value) => {
                     frame.rax = value;
@@ -913,7 +957,9 @@ extern "C" fn exception_dispatch(frame: *mut ExceptionFrame) -> *mut ExceptionFr
                     if let Some(next) = crate::process_runtime_exit(status as u64) {
                         return next.cast();
                     }
-                    if !crate::is_secondary_cpu(cpu) && crate::process_probe_is_active() {
+                    if crate::foreground_process_active(cpu) {
+                        resume_ring3_probe(frame, status as u64);
+                    } else if !crate::is_secondary_cpu(cpu) && crate::process_probe_is_active() {
                         let result = crate::process_probe_result();
                         resume_ring3_probe(frame, result);
                     } else {
@@ -963,7 +1009,9 @@ extern "C" fn exception_dispatch(frame: *mut ExceptionFrame) -> *mut ExceptionFr
         if let Some(next) = crate::process_runtime_fault(cpu, frame.vector, frame.error_code, cr2) {
             return next.cast();
         }
-        if !crate::is_secondary_cpu(cpu) && crate::process_probe_is_active() {
+        if crate::foreground_process_active(cpu) {
+            resume_ring3_probe(frame, 128 + frame.vector);
+        } else if !crate::is_secondary_cpu(cpu) && crate::process_probe_is_active() {
             let result = crate::process_probe_result();
             resume_ring3_probe(frame, result);
         } else {
@@ -1018,6 +1066,7 @@ extern "C" fn exception_dispatch(frame: *mut ExceptionFrame) -> *mut ExceptionFr
             }
             let ticks = TICKS.fetch_add(1, Ordering::Relaxed) + 1;
             crate::console_session::poll_network_tick();
+            crate::wake_socket_waiters(cpu, ticks);
             let heartbeat = HEARTBEAT.load(Ordering::Relaxed);
             if heartbeat != LAST_HEARTBEAT.load(Ordering::Relaxed) {
                 LAST_HEARTBEAT.store(heartbeat, Ordering::Relaxed);
@@ -1050,9 +1099,11 @@ extern "C" fn exception_dispatch(frame: *mut ExceptionFrame) -> *mut ExceptionFr
                     record_iret_target(cpu, next);
                     if scheduler_tick
                         && crate::is_secondary_cpu(cpu)
-                        && crate::process_probe_is_active()
-                        && (crate::stop_ap_process_probe(cpu)
-                            || !crate::scheduler_has_current_process(cpu))
+                        && ((crate::process_probe_is_active()
+                            && (crate::stop_ap_process_probe(cpu)
+                                || !crate::scheduler_has_current_process(cpu)))
+                            || (crate::service_process::occupied(cpu)
+                                && !crate::scheduler_has_current_process(cpu)))
                     {
                         prepare_ap_idle_resume(frame);
                         return frame;
@@ -1146,10 +1197,10 @@ extern "C" fn carlio_is_scheduled_int80(raw: *const ExceptionFrame) -> bool {
 }
 
 #[no_mangle]
-extern "C" fn carlio_syscall_dispatch(raw: *const LinuxSyscallFrame) -> u64 {
-    let frame = unsafe { &*raw };
-    if frame.user_rip < carlio_os::user_memory::PAGE_SIZE
-        || frame.user_rip >= carlio_os::elf::USER_TOP
+extern "C" fn carlio_syscall_dispatch(raw: *mut UserInterruptFrame) -> u64 {
+    let frame = unsafe { &mut *raw };
+    if frame.rip < carlio_os::user_memory::PAGE_SIZE
+        || frame.rip >= carlio_os::elf::USER_TOP
         || frame.user_rsp < carlio_os::user_memory::PAGE_SIZE
         || frame.user_rsp >= carlio_os::elf::USER_TOP
     {
@@ -1158,14 +1209,12 @@ extern "C" fn carlio_syscall_dispatch(raw: *const LinuxSyscallFrame) -> u64 {
     let cpu = crate::lapic::local_id()
         .and_then(crate::cpu_index_for_lapic)
         .unwrap_or(0);
-    let arguments = [
-        frame.rdi, frame.rsi, frame.rdx, frame.r10, frame.r8, frame.r9,
-    ];
-    match crate::dispatch_linux_syscall(frame.number, arguments, cpu, false) {
+    match dispatch_user_syscall(frame, cpu, false) {
         Some(carlio_os::linux_abi::SyscallOutcome::Return(value)) => value,
         Some(carlio_os::linux_abi::SyscallOutcome::Exec(transition)) => {
-            let frame = unsafe { &mut *(raw as *mut LinuxSyscallFrame) };
-            frame.user_rip = transition.instruction_pointer;
+            frame.rip = transition.instruction_pointer;
+            frame.rcx = transition.instruction_pointer;
+            frame.r11 = 0x202;
             frame.user_rsp = transition.stack_pointer;
             frame.rflags = 0x202;
             frame.rdi = 0;
@@ -1184,10 +1233,16 @@ extern "C" fn carlio_syscall_dispatch(raw: *const LinuxSyscallFrame) -> u64 {
                     enter_user_frame(next)
                 }
             }
-            if !crate::is_secondary_cpu(cpu) && crate::process_probe_is_active() {
-                let result = crate::process_probe_result();
+            if crate::foreground_process_active(cpu)
+                || (!crate::is_secondary_cpu(cpu) && crate::process_probe_is_active())
+            {
+                let result = if crate::foreground_process_active(cpu) {
+                    status as u64
+                } else {
+                    crate::process_probe_result()
+                };
                 unsafe {
-                    asm!("swapgs", options(nomem, nostack));
+                    asm!("cli; swapgs", options(nomem, nostack));
                     carlio_resume_ring3_after_syscall(result)
                 }
             }
@@ -1196,6 +1251,54 @@ extern "C" fn carlio_syscall_dispatch(raw: *const LinuxSyscallFrame) -> u64 {
         }
         None => (-(carlio_os::linux_abi::ENOSYS as i64)) as u64,
     }
+}
+
+fn dispatch_user_syscall(
+    frame: &mut UserInterruptFrame,
+    cpu: usize,
+    via_int80: bool,
+) -> Option<carlio_os::linux_abi::SyscallOutcome> {
+    use carlio_os::linux_abi::SyscallOutcome;
+
+    if crate::service_stop_pending(cpu) {
+        return Some(SyscallOutcome::Exit { status: 128 + 15 });
+    }
+
+    let number = frame.rax;
+    let args = [
+        frame.rdi, frame.rsi, frame.rdx, frame.r10, frame.r8, frame.r9,
+    ];
+    if !crate::service_syscall_allowed(cpu, number, args) {
+        return Some(SyscallOutcome::Return(
+            (-i64::from(carlio_os::linux_abi::EPERM)) as u64,
+        ));
+    }
+    let mut poll_wait = None;
+    use carlio_os::linux_abi::{SYS_CLONE, SYS_FORK, SYS_GETPPID, SYS_WAIT4};
+    let outcome = if matches!(number, SYS_CLONE | SYS_FORK | SYS_GETPPID | SYS_WAIT4) {
+        crate::dispatch_process_family(cpu, frame, number).map(|result| {
+            SyscallOutcome::Return(result.unwrap_or_else(|errno| (-(i64::from(errno))) as u64))
+        })
+    } else {
+        crate::dispatch_linux_syscall(number, args, cpu, via_int80, &mut poll_wait)
+    }?;
+    if let SyscallOutcome::Return(value) = outcome {
+        let flags: u64;
+        unsafe { asm!("pushfq; pop {}; cli", out(reg) flags) };
+        if let Some(next) = crate::park_socket_syscall(cpu, frame, number, value, poll_wait) {
+            if !via_int80 {
+                unsafe { asm!("swapgs", options(nomem, nostack, preserves_flags)) };
+            }
+            if let Some(next) = next {
+                unsafe { enter_user_frame(next) }
+            }
+            crate::carlio_ap_idle_resume()
+        }
+        if flags & (1 << 9) != 0 {
+            unsafe { asm!("sti", options(nomem, nostack)) };
+        }
+    }
+    Some(outcome)
 }
 
 fn prepare_ap_idle_resume(frame: &mut ExceptionFrame) {
@@ -1343,12 +1446,12 @@ pub unsafe fn start_watchdog() {
 
 unsafe fn prepare_tss_and_gdt() {
     let ring0_stack_top = unsafe {
-        core::ptr::addr_of_mut!(RING0_ENTRY_STACK.0)
+        core::ptr::addr_of_mut!(RING0_ENTRY_STACK.1)
             .cast::<u8>()
             .add(16 * 1024) as u64
     };
     let stack_top = unsafe {
-        core::ptr::addr_of_mut!(DOUBLE_FAULT_STACK.0)
+        core::ptr::addr_of_mut!(DOUBLE_FAULT_STACK.1)
             .cast::<u8>()
             .add(16 * 1024) as u64
     };

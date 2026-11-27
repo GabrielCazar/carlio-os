@@ -1,4 +1,4 @@
-//! Mapa fixo de regiões virtuais de usuário.
+//! Mapa de capacidade limitada para regiões virtuais de usuário.
 //!
 //! Este módulo reserva intervalos e verifica conflitos; a instalação das
 //! páginas físicas continua sendo responsabilidade do backend do address
@@ -6,6 +6,8 @@
 //! desfaçam a reserva sem deixar regiões parcialmente publicadas.
 
 extern crate alloc;
+
+use alloc::vec::Vec;
 
 use crate::elf::USER_TOP;
 
@@ -40,11 +42,9 @@ pub enum VmaError {
     HeapCollision,
 }
 
-/// Tabela ordenada de VMA sem alocação dinâmica, adequada ao caminho syscall.
-#[derive(Clone, Copy)]
+/// Tabela ordenada de VMA com cota fixa e armazenamento fora da pilha.
 pub struct VmaMap<const N: usize> {
-    regions: [Option<Region>; N],
-    count: usize,
+    regions: Vec<Region>,
     mmap_cursor: u64,
     heap_start: u64,
     heap_end: u64,
@@ -129,6 +129,27 @@ impl<A: crate::memory::PageTableAccess, const PAGES: usize, const REGIONS: usize
         self.vmas.program_break()
     }
 
+    /// Populate an empty VM with independent frames and the source's VMA state.
+    /// The caller must keep the source quiescent and the destination unpublished.
+    pub fn copy_into(
+        &self,
+        destination: &mut Self,
+        copy_frame: impl FnMut(u64, u64) -> Result<(), crate::memory::FrameError>,
+    ) -> Result<(), ProcessVmError> {
+        if self.swapped.is_some() {
+            return Err(ProcessVmError::Swap);
+        }
+        if destination.swapped.is_some() || destination.vmas.regions().next().is_some() {
+            return Err(ProcessVmError::Vma(VmaError::Overlap));
+        }
+        let vmas = self.vmas.try_copy().map_err(ProcessVmError::Vma)?;
+        self.address_space
+            .copy_user_pages_into(&mut destination.address_space, copy_frame)
+            .map_err(ProcessVmError::Memory)?;
+        destination.vmas = vmas;
+        Ok(())
+    }
+
     pub fn mapping(
         &self,
         address: u64,
@@ -185,7 +206,7 @@ impl<A: crate::memory::PageTableAccess, const PAGES: usize, const REGIONS: usize
             // retaining a present, user-owned leaf safely.
             return Err(ProcessVmError::UnsupportedMapping);
         }
-        let mut staged = self.vmas;
+        let mut staged = self.vmas.try_copy().map_err(ProcessVmError::Vma)?;
         let address = if fixed_noreplace {
             staged.mmap_fixed_noreplace(hint, length, protection)
         } else {
@@ -248,8 +269,7 @@ impl<A: crate::memory::PageTableAccess, const PAGES: usize, const REGIONS: usize
             .ok_or(ProcessVmError::Vma(VmaError::InvalidRange))?;
         // Stage the region splits before touching the active page mappings.
         let mut staged = VmaMap {
-            regions: [None; REGIONS],
-            count: 0,
+            regions: Vec::new(),
             ..self.vmas
         };
         let mut replaced = 0;
@@ -397,7 +417,7 @@ impl<A: crate::memory::PageTableAccess, const PAGES: usize, const REGIONS: usize
         if !address.is_multiple_of(PAGE_SIZE) {
             return Err(ProcessVmError::Vma(VmaError::InvalidRange));
         }
-        let mut staged = self.vmas;
+        let mut staged = self.vmas.try_copy().map_err(ProcessVmError::Vma)?;
         staged
             .munmap(address, length)
             .map_err(ProcessVmError::Vma)?;
@@ -452,7 +472,7 @@ impl<A: crate::memory::PageTableAccess, const PAGES: usize, const REGIONS: usize
             }
             return self.protect_image_read_only(address, end);
         }
-        let mut staged = self.vmas;
+        let mut staged = self.vmas.try_copy().map_err(ProcessVmError::Vma)?;
         let index = staged
             .regions()
             .position(|region| {
@@ -464,7 +484,7 @@ impl<A: crate::memory::PageTableAccess, const PAGES: usize, const REGIONS: usize
             .nth(index)
             .ok_or(ProcessVmError::Vma(VmaError::NotMapped))?;
         let pieces = 1 + usize::from(address > original.start) + usize::from(end < original.end);
-        if staged.count - 1 + pieces > REGIONS {
+        if staged.regions.len() - 1 + pieces > REGIONS {
             return Err(ProcessVmError::Vma(VmaError::Capacity));
         }
         staged.remove(index);
@@ -562,7 +582,9 @@ impl<A: crate::memory::PageTableAccess, const PAGES: usize, const REGIONS: usize
             return Ok(self.vmas.program_break());
         }
         let current = self.vmas.program_break();
-        let mut staged = self.vmas;
+        let Ok(mut staged) = self.vmas.try_copy() else {
+            return Ok(current);
+        };
         let result = staged.brk(requested);
         if result != requested {
             return Ok(current);
@@ -738,8 +760,7 @@ fn page_flags(protection: u8) -> u64 {
 impl<const N: usize> VmaMap<N> {
     pub const fn new(heap_start: u64, heap_limit: u64) -> Self {
         Self {
-            regions: [None; N],
-            count: 0,
+            regions: Vec::new(),
             mmap_cursor: MMAP_BASE,
             heap_start,
             heap_end: heap_start,
@@ -748,9 +769,17 @@ impl<const N: usize> VmaMap<N> {
     }
 
     pub fn regions(&self) -> impl Iterator<Item = Region> + '_ {
-        self.regions[..self.count]
-            .iter()
-            .filter_map(|region| *region)
+        self.regions.iter().copied()
+    }
+
+    // Staging is fallible so allocation failure leaves the published VM intact.
+    fn try_copy(&self) -> Result<Self, VmaError> {
+        let mut regions = Vec::new();
+        regions
+            .try_reserve_exact(self.regions.len())
+            .map_err(|_| VmaError::Capacity)?;
+        regions.extend_from_slice(&self.regions);
+        Ok(Self { regions, ..*self })
     }
 
     pub const fn program_break(&self) -> u64 {
@@ -798,7 +827,7 @@ impl<const N: usize> VmaMap<N> {
         let span = USER_TOP
             .checked_sub(MMAP_BASE)
             .ok_or(VmaError::InvalidRange)?;
-        let attempts = self.count.saturating_add(2);
+        let attempts = self.regions.len().saturating_add(2);
         let mut start = self.mmap_cursor.max(MMAP_BASE);
         for _ in 0..attempts {
             if start.checked_add(length).is_some_and(|end| end <= USER_TOP)
@@ -837,41 +866,22 @@ impl<const N: usize> VmaMap<N> {
         if length == 0 || end > USER_TOP {
             return Err(VmaError::InvalidRange);
         }
-        let index = self.regions[..self.count]
+        let index = self
+            .regions
             .iter()
-            .position(|entry| {
-                entry.is_some_and(|region| {
-                    region.kind == RegionKind::Mmap && start >= region.start && end <= region.end
-                })
+            .position(|region| {
+                region.kind == RegionKind::Mmap && start >= region.start && end <= region.end
             })
             .ok_or(VmaError::NotMapped)?;
-        let region = self.regions[index].ok_or(VmaError::NotMapped)?;
+        let region = self.regions[index];
         match (start == region.start, end == region.end) {
             (true, true) => self.remove(index),
-            (true, false) => {
-                self.regions[index] = Some(Region {
-                    start: end,
-                    ..region
-                })
-            }
-            (false, true) => {
-                self.regions[index] = Some(Region {
-                    end: start,
-                    ..region
-                })
-            }
+            (true, false) => self.regions[index].start = end,
+            (false, true) => self.regions[index].end = start,
             (false, false) => {
-                if self.count == N {
-                    return Err(VmaError::Capacity);
-                }
-                self.regions[index] = Some(Region {
-                    end: start,
-                    ..region
-                });
-                self.insert(Region {
-                    start: end,
-                    ..region
-                })?;
+                self.reserve_region()?;
+                self.regions[index].end = start;
+                self.regions.insert(index + 1, Region { start: end, ..region });
             }
         }
         self.mmap_cursor = self.mmap_cursor.min(start);
@@ -895,30 +905,26 @@ impl<const N: usize> VmaMap<N> {
             return self.heap_end;
         }
         if self.heap_start == self.heap_end && requested > self.heap_start {
-            if self.count == N {
+            if self
+                .insert(Region {
+                    start: self.heap_start,
+                    end: new_page_end,
+                    kind: RegionKind::Heap,
+                    protection: 0b011,
+                })
+                .is_err()
+            {
                 return self.heap_end;
             }
-            self.regions[self.count] = Some(Region {
-                start: self.heap_start,
-                end: new_page_end,
-                kind: RegionKind::Heap,
-                protection: 0b011,
-            });
-            self.count += 1;
-        } else if let Some(region) = self.regions[..self.count]
-            .iter_mut()
-            .flatten()
-            .find(|region| region.kind == RegionKind::Heap)
+        } else if let Some(index) = self
+            .regions
+            .iter()
+            .position(|region| region.kind == RegionKind::Heap)
         {
             if requested == self.heap_start {
-                let index = self.regions[..self.count]
-                    .iter()
-                    .position(|entry| entry.is_some_and(|r| r.kind == RegionKind::Heap));
-                if let Some(index) = index {
-                    self.remove(index);
-                }
+                self.remove(index);
             } else {
-                region.end = new_page_end;
+                self.regions[index].end = new_page_end;
             }
         }
         self.heap_end = requested;
@@ -946,23 +952,23 @@ impl<const N: usize> VmaMap<N> {
         if !self.range_free(region.start, region.end - region.start) {
             return Err(VmaError::Overlap);
         }
-        if self.count == N {
-            return Err(VmaError::Capacity);
-        }
-        let position = self.regions[..self.count]
-            .iter()
-            .position(|entry| entry.is_some_and(|current| current.start > region.start))
-            .unwrap_or(self.count);
-        self.regions.copy_within(position..self.count, position + 1);
-        self.regions[position] = Some(region);
-        self.count += 1;
+        self.reserve_region()?;
+        let position = self
+            .regions
+            .partition_point(|current| current.start < region.start);
+        self.regions.insert(position, region);
         Ok(())
     }
 
+    fn reserve_region(&mut self) -> Result<(), VmaError> {
+        if self.regions.len() == N {
+            return Err(VmaError::Capacity);
+        }
+        self.regions.try_reserve(1).map_err(|_| VmaError::Capacity)
+    }
+
     fn remove(&mut self, index: usize) {
-        self.regions.copy_within(index + 1..self.count, index);
-        self.count -= 1;
-        self.regions[self.count] = None;
+        self.regions.remove(index);
     }
 }
 
@@ -1017,13 +1023,72 @@ mod tests {
     }
 
     fn process_vm<const P: usize>() -> ProcessVm<FakeTables, P, 8> {
+        process_vm_with_frames(0x20_0000)
+    }
+
+    fn process_vm_with_frames<const P: usize>(next: u64) -> ProcessVm<FakeTables, P, 8> {
         let tables = FakeTables {
             entries: BTreeMap::new(),
             allocated: BTreeSet::new(),
-            next: 0x20_0000,
+            next,
         };
         let space = crate::memory::OwnedAddressSpace::new(tables, 0x10_0000).unwrap();
         ProcessVm::new(space, USER_HEAP_BASE, USER_HEAP_BASE + PAGE_SIZE * 32)
+    }
+
+    #[test]
+    fn vm_copy_preserves_bytes_protections_and_break_with_independent_frames() {
+        let mut parent = process_vm::<8>();
+        let mut child = process_vm_with_frames::<8>(0x30_0000);
+        let image = 0x40_0000;
+        parent.address_space.map_zeroed(image, page_flags(0b101)).unwrap();
+        parent.reserve_existing(image, PAGE_SIZE).unwrap();
+        let new_break = USER_HEAP_BASE + 17;
+        parent.brk(new_break).unwrap();
+        let mut bytes = BTreeMap::new();
+        for (address, value) in [(image, 0x90), (USER_HEAP_BASE, 42)] {
+            bytes.insert(parent.mapping(address).unwrap().physical, value);
+        }
+        parent.copy_into(&mut child, |source, target| {
+            assert_ne!(source, target);
+            let byte = bytes[&source];
+            bytes.insert(target, byte);
+            Ok(())
+        }).unwrap();
+        assert_ne!(parent.root(), child.root());
+        assert_eq!(child.program_break(), new_break);
+        for address in [image, USER_HEAP_BASE] {
+            let original = parent.mapping(address).unwrap();
+            let copied = child.mapping(address).unwrap();
+            assert_eq!(original.flags, copied.flags);
+            assert_eq!(bytes[&original.physical], bytes[&copied.physical]);
+            bytes.insert(copied.physical, 0);
+            assert_ne!(bytes[&original.physical], bytes[&copied.physical]);
+        }
+        assert_eq!(child.brk(USER_HEAP_BASE), Ok(USER_HEAP_BASE));
+        assert_eq!(parent.program_break(), new_break);
+    }
+
+    #[test]
+    fn vm_copy_rolls_back_leaf_frames_on_initialization_error() {
+        use crate::memory::FrameError;
+        let mut parent = process_vm::<8>();
+        let mut child = process_vm_with_frames::<8>(0x30_0000);
+        parent.brk(USER_HEAP_BASE + PAGE_SIZE * 2).unwrap();
+        let mut copied = 0;
+        assert_eq!(
+            parent.copy_into(&mut child, |_, _| {
+                copied += 1;
+                if copied == 2 { Err(FrameError::CorruptTable) } else { Ok(()) }
+            }),
+            Err(ProcessVmError::Memory(FrameError::CorruptTable))
+        );
+        assert_eq!(child.owned_user_pages(), 0);
+        assert_eq!(child.owned_page_table_pages(), Ok(1));
+        assert_eq!(child.program_break(), USER_HEAP_BASE);
+        assert_eq!(parent.owned_user_pages(), 2);
+        parent.copy_into(&mut child, |_, _| Ok(())).unwrap();
+        assert_eq!(child.owned_user_pages(), 2);
     }
 
     #[test]
@@ -1053,6 +1118,19 @@ mod tests {
             map.munmap(base + PAGE_SIZE, PAGE_SIZE),
             Err(VmaError::NotMapped)
         );
+    }
+
+    #[test]
+    fn munmap_at_region_capacity_preserves_the_original_mapping() {
+        let mut map = VmaMap::<1>::new(USER_HEAP_BASE, USER_HEAP_BASE + PAGE_SIZE);
+        let base = map.mmap(0, PAGE_SIZE * 3, 0b011).unwrap();
+        let original = map.regions().next().unwrap();
+
+        assert_eq!(
+            map.munmap(base + PAGE_SIZE, PAGE_SIZE),
+            Err(VmaError::Capacity)
+        );
+        assert!(map.regions().eq([original]));
     }
 
     #[test]

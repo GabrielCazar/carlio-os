@@ -3,7 +3,7 @@ use super::*;
 use carlio_os::userland::{
     accounts::{AccountDatabase, AccountVerifier, LOGIN_MEMORY_KIB, RESERVED_TEST_ACCOUNT},
     kdf::Argon2idVerifier,
-    login::{LoginManager, PASSWORD_LIMIT, Session},
+    login::{LoginManager, Session, PASSWORD_LIMIT},
 };
 use zeroize::Zeroizing;
 
@@ -62,7 +62,12 @@ impl Console {
         let mut len = 0;
         let mut overflow = false;
         loop {
-            let Ok(byte) = serial_read() else { continue };
+            let Ok(byte) = serial_read() else {
+                if echo {
+                    service_process::reap_finished();
+                }
+                continue;
+            };
             // Serial clients may send CRLF. Consume the LF without submitting another line.
             let paired_lf = self.after_cr && byte == b'\n';
             self.after_cr = byte == b'\r';
@@ -192,6 +197,89 @@ fn session_command(session: Session, command: &str) {
         write("\r\n");
         return;
     }
+    if command == "servicos" {
+        service_process::list(credentials.uid);
+        return;
+    }
+    if let Some(pid) = command.strip_prefix("servico parar ") {
+        let result = pid
+            .trim()
+            .parse()
+            .map_err(|_| carlio_os::linux_abi::EINVAL)
+            .and_then(|pid| service_process::stop(pid, credentials.uid));
+        match result {
+            Ok(()) => write("Serviço parado.\r\n"),
+            Err(errno) => process_error("Serviço", errno),
+        }
+        return;
+    }
+    if let Some(pid) = command.strip_prefix("servico reiniciar ") {
+        let result = pid
+            .trim()
+            .parse()
+            .map_err(|_| carlio_os::linux_abi::EINVAL)
+            .and_then(|pid| service_process::restart(pid, credentials.uid));
+        match result {
+            Ok(pid) => {
+                write("Serviço reiniciado pid=");
+                write_u64(pid);
+                write(".\r\n");
+            }
+            Err(errno) => process_error("Serviço", errno),
+        }
+        return;
+    }
+    let service = command.strip_prefix("servico iniciar ");
+    if let Some(input) = service.or_else(|| command.strip_prefix("executar ")) {
+        let mut argv = [""; 8];
+        let mut words = input.split_ascii_whitespace();
+        let Some(path) = words.next().filter(|path| path.starts_with('/')) else {
+            write(if service.is_some() {
+                "Uso: servico iniciar /CAMINHO [ARGUMENTOS]\r\n"
+            } else {
+                "Uso: executar /CAMINHO [ARGUMENTOS]\r\n"
+            });
+            return;
+        };
+        argv[0] = path;
+        let mut argc = 1;
+        for word in words {
+            if argc == argv.len() {
+                write("Processo: limite de sete argumentos.\r\n");
+                return;
+            }
+            argv[argc] = word;
+            argc += 1;
+        }
+        let Some(security) = carlio_os::process::ProcessSecurityContext::new(
+            credentials,
+            session.supplementary_groups(),
+            0o077,
+        ) else {
+            write("Processo: identidade da sessão inválida.\r\n");
+            return;
+        };
+        if service.is_some() {
+            match service_process::start(path, &argv[..argc], security) {
+                Ok(pid) => {
+                    write("Serviço iniciado pid=");
+                    write_u64(pid);
+                    write(".\r\n");
+                }
+                Err(errno) => process_error("Serviço", errno),
+            }
+            return;
+        }
+        match run_session_process(path, &argv[..argc], security) {
+            Ok(status) => {
+                write("Processo: status=");
+                write_u64(status);
+                write(".\r\n");
+            }
+            Err(errno) => process_error("Processo", errno),
+        }
+        return;
+    }
     if let Some(name) = command.strip_prefix("resolver ") {
         let Some(lease) = current_lease() else {
             write("DNS IPv4: endereço DHCP indisponível.\r\n");
@@ -249,7 +337,14 @@ fn session_command(session: Session, command: &str) {
         mutate(|vfs| vfs.write_file_as(path, context, data.as_bytes()));
         return;
     }
-    write("Sessão: id, ler CAMINHO, criar CAMINHO, gravar CAMINHO TEXTO, resolver NOME, sair.\r\n");
+    write("Sessão: id, ler CAMINHO, criar CAMINHO, gravar CAMINHO TEXTO, executar /CAMINHO [ARGUMENTOS], servicos, servico iniciar /CAMINHO [ARGUMENTOS], servico parar PID, servico reiniciar PID, resolver NOME, sair.\r\n");
+}
+
+fn process_error(label: &str, errno: u16) {
+    write(label);
+    write(": operação recusada (errno ");
+    write_u32(u32::from(errno));
+    write(").\r\n");
 }
 
 fn mutate(

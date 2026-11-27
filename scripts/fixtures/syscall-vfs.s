@@ -76,6 +76,62 @@ _start:
     xor %edx, %edx
     syscall_nr 59                  # execve
     require -13
+    mov $-100, %rdi
+    lea restricted_file(%rip), %rsi
+    mov %rsp, %rdx
+    xor %r10d, %r10d
+    syscall_nr 262                 # newfstatat requires parent search
+    require -13
+
+    mov $-100, %rdi
+    lea protected_overlay(%rip), %rsi
+    mov $0xc1, %edx               # O_WRONLY | O_CREAT | O_EXCL
+    mov $0600, %r10d
+    syscall_nr 257
+    require -13
+    lea protected_overlay(%rip), %rdi
+    mov $0700, %esi
+    syscall_nr 83
+    require -13
+    syscall_nr 90                  # chmod
+    require -13
+    syscall_nr 87                  # unlink
+    require -13
+    syscall_nr 84                  # rmdir
+    require -13
+
+    mov $-100, %rdi
+    lea absent_parent(%rip), %rsi
+    mov $0xc1, %edx
+    mov $0600, %r10d
+    syscall_nr 257
+    require -2                     # O_CREAT must not create ancestors
+    lea absent_parent(%rip), %rdi
+    mov $0700, %esi
+    syscall_nr 83
+    require -2
+    lea absent_directory(%rip), %rdi
+    xor %esi, %esi
+    syscall_nr 21
+    require -2
+
+    lea read_only_file(%rip), %rdi
+    mov $4, %esi
+    syscall_nr 21
+    require 0
+    mov $2, %esi
+    syscall_nr 21
+    require -13
+    mov $-100, %rdi
+    lea read_only_file(%rip), %rsi
+    mov $0x201, %edx              # O_WRONLY | O_TRUNC
+    syscall_nr 257
+    require -13
+    lea read_only_file(%rip), %rdi
+    xor %esi, %esi
+    xor %edx, %edx
+    syscall_nr 59
+    require -13
 
     mov $-100, %edi
     lea mmap_window(%rip), %rsi
@@ -227,13 +283,16 @@ _start:
     require 0
     call check_stat
 
+    lea alias_path(%rip), %rdi
+    syscall_nr 87                        # unlink while open via another path
+    require -16                          # EBUSY
     mov %r12, %rdi
     syscall_nr 3                         # close
     require 0
     syscall_nr 74                        # fsync of closed descriptor
     require -9                     # EBADF
 
-    lea path(%rip), %rdi
+    lea alias_path(%rip), %rdi
     syscall_nr 87                        # unlink
     require 0
     mov $-100, %rdi
@@ -278,6 +337,16 @@ _start:
     require 0
     add $24, %rsp
 
+    lea dns_name(%rip), %rdi
+    mov $12, %esi
+    xor %edx, %edx
+    syscall_nr 0x43410001           # CARLIO_RESOLVE_IPV4
+    require -14                     # EFAULT before accessing the NIC
+    mov $255, %esi
+    mov %rsp, %rdx
+    syscall_nr 0x43410001
+    require -22                     # EINVAL for an oversized name
+
     mov $2, %edi
     syscall_nr 3                   # close(stderr)
     require 0
@@ -312,12 +381,14 @@ check_stat:
 
 directory: .asciz "/tmp/prova-abi-vfs"
 path: .asciz "/tmp/prova-abi-vfs/arquivo"
+alias_path: .asciz "/tmp//prova-abi-vfs/./arquivo"
 relative_path: .asciz "tmp/prova-abi-vfs/arquivo"
 payload: .ascii "VFS"
 message:
     .ascii "execve: ELF do disco executado em CPL3\n"
     .ascii "execve: SSE iniciado e preservado em CPL3\n"
     .ascii "ABI Linux: stat, mutacoes e fsync verificados em CPL3\n"
+    .ascii "ABI Linux: permissoes VFS e ancestrais verificados em CPL3\n"
     .ascii "ABI Linux: socket IPv4 e porta efemera verificados em CPL3\n"
 .set message_len, . - message
 disk_executable: .asciz "/carlio-disk-exec"
@@ -325,5 +396,11 @@ mmap_window: .asciz "/mmap-window"
 missing_file: .asciz "/carlio-access-missing"
 
 restricted_file: .asciz "/carlio-privado/probe"
+read_only_file: .asciz "/carlio-read-only"
+protected_overlay: .asciz "/root/carlio-permission-probe"
+absent_directory: .asciz "/tmp/carlio-absent"
+absent_parent: .asciz "/tmp/carlio-absent/probe"
+
+dns_name: .ascii "example.test"
 
 .section .note.GNU-stack,"",@progbits

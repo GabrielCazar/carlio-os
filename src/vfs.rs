@@ -661,6 +661,32 @@ impl<const N: usize> Vfs<N> {
         backend.metadata(relative)
     }
 
+    /// Preserve the mounted directory's authorization data when projecting
+    /// it into the writable namespace.
+    pub fn materialize_mounted_directory<B: ReadOnlyMountBackend>(
+        &mut self,
+        path: &str,
+        context: AccessContext<'_>,
+        backend: &mut B,
+    ) -> Result<(), VfsError> {
+        let metadata = self.mounted_metadata(path, context, backend)?;
+        if metadata.kind != NodeKind::Directory {
+            return Err(VfsError::NotDirectory);
+        }
+        if !metadata.permits(context, Access::EXECUTE) {
+            return Err(VfsError::PermissionDenied);
+        }
+        let (parent, name) = path.rsplit_once('/').ok_or(VfsError::InvalidPath)?;
+        let parent = if parent.is_empty() { "/" } else { parent };
+        let root = AccessContext::new(Credentials { uid: 0, gid: 0 }, &[], 0);
+        self.create_dir_as(parent, name, root, metadata.mode)?;
+        let index = self.resolve(path, root)?;
+        self.nodes[index].uid = metadata.uid;
+        self.nodes[index].gid = metadata.gid;
+        self.nodes[index].mode = metadata.mode & 0o7777;
+        Ok(())
+    }
+
     fn mounted_path<'a, B: ReadOnlyMountBackend>(
         &self,
         path: &'a str,
@@ -911,6 +937,15 @@ impl<const N: usize> Vfs<N> {
         path: &str,
         context: AccessContext<'_>,
     ) -> Result<(), VfsError> {
+        self.remove_file_unless_open_as(path, context, core::iter::empty())
+    }
+
+    pub fn remove_file_unless_open_as<'a>(
+        &mut self,
+        path: &str,
+        context: AccessContext<'_>,
+        open_paths: impl IntoIterator<Item = &'a str>,
+    ) -> Result<(), VfsError> {
         let (parent_path, name) = path.rsplit_once('/').ok_or(VfsError::InvalidPath)?;
         if name.is_empty()
             || name.len() >= NAME_MAX
@@ -946,6 +981,15 @@ impl<const N: usize> Vfs<N> {
             && credentials.uid != self.nodes[index].uid
         {
             return Err(VfsError::NotOwner);
+        }
+        // Authorization above uses the caller. Comparing existing descriptors
+        // uses the namespace independently of their owners' current access.
+        let root = AccessContext::new(Credentials { uid: 0, gid: 0 }, &[], 0);
+        if open_paths
+            .into_iter()
+            .any(|open_path| self.resolve(open_path, root) == Ok(index))
+        {
+            return Err(VfsError::Busy);
         }
         self.nodes[index].occupied = false;
         self.nodes[index].name.fill(0);
@@ -1223,14 +1267,18 @@ impl<const N: usize> Vfs<N> {
         if !path.starts_with('/') || N == 0 {
             return Err(VfsError::InvalidPath);
         }
+        // Mounted Linux files can have longer names and characters such as
+        // '+' in libstdc++.so.6. Search each overlay directory before falling
+        // through to the mounted filesystem.
+        let on_mount = self.mount_for(path).is_some();
         if path
             .split('/')
             .filter(|part| !part.is_empty() && *part != "." && *part != "..")
             .any(|part| {
-                part.len() >= NAME_MAX
-                    || !part
-                        .bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+                (part.len() >= NAME_MAX && !on_mount)
+                    || !part.bytes().all(|b| {
+                        b.is_ascii_alphanumeric() || b"._-".contains(&b) || (on_mount && b == b'+')
+                    })
             })
         {
             return Err(VfsError::InvalidPath);
@@ -1247,6 +1295,9 @@ impl<const N: usize> Vfs<N> {
             if component == ".." {
                 current = self.nodes[current].parent;
                 continue;
+            }
+            if component.len() >= NAME_MAX {
+                return Err(VfsError::NotFound);
             }
             current = self
                 .find_child(current, component.as_bytes())
@@ -1347,7 +1398,7 @@ fn valid_mount_path(path: &str) -> bool {
             && part != ".."
             && part
                 .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+                .all(|b| b.is_ascii_alphanumeric() || b"._-+".contains(&b))
     })
 }
 
@@ -1410,6 +1461,73 @@ mod tests {
             output[..2].copy_from_slice(b"oi");
             Ok(2)
         }
+    }
+
+    #[test]
+    fn mounted_names_fall_through_without_skipping_overlay_permissions() {
+        let mut vfs = Vfs::<8>::new();
+        let path = "/libsamba3-util-private-samba.so";
+        let protected = "/restricted/libsamba3-util-private-samba.so";
+        let alice = AccessContext::new(ALICE, &[], 0);
+        assert_eq!(vfs.metadata(path, alice), Err(VfsError::InvalidPath));
+        vfs.create_dir("/", "restricted", ROOT, 0o700).unwrap();
+        vfs.mount(
+            "root",
+            "/",
+            FilesystemType::Ext4,
+            MountOptions {
+                read_only: true,
+                no_exec: false,
+                no_suid: true,
+            },
+            ROOT,
+        )
+        .unwrap();
+        assert_eq!(vfs.metadata(path, alice), Err(VfsError::NotFound));
+        assert_eq!(
+            vfs.metadata(protected, alice),
+            Err(VfsError::PermissionDenied)
+        );
+        assert_eq!(
+            vfs.metadata("/libstdc++.so.6", alice),
+            Err(VfsError::NotFound)
+        );
+        assert_eq!(
+            vfs.metadata("/restricted/libstdc++.so.6", alice),
+            Err(VfsError::PermissionDenied)
+        );
+    }
+
+    #[test]
+    fn projected_directory_preserves_mounted_owner_and_mode() {
+        let mut vfs = Vfs::<8>::new();
+        vfs.mount(
+            "root",
+            "/",
+            FilesystemType::Ext4,
+            MountOptions {
+                read_only: true,
+                ..MountOptions::DEFAULT
+            },
+            ROOT,
+        )
+        .unwrap();
+        let user = AccessContext::new(ALICE, &[], 0);
+        let member = AccessContext::new(ALICE, &[42], 0);
+        let mut backend = TestReadBackend;
+        assert_eq!(
+            vfs.materialize_mounted_directory("/restricted", user, &mut backend),
+            Err(VfsError::PermissionDenied)
+        );
+        assert_eq!(vfs.metadata("/restricted", user), Err(VfsError::NotFound));
+        vfs.materialize_mounted_directory("/restricted", member, &mut backend)
+            .unwrap();
+        let metadata = vfs.metadata("/restricted", member).unwrap();
+        assert_eq!((metadata.uid, metadata.gid, metadata.mode), (0, 42, 0o710));
+        assert_eq!(
+            vfs.create_file_as("/restricted", "new", member, 0o600),
+            Err(VfsError::PermissionDenied)
+        );
     }
 
     #[test]
@@ -1596,7 +1714,18 @@ mod tests {
         let bob = AccessContext::new(BOB, &[], 0);
         fs.create_file_as("/tmp", "a", alice, 0o600).unwrap();
         assert_eq!(fs.remove_file_as("/tmp/a", bob), Err(VfsError::NotOwner));
-        fs.remove_file_as("/tmp/a", alice).unwrap();
+        assert_eq!(
+            fs.remove_file_unless_open_as("/tmp/./a", bob, ["/tmp/a"]),
+            Err(VfsError::NotOwner)
+        );
+        assert_eq!(
+            fs.remove_file_unless_open_as("/tmp/./a", alice, ["//tmp/../tmp/a"]),
+            Err(VfsError::Busy)
+        );
+        assert_eq!(
+            fs.remove_file_unless_open_as("/tmp/a", alice, ["/tmp/inexistente/../a"]),
+            Ok(())
+        );
         fs.create_file_as("/tmp", "b", bob, 0o600).unwrap();
         assert_eq!(fs.len, 3);
         assert_eq!(fs.metadata("/tmp/b", bob).unwrap().uid, BOB.uid);

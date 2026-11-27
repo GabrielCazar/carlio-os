@@ -1,0 +1,20 @@
+image: /home/gabriel/.local/share/carlioos-test/disks/test-20g.qcow2
+file format: qcow2
+virtual size: 20 GiB (21474836480 bytes)
+disk size: 196 KiB
+cluster_size: 65536
+Format specific information:
+    compat: 1.1
+    compression type: zlib
+    lazy refcounts: false
+    refcount bits: 16
+    corrupt: false
+    extended l2: false
+Child node '/file':
+    filename: /home/gabriel/.local/share/carlioos-test/disks/test-20g.qcow2
+    protocol type: file
+    file length: 192 KiB (197120 bytes)
+    disk size: 196 KiB
+Modo QEMU: compilação e testes Cargo no NAS omitidos.
+QEMU host: handshake, troca de bytes e FIN confirmados. Log: /tmp/carlioos-test-20261126-094917-2121371/qemu-kvm-bios.log
+QEMU host: handshake, troca de bytes e FIN confirmados. Log: /tmp/carlioos-test-20261126-094917-2121371/qemu-kvm-uefi.log

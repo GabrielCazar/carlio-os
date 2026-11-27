@@ -3,8 +3,9 @@
 ## Objetivo
 
 Executar uma matriz selecionada de aplicações Windows x86_64 diretamente no
-userland do CarlioOS, sem VM. O kernel permanece CarlioOS; compatibilidade com
-PE/COFF e APIs Win32/NT ficará em processos de userland isolados.
+userland do CarlioOS. A compatibilidade PE/COFF e Win32/NT ficará em
+processos isolados. Uma VM dedicada hospedará o serviço de Registro, acessado
+por um canal privado mediado pelo kernel do CarlioOS.
 
 ## Etapas e dependências
 
@@ -40,3 +41,10 @@ preservação do destino quando a validação falha.
 O mapa permanece no buffer de preparação. Mapeamento em CPL3, relocação,
 imports, TLS, exceções, APIs Win32/NT e execução da matriz de aplicativos
 seguem pendentes.
+
+O [serviço convidado de Registro](../docs/REGISTRO-WINDOWS.md) já oferece
+consulta, gravação e remoção de valores em hives privados voláteis. O supervisor
+QEMU para Linux permite testar o convidado pela porta serial privada com o
+broker e a semântica inicial das operações Win32 de valores. A execução no
+CarlioOS depende do backend de virtualização do kernel, da ligação às
+credenciais e à memória de CPL3, dos handles e da resolução dos imports PE.

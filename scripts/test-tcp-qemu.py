@@ -8,6 +8,7 @@ import shutil
 import socket
 import subprocess
 import tempfile
+import time
 
 boot = importlib.import_module("test-persistence-qemu").boot
 
@@ -18,6 +19,10 @@ def main():
     parser.add_argument("log", type=Path)
     parser.add_argument("--firmware", type=Path)
     parser.add_argument("--vars", type=Path)
+    parser.add_argument("--blocking", action="store_true")
+    parser.add_argument("--accel", choices=("tcg", "kvm"), default="tcg")
+    parser.add_argument("--scratch-disk", type=Path,
+                        help="secondary QCOW2 attached with a disposable snapshot")
     args = parser.parse_args()
     if bool(args.firmware) != bool(args.vars):
         parser.error("--firmware and --vars must be supplied together")
@@ -28,7 +33,8 @@ def main():
         root.mkdir()
         asm = Path(__file__).with_name("fixtures") / "tcp-echo.s"
         obj = work / "probe.o"
-        subprocess.run(["as", "--64", "-o", obj, asm], check=True)
+        defines = ["--defsym", "BLOCKING=1"] if args.blocking else []
+        subprocess.run(["as", "--64", *defines, "-o", obj, asm], check=True)
         subprocess.run(["ld", "-static", "-o", root / "carlio-disk-exec", obj], check=True)
         disk = work / "disk.raw"
         with disk.open("wb") as stream:
@@ -43,12 +49,15 @@ def main():
             reserve.bind(("127.0.0.1", 0))
             port = reserve.getsockname()[1]
         qemu = [
-            "qemu-system-x86_64", "-machine", "q35", "-accel", "tcg", "-cpu", "max",
+            "qemu-system-x86_64", "-machine", "q35", "-accel", args.accel, "-cpu", "host" if args.accel == "kvm" else "max",
             "-m", "512M", "-smp", "4", "-display", "none", "-serial", "stdio",
             "-cdrom", args.iso, "-boot", "d", "-drive", f"if=ide,format=raw,file={disk}",
             "-netdev", f"user,id=net,hostfwd=tcp:127.0.0.1:{port}-:19077",
             "-device", "e1000e,netdev=net",
         ]
+        if args.scratch_disk:
+            scratch = str(args.scratch_disk.resolve()).replace(",", ",,")
+            qemu += ["-drive", f"if=ide,index=1,format=qcow2,snapshot=on,file={scratch}"]
         if args.firmware:
             nvram = work / "vars.fd"
             shutil.copyfile(args.vars, nvram)
@@ -58,14 +67,23 @@ def main():
             ]
 
         def exchange():
+            if args.blocking:
+                time.sleep(0.25)
             with socket.create_connection(("127.0.0.1", port), timeout=8) as client:
+                if args.blocking:
+                    time.sleep(0.25)
                 client.sendall(b"ping!")
+                if args.blocking:
+                    time.sleep(0.25)
+                    client.sendall(b"?")
                 client.shutdown(socket.SHUT_WR)
                 with client.makefile("rb") as response:
-                    assert response.read(5) == b"pong!"
+                    expected = b"pong!" * (2 if args.blocking else 1)
+                    assert response.read(len(expected)) == expected
                     assert response.read(1) == b""
 
-        boot(qemu, b"", b"TCP CPL3 pronto", 90, args.log, verify=exchange)
+        boot(qemu, b"", b"TCP CPL3 pronto", 90, args.log, verify=exchange,
+             after_verify=b"Runtime: prova de execve encerrou com status=0.")
         verified = "QEMU host: handshake, troca de bytes e FIN confirmados."
         with args.log.open("a", encoding="utf-8") as log:
             log.write(f"\n{verified}\n")

@@ -417,9 +417,14 @@ impl Endpoint {
                 self.broker.disconnect(peer.owner, |_, _, _| {});
             }
             peer.peer = None;
-            peer.len = 0;
+            // A completed reply remains readable after the accepted socket closes.
+            // Revoking the listener still invalidates every queued response.
+            let completed_reply = socket.server && peer.ticket.is_none() && peer.len != 0;
+            if !completed_reply {
+                peer.len = 0;
+                peer.error = Some(ECONNRESET);
+            }
             peer.ticket = None;
-            peer.error = Some(ECONNRESET);
         }
         self.record(
             pid,
@@ -431,6 +436,10 @@ impl Endpoint {
             0,
         );
         Ok(())
+    }
+
+    pub fn has_process(&self, pid: u64) -> bool {
+        self.sockets.iter().flatten().any(|socket| socket.owner.pid == pid)
     }
 
     pub fn close_process(&mut self, pid: u64, exec: bool) {
@@ -562,6 +571,32 @@ mod tests {
         assert_eq!(endpoint.poll(2, client, POLLIN, 10), Ok(POLLERR));
         assert_eq!(endpoint.receive(2, client, &mut output, 10), Err(ETIMEDOUT));
         assert_eq!(endpoint.receive(1, server, &mut output, 10), Err(EAGAIN));
+        endpoint.send(2, client, query, 11).unwrap();
+        let amount = endpoint.receive(1, server, &mut output, 11).unwrap();
+        let final_ticket = Lookup::decode(&output[..amount]).unwrap().ticket;
+        let final_response = Reply {
+            ticket: final_ticket,
+            status: Status::NotFound,
+            ttl_ms: 0,
+            payload: "",
+        }
+        .encode(&mut reply)
+        .unwrap();
+        endpoint.send(1, server, final_response, 11).unwrap();
+        endpoint.close(1, server).unwrap();
+        assert_ne!(endpoint.poll(2, client, POLLIN, 11).unwrap() & POLLIN, 0);
+        assert_eq!(
+            endpoint.receive(2, client, &mut output, 11),
+            Ok(final_response.len())
+        );
+        assert_eq!(&output[..final_response.len()], final_response);
+        assert_eq!(endpoint.receive(2, client, &mut output, 11), Ok(0));
+
+        let client = endpoint.socket(2, 5, 0).unwrap();
+        endpoint
+            .address(2, client, SOCKET_PATH.as_bytes(), false, false)
+            .unwrap();
+        let _server = endpoint.accept(1, listener, 0).unwrap();
         endpoint.send(2, client, query, 11).unwrap();
         endpoint.close_process(1, true);
         assert_eq!(

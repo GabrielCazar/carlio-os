@@ -1,0 +1,2 @@
+bios PASS
+uefi PASS

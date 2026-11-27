@@ -49,6 +49,9 @@ ao NAS. Até lá, o sistema é experimental e não deve receber dados reais.
 - Registrar comando, resultado e log serial em `reports/logs/`, e atualizar o
   relatório da etapa. Nunca guardar segredos em código, logs ou argumentos.
 
+A [revisão de engenharia de 26/11](../reports/revisao-engenharia-20261126.md)
+registra a ordem de correção e os critérios de segurança ainda abertos para o beta.
+
 ## Estado dos subsistemas do kernel
 
 O critério de conclusão é o comportamento integrado no kernel, com casos
@@ -61,7 +64,7 @@ positivos, negativos e de falha; modelos host e detecção PCI não bastam.
 | Memória | Bitmap até 32 GiB, VM x86-64, folhas user owned, heap expansível e shootdown xAPIC com ACK | Contabilidade confirmada na fixture CPL3. Allocator geral e stress SMP sustentado pendentes; swap experimental com adesão explícita em imagens novas |
 | Drivers / E/S | PCI read-only, framebuffer Limine, adaptador BlockDevice AHCI e Ethernet Intel QEMU; prioridade de filesystem em ext4/FAT32 | Validação física de AHCI e demais dispositivos (RTL8111/I219, EHCI/xHCI, iGPU), timeout/remoção em hardware |
 | VFS | Rootfs ext4 prioritário/FAT32 alternativo detectado em MBR/GPT e montado no boot; leitura, stat/access, ELF loader por mount, `execve` transacional limitado e copy-up/escrita em overlay persistente em mídia dedicada; Hermione arquivado | Escrita nativa ext4/FAT32, whiteouts/rename/unlink, limites atuais de 16 KiB e 40 nós, nomes longos FAT, recursos ext4 completos, validação QEMU/NAS do execve e enforcement integral de inode/processo |
-| Rede | NICs alvo identificadas; prova limitada do Intel 82574L em QEMU | Drivers físicos, pilha TCP/IP integrada, DNS e serviços de servidor pendentes; rede de servidor não está disponível |
+| Rede | Intel 82574L emulada, TCP IPv4 ativo/passivo e espera integrada ao escalonador em VM | Drivers físicos, DNS para aplicações, SSH/SFTP e SMB ainda sem aceite |
 | Syscalls (SCI) | Entrada x86-64 `SYSCALL`; CPL3 valida identidade/grupos, `getpid`/`gettid`, `clock_gettime`/`clock_getres` monotônicos, `brk` positivo, `mmap/munmap`, `execve` transacional limitado, VFS e serial; `mprotect` parcial foi conectado, validação suspensa | NAS UEFI smoke aberto: a prova de duas CR3 não observou preempção de timer e o probe de page tables falhou ([relatório](../reports/fase-4-aplicacoes-linux.md), [log](../reports/logs/fase4-linux-abi-timers-nas-20261119-021821-qemu-kvm-uefi.log)). Ainda faltam gates de `execve`, `CLOCK_REALTIME`, dependências ELF completas, relocations/glibc, GNU version tables, TLS, sinais, futex, chamadas completas de threads, mapeamento de arquivo, mounts no VFS e compatibilidade geral glibc/systemd |
 | Pegasus DS / servidor de diretório | Operações do diretório em memória pelo executável dinâmico em CPL3 sobre ext4, com status zero em BIOS e UEFI no QEMU local e no NAS/KVM. Contrato ABI v1 e interface Rust `libcarlio` documentados. [Integração](PEGASUS-DS.md) | Serviço de diretório funcional, transporte de `libcarlio`, capabilities, sandbox, LSM, keyring, AF_UNIX/SCM_RIGHTS, IPv6/TCP/epoll, canais opt-in, verified boot e validação do serviço no NAS |
 | Interrupções | IDT/exceções, PIT/watchdog, timer LAPIC e IPI de TLB com ACK | IRQs de teclado, USB, rede e disco ligados a drivers; tratamento/recovery físico |
@@ -128,6 +131,21 @@ NAS/KVM passou. Ainda não há modesetting Intel, aceleração, detecção de
 conectores nem controle HDMI/DP. Ver [relatório de vídeo](../reports/fase-video.md).
 
 ### 2 — Memória e execução isolada do kernel
+
+O kernel já pode copiar as páginas residentes de um espaço de usuário
+para frames privados, preservando as permissões, as VMAs e o valor de
+`brk`. O teste de boot compara páginas reais de código e pilha e verifica
+a liberação da cópia. Páginas em swap devem voltar à RAM antes da cópia.
+Na ABI x86-64, `fork` cria um filho independente para processos de thread
+única fixados a uma CPU. O filho herda as credenciais,
+registradores, TLS, estado x87/SSE, descritores seriais, pipes e arquivos
+abertos e sockets IPv4. Pai e filho compartilham a posição dos arquivos
+herdados e o estado das conexões e listeners. `getppid`
+informa o PID do pai vivo. `wait4` permite esperar um PID filho ou qualquer
+filho, com bloqueio ou `WNOHANG`. Ainda faltam grupos de processos,
+`rusage`, entrega de SIGCHLD, limpeza automática de órfãos e herança dos
+sockets locais do broker de diretório.
+[BIOS](../reports/logs/bloco-2-vm-copy-nas-20261126-110327-qemu-kvm-bios.log) · [UEFI](../reports/logs/bloco-2-vm-copy-nas-20261126-110327-qemu-kvm-uefi.log)
 
 **Estado (2026-11-24): critérios locais aprovados; fechamento pendente de
 NAS/KVM.** BIOS e UEFI com quatro CPUs passaram com 5 GiB e 32 GiB,
@@ -511,17 +529,25 @@ O TCP passivo IPv4 aceita conexões unicast da LAN com janela e filas fixas,
 reenvio de SYN e dados, e encerramento por FIN. O diagnóstico UDP continua
 opt-in. O teste `scripts/test-tcp-qemu.py` confirmou handshake, entrega e
 envio de dados em CPL3 e FIN em BIOS e UEFI. A ABI oferece `accept`,
-`accept4`, `read`, `write`, `sendto`, `recvfrom` e `poll` imediato para
-essa rota. TCP de saída, espera bloqueante e validação física permanecem
-em aberto.
+`accept4`, `read`, `write`, `sendto`, `recvfrom` e `poll` para
+essa rota. O TCP de saída usa `connect` IPv4, porta efêmera ou porta já
+vinculada, e ARP para o destino local ou o gateway do DHCP. O handshake
+de saída tem timeout. `accept`, `accept4`, `read`, `write` e `poll`
+cedem a CPU ao escalonador quando precisam esperar. O caminho de
+`sendto` e `recvfrom` retorna `EAGAIN` quando a operação não está pronta.
+A compatibilidade de `SO_ERROR` e a validação física seguem pendentes.
 O boot consulta via ARP o gateway anunciado por DHCP e valida a resposta
 Ethernet/ARP. O smoke em QEMU BIOS e UEFI exige confirmação de DHCP e ARP.
 O diagnóstico DNS usa a máscara e a rota padrão do DHCP para selecionar o
 próximo salto ARP e transmitir UDP/IPv4 com checksum. Em BIOS e UEFI no QEMU,
-o diagnóstico executou, mas a consulta NS da raiz expirou. Ainda faltam
-resolução de nomes para aplicações, transporte dos sockets
-(`accept`/`connect`/`send`/`recv`), serviços reiniciáveis SSH/SFTP e SMB,
-drivers RTL8111/I219 físicos e validação em hardware.
+o diagnóstico executou, mas a consulta NS da raiz expirou. A resolução de nomes para aplicações também está disponível pela ABI nativa.
+O console autenticado inicia e lista serviços ELF em segundo plano e
+interrompe processos pelo PID. A parada recolhe os recursos do processo
+antes de permitir a reutilização da vaga. O teste TCP cobre autorização
+de parada, encerramento de conexão e novo processo na mesma porta.
+Seguem pendentes os servidores SSH/SFTP e SMB, os drivers físicos
+RTL8111/I219 e a validação em hardware. Veja o
+[roteiro de reprodução no NAS](TESTES-NAS.md).
 
 **Revalidação NAS/KVM (24/11/2026):** BIOS e UEFI passaram via
 `nas-manjaro` (`192.168.50.10`). Ambos confirmaram DHCPv4, ARP do gateway,
@@ -548,23 +574,53 @@ inacessível. O teste de contas em BIOS e UEFI no NAS confirmou que a sessão
 retorna ao prompt após a falha do DNS e que o serviço UDP continua operável.
 Em QEMU local, um resolvedor isolado retornou `192.0.2.42` para `example.com`
 em BIOS e UEFI, com verificação exata por `--dns-address` no teste de contas.
-A exposição da resolução a processos segue pendente.
+Processos CPL3 têm a extensão `carlio_resolve_ipv4`, que valida buffers de
+usuário e consulta o servidor DNS anunciado via DHCP com ID e porta
+aleatórios. Em QEMU TCG com BIOS e UEFI, um ELF em CPL3 recebeu
+`192.0.2.42` de um resolvedor isolado, verificou os quatro octetos e
+recebeu `EAGAIN` ao consultar novamente de imediato. A resolução padrão
+por `getaddrinfo` em aplicações Arch/Ubuntu segue pendente.
+[Contrato da chamada](KERNEL_ABI.md#resolução-ipv4-para-aplicações-carlio-os).
+
+Na sessão serial autenticada, `executar /CAMINHO [ARGUMENTOS]` carrega
+um ELF do VFS em CPL3 com UID, GID, grupos suplementares e umask 077 da
+sessão. O processo usa o console em primeiro plano, recebe até sete
+argumentos separados por espaços e devolve o status ao prompt. O kernel
+recolhe os recursos da tarefa após saída ou exceção. O teste de sessão com
+conta provisionada usa executáveis instalados no overlay persistente.
 
 O NAS usa uma interface física Realtek RTL8111/8168. A VM usa a Intel 82574L
 emulada, que tem suporte no driver atual. A validação física no NAS depende
 de um driver Realtek ou de uma interface suportada.
+
+O diagnóstico OpenSSH do bloco 4 revelou duas falhas na etapa de memória.
+A liberação de uma tabela vazia espera a invalidação SMP após remover a
+entrada pai, inclusive no rollback da criação de tabelas. A preparação das
+três tarefas de teste no boot agora executa em pilha dedicada de 128 KiB.
+O prólogo compilado da preparação reservava aproximadamente 24 KiB na
+fatia de interrupção de 16 KiB, sobrepondo as fatias usadas por interrupções
+aninhadas. Ver [procedimento de testes no NAS](TESTES-NAS.md).
 
 **Pendências de aceite do bloco 4**
 
 - [x] Contas protegidas em disco disponíveis ao console serial.
 - [x] Login interativo no console serial com identidade POSIX.
 - [x] Serviço UDP de diagnóstico com início e parada.
-- [ ] Início de processos de usuário a partir da sessão autenticada.
+- [x] Início de processos de usuário a partir da sessão autenticada.
+- [x] Supervisão de processos TCP em segundo plano a partir da sessão autenticada.
 - [ ] Resolução DNS para aplicações.
 - [ ] Transporte de sockets (`accept`, `connect`, `send`, `recv`).
 - [ ] Serviço SSH/SFTP reiniciável.
 - [ ] Serviço SMB reiniciável.
 - [ ] Validação da rede em hardware físico.
+
+O TCP IPv4 já cobre conexão ativa e passiva, leitura, escrita, fechamento
+parcial e espera no escalonador. A prova com cliente independente passou
+em BIOS e UEFI no KVM. O teste do OpenSSH alcançou o processo
+`sshd-session` via `ppoll`, `clone` e aliases de descritores. O aceite
+ainda exige cliente SSH autenticado, SFTP, SMB e reinício dos serviços
+preservando as autorizações do VFS. [Procedimento e evidências](TESTES-NAS.md)
+
 
 ### 5 — ABI Linux e userlands Arch e Ubuntu
 
@@ -709,7 +765,8 @@ backup restaurável dos dados.
 Para ensaio em VM, `scripts/install-virtual-image.py ISO DESTINO` mostra os
 caminhos, o tamanho e o SHA-256 da mídia. A opção `--apply --sha256 HASH`
 exige um hash previamente autenticado e a confirmação digitada do destino.
-Publica uma imagem raw nova após verificar a cópia. Cada versão pode ocupar
+Publica uma imagem raw nova após verificar a cópia e sincroniza o diretório
+de destino antes de confirmar sucesso. Cada versão pode ocupar
 um arquivo independente, permitindo selecionar a imagem anterior na VM.
 O instalador de discos físicos, Secure Boot e o rollback transacional da
 userland continuam pendentes.
@@ -740,10 +797,12 @@ permanecem vinculados às etapas e pré-requisitos acima.
 ### 8 — Compatibilidade nativa com aplicações Windows (pós-beta)
 
 Meta: executar aplicações Windows x86_64 selecionadas diretamente no userland
-CarlioOS, sem VM. A compatibilidade ficará em camadas de userland (PE/COFF,
-APIs Win32/NT compatíveis e serviços) sobre processos, memória, syscalls, VFS,
-rede e gráficos do kernel. Não inclui drivers Windows nem troca do kernel por
-NT.
+CarlioOS. A compatibilidade PE/COFF e Win32/NT ficará em userland. O serviço de
+[Registro](REGISTRO-WINDOWS.md) ficará em uma VM dedicada, com acesso por um
+canal privado mediado pelo kernel. O binário convidado, o protocolo, o broker
+e um supervisor QEMU de referência em Linux estão implementados. A integração
+nativa depende do gerenciador de VMs do CarlioOS, de um transporte autenticado
+entre kernel e guest e da ligação dos imports Win32 ao broker.
 
 **Aceite:** carregador PE validado, APIs documentadas e matriz de aplicações
 com testes positivos/negativos. Ver

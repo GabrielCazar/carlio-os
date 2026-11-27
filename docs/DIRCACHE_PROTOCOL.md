@@ -7,26 +7,32 @@ permanece desativado.
 
 ## Acesso e ciclo de vida
 
-O kernel só permite o bind a um processo de serviço com UID zero que
-tenha recebido, durante o `execve`, o domínio `DirectoryBackend` e a
-capability `CAP_DAC_OVERRIDE` para o registro do dircache. Essa concessão
-é local ao hook do dircache e não libera acesso geral ao VFS. Executar outro
-programa revoga o domínio anterior. `mmap` e `mprotect` recusam novas
-permissões de execução nesse domínio.
+O bind exige o domínio `DirectoryBackend` e a autorização interna de
+registro. O caminho reservado exige lançamento supervisionado.
+O console pode iniciar o serviço com uma conta dedicada, sem UID zero,
+quando a build define `CARLIO_DIRCACHE_SERVICE_UID` com o UID dessa conta.
+A sessão autenticada nessa conta solicita:
+
+```text
+servico iniciar /usr/sbin/pegasusd --dircache /etc/pegasusds/identities.tsv
+```
+
+O operador provisiona a tabela e seus diretórios com escrita exclusiva do
+administrador e leitura para a conta do serviço. O lançamento supervisionado
+confere o UID e os argumentos exatos antes de conceder o domínio. A autorização
+vale apenas para o registro no broker. As permissões do VFS seguem o UID e os
+grupos do processo. O filtro do perfil impede `execve` e novas permissões
+de execução. Veja os [diagramas de isolamento](PEGASUSD-ISOLAMENTO.md).
 
 A build aceita um executável estático, sua assinatura destacada e a chave
 pública nas variáveis `CARLIO_DIRCACHE_EXECUTABLE`,
 `CARLIO_DIRCACHE_SIGNATURE` e `CARLIO_DIRCACHE_PUBLIC_KEY` (use caminhos
 absolutos). Use uma chave Ed25519 confiável e uma assinatura gerada com
 `openssl pkeyutl -sign -rawin`. A build verifica a assinatura via OpenSSL e
-incorpora a imagem aprovada ao kernel. No carregamento a partir de
-`/usr/sbin/pegasusd`, o kernel compara os bytes usados pelo carregador ELF
-com a imagem aprovada. Sem esses três insumos ou com o ELF divergente, o
-processo não recebe a autorização. A confiança depende da integridade da
-build, da chave pública escolhida pelo operador e da cadeia de boot.
-O carregamento só concede o domínio via `execve`; binários com interpretador
-dinâmico são excluídos da concessão. Esta política de domínio é específica
-do dircache e não implementa uma interface geral de módulos LSM Linux.
+incorpora a imagem aprovada ao kernel. O lançamento supervisionado mapeia
+diretamente esse ELF no espaço de endereços do processo. A confiança
+depende da integridade da build, da chave pública escolhida pelo operador
+e da cadeia de boot.
 
 Cada descritor pertence ao processo que o abriu. O backend é único e
 encerramento, exec ou fechamento do listener revogam o registro. O
@@ -81,5 +87,9 @@ erro. A trilha ainda não é uma condição para a autorização do endpoint.
 
 O transporte experimental limita o registro a 1.024 bytes por pacote, o que
 comporta todos os registros v1 com IDs decimais canônicos. O limite de 64 KiB
-continua sendo o limite do codec. O adaptador no `pegasusd`, a ponte NSS e
-a homologação no NAS/KVM seguem pendentes.
+continua sendo o limite do codec. O adaptador no `pegasusd` e o kernel
+preservam o ticket e os limites de v1. O modo `pegasusd --dircache`
+serve uma consulta por conexão com uma tabela POSIX provisionada e TTL zero.
+O fechamento do socket aceito preserva uma resposta já enfileirada para
+leitura. A revogação do listener invalida as respostas ainda não consumidas.
+A ponte NSS e a homologação do executável assinado no NAS/KVM seguem pendentes.

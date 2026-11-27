@@ -1424,3 +1424,45 @@ Formatação, 192 testes host e Clippy passaram. A ISO padrão e a ISO da
 prova passaram em QEMU BIOS e UEFI.
 [Prova BIOS](logs/runtime-smp-heap-bios.log) ·
 [Prova UEFI](logs/runtime-smp-heap-uefi.log).
+
+## Páginas de guarda e carga SMP (2026-11-27)
+
+O BSP remove 517 páginas inferiores de 4 KiB da raiz kernel antes de
+iniciar os APs ou criar processos. Para cada guarda, o boot confirma uma
+folha ausente e uma página útil adjacente gravável em supervisor. A
+proteção abrange o boot do BSP e dos APs, o pool de tarefas, as pilhas de
+lançamento, RSP0, a IST de double fault e as quatro fatias de IRQ por CPU.
+O teste de escrita abaixo da pilha do BSP registrou o vetor 8 e concluiu
+o diagnóstico pela IST, após boot CPL3 com quatro CPUs.
+
+| Perfil | Resultado | Evidência |
+| --- | --- | --- |
+| BIOS, QEMU TCG, 5 GiB | AP1 e AP2 com 8.192 ciclos cada | [Serial](logs/guardas-20261127-bios-5g.log) |
+| UEFI, QEMU TCG, 32 GiB | AP1 e AP2 com 8.192 ciclos cada | [Serial](logs/guardas-20261127-uefi-32g.log) |
+| BIOS, NAS KVM, 5 GiB | AP1 e AP2 com 8.192 ciclos cada | [Serial](logs/guardas-20261127-nas-bios.log) |
+| UEFI, NAS KVM, 5 GiB | AP1 e AP2 com 8.192 ciclos cada | [Serial](logs/guardas-20261127-nas-uefi.log) |
+| Escrita abaixo da pilha | Double fault diagnosticado pela IST | [Serial](logs/guardas-20261127-overflow.log) |
+| ISO padrão, QEMU TCG | Boot e prova CPL3 com guardas | [BIOS](logs/guardas-20261127-standard-bios.log) · [UEFI](logs/guardas-20261127-standard-uefi.log) |
+
+Todos os perfis de carga usaram quatro vCPUs e confirmaram IRQs aninhadas,
+amostras de `SYSCALL` e `int 0x80`, dois faults isolados em CPL3, ACKs
+remotos de TLB e a restauração do baseline de frames. O timeout local de
+55 s foi insuficiente em TCG. A repetição usou 180 s.
+
+A recompilação no workspace confirmou novamente os 8.192 ciclos por AP,
+as IRQs aninhadas e as duas entradas de syscall em
+[BIOS com 5 GiB](logs/guardas-revalidacao-bios.log) e
+[UEFI com 32 GiB](logs/guardas-revalidacao-uefi.log). A
+[prova de ultrapassagem](logs/guardas-revalidacao-overflow.log) voltou a
+registrar o vetor 8. Os [258 testes da biblioteca](logs/guardas-revalidacao-host.txt)
+passaram. Os resultados NAS/KVM da tabela correspondem à rodada anterior.
+
+```bash
+CARLIO_STACK_WATERMARK=1 CARLIO_SMP_STRESS_TEST=1 scripts/build-iso.sh
+python3 scripts/qemu-smoke.py --iso build/carlio-os.iso --accel tcg \
+  --memory 5G --timeout 180 --smp-cycles 8192 --expect-runtime-stress \
+  --expect-high-frame --log reports/logs/guardas-20261127-bios-5g.log
+CARLIO_CRASH_TEST=1 scripts/build-iso.sh
+python3 scripts/test-crash-qemu.py --iso build/carlio-os-crash-test.iso \
+  --case stack-guard --timeout 70 --log reports/logs/guardas-20261127-overflow.log
+```

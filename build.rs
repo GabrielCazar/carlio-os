@@ -10,6 +10,14 @@ fn main() {
         "none" | "integrity" | "confidentiality"
     ));
     println!("cargo:rustc-env=CARLIO_LOCKDOWN_FLOOR={floor}");
+    println!("cargo:rerun-if-env-changed=CARLIO_DIRCACHE_SERVICE_UID");
+    let service_uid = env::var("CARLIO_DIRCACHE_SERVICE_UID").map_or(0, |uid| {
+        uid.parse::<u32>()
+            .ok()
+            .filter(|uid| (1..u32::MAX).contains(uid))
+            .expect("CARLIO_DIRCACHE_SERVICE_UID must be an unprivileged numeric UID")
+    });
+    println!("cargo:rustc-env=CARLIO_DIRCACHE_SERVICE_UID={service_uid}");
     let names = [
         "CARLIO_DIRCACHE_EXECUTABLE",
         "CARLIO_DIRCACHE_SIGNATURE",

@@ -1,0 +1,52 @@
+IRQ stack: pilha por CPU e duas fatias aninhadas passaram.
+[2J[H+----------------------------------------------------+
+| carlIO OS | Criado por João G.R.Santos             |
+| Sistema operacional experimental x86_64            |
++----------------------------------------------------+
+Núcleo Rust · BOOT LOG
+[10;1H[10;24rLockdown: none
+[s[7;1H[2K[[32;1m###[90m---------------------------------------------------------------------------[0m][8;1H[2KBOOT  5%  kernel carregado[uFramebuffer Limine: RGB ativo; renderização de pixels validada.
+[s[7;1H[2K[[32;1m#########[90m---------------------------------------------------------------------[0m][8;1H[2KBOOT 12%  vídeo/console[uIDT: exceções 0-31 registradas; IRQs externos permanecem desativados.
+Ring 3: GDT, TSS, RSP0 e seletores de usuário configurados; CPL continua 0.
+Aviso: terminal de diagnóstico em ring 0; não é uma fronteira de segurança.
+Mapa de memória Limine: regiões usáveis=3, RAM usável MiB=485; HHDM e bases físico/virtual do kernel disponíveis.
+Allocator físico: frames livres até 32 GiB=124364, sem RAM acima de 4 GiB; teste usa frame baixo; alocação, escrita, leitura e liberação passaram.
+[s[7;1H[2K[[32;1m###################[90m-----------------------------------------------------------[0m][8;1H[2KBOOT 25%  memória física e HHDM[uLAPIC xAPIC ativo no BSP; vetor de shootdown remoto 0xF1 instalado.
+SMP Limine: CPUs detectadas=4, APs iniciadas=3, aguardadas=3; APs aguardam despacho de tarefa, scheduler ainda desativado.
+SMP trabalho: CPUs AP=3, tarefas concluídas=3, resultados válidos=3; despacho de prova concluído.
+[s[7;1H[2K[[32;1m###################################[90m-------------------------------------------[0m][8;1H[2KBOOT 45%  inicialização SMP[uHeap global: alocação Rust maior que a arena bootstrap passou.
+Heap kernel: regiões dinâmicas, alinhamento, escrita/leitura, expansão e liberação passaram.
+[s[7;1H[2K[[32;1m#############################################[90m---------------------------------[0m][8;1H[2KBOOT 58%  heap do kernel[uInventário PCI (somente leitura):
+PCI 00:00.0 8086:29c0 classe=bridge
+PCI 00:01.0 1234:1111 classe=vídeo vídeo
+PCI 00:02.0 8086:10d3 classe=rede rede (Intel 82574L/QEMU)
+NIC Intel 82574L: filas DMA TX/RX ativas, MAC=525400123456; envio/recepcao polling disponiveis.
+DHCP IPv4: concessao recebida 10.0.2.15
+ARP IPv4: gateway respondeu, MAC=52550a000202
+PCI 00:1f.0 8086:2918 classe=bridge
+PCI 00:1f.2 8086:2922 classe=armazenamento SATA/AHCI (QEMU: reconhecido; driver AHCI experimental)
+AHCI: dispositivo identificado em leitura, setores=133120. Adaptador BlockDevice pronto para rootfs.
+Storage: partições ext4/FAT32 detectadas: 1
+  ext4 LBA=2048 setores=131072
+Storage: partição escolhida como rootfs prioritário.
+PCI 00:1f.3 8086:2930 classe=barramento serial
+Funções PCI presentes detectadas: 6
+[s[7;1H[2K[[32;1m######################################################[90m------------------------[0m][8;1H[2KBOOT 70%  detecção de hardware[uVFS: rootfs montado em / para leitura; escrita no overlay RAM.
+[s[7;1H[2K[[32;1m###############################################################[90m---------------[0m][8;1H[2KBOOT 82%  VFS e rootfs[uRuntime de processos: preparando tarefas CPL3.
+Login de teste: senha incorreta negada e sessão Argon2id emitida.
+Runtime: cópia privada das páginas CPL3 confirmada.
+Runtime: tarefas com CR3 independentes despachadas.
+write ok
+ABI Linux: probe CPL3 aguardando byte de entrada serial.
+chdir("/"): Function not implemented
+setsockopt SO_REUSEADDR fd 3: Function not implemented
+Server listening on 0.0.0.0 port 2222.
+Couldn't create pid file "/run/sshd.pid": Permission denied
+setsid: Function not implemented
+chdir("/"): Function not implemented
+setsockopt socket 3 IP_TOS 184: Function not implemented
+setsockopt SO_KEEPALIVE fd 3: Function not implemented
+sys_get_rdomain: cannot determine VRF for fd=3 : Function not implemented
+login grace time setitimer failed
+
+--- mensagens do QEMU ---

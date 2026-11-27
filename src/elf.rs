@@ -742,6 +742,34 @@ fn load_interpreted_executable_from_source<
     }
 }
 
+/// Maps the build-time verified service image without a VFS staging buffer.
+pub fn load_approved_backend<T: ElfLoadTarget>(target: &mut T) -> Result<ExecImage, ElfError> {
+    let bytes = crate::dircache_policy::approved_backend().ok_or(ElfError::UnsupportedFormat)?;
+    if ElfDynamicMetadata::<64>::parse(bytes)?
+        .interpreter()
+        .is_some()
+    {
+        return Err(ElfError::UnsupportedFormat);
+    }
+    let bias = if u16le(bytes, 16)? == 3 {
+        DYNAMIC_PROGRAM_BIAS
+    } else {
+        0
+    };
+    let image = ElfImage::<64>::parse_with_load_bias(bytes, bias)?;
+    image.load_into(bytes, target)?;
+    Ok(ExecImage {
+        domain: crate::dircache_policy::Domain::DirectoryBackend,
+        entry: image.entry,
+        program_entry: image.entry,
+        interpreter_base: 0,
+        program_headers: image.program_headers,
+        program_header_entry_size: PROGRAM_HEADER_SIZE as u64,
+        program_header_count: image.program_header_count,
+        image_ranges: [image.mapped_range()?, (0, 0)],
+    })
+}
+
 /// Operações necessárias para carregar segmentos em um espaço de usuário.
 /// `map_zeroed_page` deve criar página user NX por padrão; `protect_page`
 /// aplica permissões ELF depois da cópia, evitando janelas RWX.

@@ -1,0 +1,867 @@
+Diff in /home/gabriel/Work/Patmos/carlio-os/libcarlio/src/lib.rs:26:
+     pub nanoseconds: i64,
+ }
+ 
+[31m-
+(B[m #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ pub struct Statx {
+     pub mask: u32,
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/bin/carlio-account.rs:4:
+     io::{self, IsTerminal, Read, Seek, SeekFrom, Write},
+ };
+ 
+[31m-use argon2::{Block, password_hash::SaltString};
+(B[m[32m+use argon2::{password_hash::SaltString, Block};
+(B[m use carlio_os::{
+     block::{BlockDevice, BlockError, SECTOR_SIZE},
+     storage_reserve::StorageReserve,
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/bin/carlio-account.rs:11:
+     userland::{
+         accounts::{
+[31m-            ACCOUNT_GROUP_LIMIT, ACCOUNT_PATH, AccountDatabase, AccountError, DATABASE_BYTES,
+(B[m[32m+            AccountDatabase, AccountError, ACCOUNT_GROUP_LIMIT, ACCOUNT_PATH, DATABASE_BYTES,
+(B[m             LOGIN_MEMORY_KIB, RESERVED_TEST_ACCOUNT,
+         },
+         kdf::derive_key_into,
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/dircache_socket.rs:439:
+     }
+ 
+     pub fn has_process(&self, pid: u64) -> bool {
+[31m-        self.sockets.iter().flatten().any(|socket| socket.owner.pid == pid)
+(B[m[32m+        self.sockets
+(B[m[32m+            .iter()
+(B[m[32m+            .flatten()
+(B[m[32m+            .any(|socket| socket.owner.pid == pid)
+(B[m     }
+ 
+     pub fn close_process(&mut self, pid: u64, exec: bool) {
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/lib.rs:79:
+ pub mod partition;
+ pub mod pci;
+ pub mod persistent_log;
+[31m-pub mod process;
+(B[m pub mod pipe;
+[32m+pub mod process;
+(B[m pub mod pseudo_fs;
+ pub mod sector_journal;
+ pub mod serial_rx;
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/linux_abi.rs:371:
+     fn shutdown(&mut self, _fd: u64, _how: u32) -> Result<(), u16> {
+         Err(EOPNOTSUPP)
+     }
+[31m-    fn change_credentials(&mut self, _change: crate::process::CredentialChange<'_>) -> Result<(), u16> {
+(B[m[32m+    fn change_credentials(
+(B[m[32m+        &mut self,
+(B[m[32m+        _change: crate::process::CredentialChange<'_>,
+(B[m[32m+    ) -> Result<(), u16> {
+(B[m         Err(ENOSYS)
+     }
+     fn peer_name(&mut self, _descriptor: u64) -> Result<([u8; 4], u16), u16> {
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/linux_abi.rs:477:
+         SYS_DUP2 | SYS_DUP3 => {
+             let fd = u64::from(arguments[0] as u32);
+             let target = u64::from(arguments[1] as u32);
+[31m-            let flags = if number == SYS_DUP3 { arguments[2] as u32 } else { 0 };
+(B[m[32m+            let flags = if number == SYS_DUP3 {
+(B[m[32m+                arguments[2] as u32
+(B[m[32m+            } else {
+(B[m[32m+                0
+(B[m[32m+            };
+(B[m             if flags & !0x80000 != 0 || (number == SYS_DUP3 && fd == target) {
+                 return errno(EINVAL);
+             }
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/linux_abi.rs:488:
+         }
+         SYS_FCNTL => {
+             let operation = match arguments[1] as u32 {
+[31m-                0 | 1030 => return result(io.duplicate_fd(
+(B[m[31m-                    arguments[0], u64::from(arguments[2] as u32), arguments[1] as u32 == 1030,
+(B[m[31m-                )),
+(B[m[32m+                0 | 1030 => {
+(B[m[32m+                    return result(io.duplicate_fd(
+(B[m[32m+                        arguments[0],
+(B[m[32m+                        u64::from(arguments[2] as u32),
+(B[m[32m+                        arguments[1] as u32 == 1030,
+(B[m[32m+                    ))
+(B[m[32m+                }
+(B[m                 1 => DescriptorControl::GetDescriptorFlags,
+                 2 => DescriptorControl::SetCloseOnExec(arguments[2] & 1 != 0),
+                 3 => DescriptorControl::GetStatusFlags,
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/linux_abi.rs:509:
+                 }
+                 (arguments[1] as u32 & !0xf, arguments[3])
+             } else {
+[31m-                (if number == SYS_PIPE2 { arguments[1] as u32 } else { 0 }, arguments[0])
+(B[m[32m+                (
+(B[m[32m+                    if number == SYS_PIPE2 {
+(B[m[32m+                        arguments[1] as u32
+(B[m[32m+                    } else {
+(B[m[32m+                        0
+(B[m[32m+                    },
+(B[m[32m+                    arguments[0],
+(B[m[32m+                )
+(B[m             };
+             if flags & !(0x800 | 0x80000) != 0 {
+                 return errno(EINVAL);
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/linux_abi.rs:537:
+             SyscallOutcome::Return(0)
+         }
+         SYS_FSYNC => result(io.fsync(arguments[0]).map(|_| 0)),
+[31m-        SYS_CARLIO_RESOLVE_IPV4 => resolve_ipv4_syscall(arguments[0], arguments[1], arguments[2], io),
+(B[m[32m+        SYS_CARLIO_RESOLVE_IPV4 => {
+(B[m[32m+            resolve_ipv4_syscall(arguments[0], arguments[1], arguments[2], io)
+(B[m[32m+        }
+(B[m         SYS_SOCKET => result(io.socket(arguments[0], arguments[1], arguments[2])),
+         SYS_ACCEPT | SYS_ACCEPT4 => accept_syscall(
+             arguments[0],
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/linux_abi.rs:550:
+             },
+             io,
+         ),
+[31m-        SYS_SENDTO | SYS_RECVFROM if !crate::dircache_socket::is_descriptor(arguments[0])
+(B[m[31m-            && !io.is_local_stream(arguments[0]) && io.socket_name(arguments[0]).is_err() => errno(ENOTSOCK),
+(B[m[32m+        SYS_SENDTO | SYS_RECVFROM
+(B[m[32m+            if !crate::dircache_socket::is_descriptor(arguments[0])
+(B[m[32m+                && !io.is_local_stream(arguments[0])
+(B[m[32m+                && io.socket_name(arguments[0]).is_err() =>
+(B[m[32m+        {
+(B[m[32m+            errno(ENOTSOCK)
+(B[m[32m+        }
+(B[m         SYS_SENDTO if arguments[3] & !(0x4000 | 0x40) == 0 && arguments[4] == 0 => {
+             write_syscall(arguments[0], arguments[1], arguments[2], io)
+         }
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/linux_abi.rs:561:
+         SYS_SENDTO | SYS_RECVFROM => errno(EOPNOTSUPP),
+         SYS_SHUTDOWN => result(io.shutdown(arguments[0], arguments[1] as u32).map(|()| 0)),
+         SYS_BIND | SYS_CONNECT if crate::dircache_socket::is_descriptor(arguments[0]) => {
+[31m-            unix_address_syscall(arguments[0], arguments[1], arguments[2], number == SYS_BIND, io)
+(B[m[32m+            unix_address_syscall(
+(B[m[32m+                arguments[0],
+(B[m[32m+                arguments[1],
+(B[m[32m+                arguments[2],
+(B[m[32m+                number == SYS_BIND,
+(B[m[32m+                io,
+(B[m[32m+            )
+(B[m         }
+         SYS_CONNECT | SYS_BIND => ipv4_address_syscall(
+[31m-            arguments[0], arguments[1], arguments[2], number == SYS_BIND, io,
+(B[m[32m+            arguments[0],
+(B[m[32m+            arguments[1],
+(B[m[32m+            arguments[2],
+(B[m[32m+            number == SYS_BIND,
+(B[m[32m+            io,
+(B[m         ),
+         SYS_GETSOCKNAME | SYS_GETPEERNAME if io.is_local_stream(arguments[0]) => {
+             result(write_unix_name(arguments[1], arguments[2], false, io).map(|()| 0))
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/linux_abi.rs:696:
+                     return errno(EINVAL);
+                 }
+             }
+[31m-            result(io.change_credentials(crate::process::CredentialChange::SupplementaryGroups(
+(B[m[31m-                &groups[..count],
+(B[m[31m-            )).map(|()| 0))
+(B[m[32m+            result(
+(B[m[32m+                io.change_credentials(crate::process::CredentialChange::SupplementaryGroups(
+(B[m[32m+                    &groups[..count],
+(B[m[32m+                ))
+(B[m[32m+                .map(|()| 0),
+(B[m[32m+            )
+(B[m         }
+         SYS_GETGID | SYS_GETEGID => SyscallOutcome::Return(context.gid as u64),
+         SYS_GETGROUPS => getgroups_syscall(
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/linux_abi.rs:1239:
+     io: &mut I,
+ ) -> SyscallOutcome {
+     if crate::dircache_socket::is_descriptor(descriptor) {
+[31m-        return result(io.unix_name(descriptor)
+(B[m[31m-            .and_then(|bound| write_unix_name(address, length_ptr, bound, io))
+(B[m[31m-            .map(|()| 0));
+(B[m[32m+        return result(
+(B[m[32m+            io.unix_name(descriptor)
+(B[m[32m+                .and_then(|bound| write_unix_name(address, length_ptr, bound, io))
+(B[m[32m+                .map(|()| 0),
+(B[m[32m+        );
+(B[m     }
+     let (ip, port) = match io.socket_name(descriptor) {
+         Ok(endpoint) => endpoint,
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/linux_abi.rs:1349:
+         return errno(EAFNOSUPPORT);
+     }
+     let path = &sockaddr[2..];
+[31m-    let end = path.iter().position(|byte| *byte == 0).unwrap_or(path.len());
+(B[m[32m+    let end = path
+(B[m[32m+        .iter()
+(B[m[32m+        .position(|byte| *byte == 0)
+(B[m[32m+        .unwrap_or(path.len());
+(B[m     result(io.unix_address(fd, &path[..end], bind).map(|()| 0))
+ }
+ 
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/linux_abi.rs:1725:
+     if io.is_pipe(descriptor) {
+         let mut bytes = [0; crate::pipe::CAPACITY];
+         let bytes = &mut bytes[..requested.min(crate::pipe::CAPACITY as u64) as usize];
+[31m-        return result(io.copy_from_user(address, bytes)
+(B[m[31m-            .and_then(|()| io.write(descriptor, bytes))
+(B[m[31m-            .map(|amount| amount as u64));
+(B[m[32m+        return result(
+(B[m[32m+            io.copy_from_user(address, bytes)
+(B[m[32m+                .and_then(|()| io.write(descriptor, bytes))
+(B[m[32m+                .map(|amount| amount as u64),
+(B[m[32m+        );
+(B[m     }
+     if crate::dircache_socket::is_descriptor(descriptor) {
+         let mut packet = [0; crate::dircache_socket::PACKET_SIZE];
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/linux_abi.rs:1735:
+             return errno(EMSGSIZE);
+         }
+         let packet = &mut packet[..requested as usize];
+[31m-        return result(io.copy_from_user(address, packet)
+(B[m[31m-            .and_then(|()| io.write(descriptor, packet))
+(B[m[31m-            .map(|amount| amount as u64));
+(B[m[32m+        return result(
+(B[m[32m+            io.copy_from_user(address, packet)
+(B[m[32m+                .and_then(|()| io.write(descriptor, packet))
+(B[m[32m+                .map(|amount| amount as u64),
+(B[m[32m+        );
+(B[m     }
+     let count = requested.min(MAX_WRITE_BYTES as u64) as usize;
+     let mut buffer = [0u8; WRITE_CHUNK_SIZE];
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/linux_abi.rs:2005:
+         io.opened_path.clear();
+         io.user[..12].copy_from_slice(b"example.test");
+         io.user[0] = 0xff;
+[31m-        assert_eq!(resolve_ipv4_syscall(base, 12, output, &mut io), errno(EINVAL));
+(B[m[32m+        assert_eq!(
+(B[m[32m+            resolve_ipv4_syscall(base, 12, output, &mut io),
+(B[m[32m+            errno(EINVAL)
+(B[m[32m+        );
+(B[m         assert!(io.opened_path.is_empty());
+         io.user[0] = b'e';
+[31m-        assert_eq!(resolve_ipv4_syscall(base, 12, output, &mut io), SyscallOutcome::Return(0));
+(B[m[32m+        assert_eq!(
+(B[m[32m+            resolve_ipv4_syscall(base, 12, output, &mut io),
+(B[m[32m+            SyscallOutcome::Return(0)
+(B[m[32m+        );
+(B[m         assert_eq!(&io.user[32..36], &[192, 0, 2, 42]);
+     }
+ 
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/memory.rs:263:
+         flags: u64,
+     ) -> Result<(), FrameError> {
+         self.space.mapping(address)?;
+[31m-        self.space.tables.update_user(address, flags, Some(physical))
+(B[m[32m+        self.space
+(B[m[32m+            .tables
+(B[m[32m+            .update_user(address, flags, Some(physical))
+(B[m     }
+ 
+     /// Transfere para o espaço ownership de um frame já alocado pelo chamador.
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/net.rs:575:
+             .iter()
+             .position(|entry| !entry.occupied)
+             .ok_or(NetworkError::InvalidState)?;
+[31m-        let descriptor_slot = self.descriptors.iter().position(Option::is_none)
+(B[m[32m+        let descriptor_slot = self
+(B[m[32m+            .descriptors
+(B[m[32m+            .iter()
+(B[m[32m+            .position(Option::is_none)
+(B[m             .ok_or(NetworkError::InvalidState)?;
+         let descriptor = (3..3 + N as u32)
+             .find(|&fd| !reserved(fd) && self.descriptor_slot(process_id, fd).is_none())
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/net.rs:582:
+             .ok_or(NetworkError::InvalidState)?;
+         self.descriptors[descriptor_slot] = Some(SocketDescriptor {
+[31m-            owner: process_id, number: descriptor, endpoint: slot,
+(B[m[32m+            owner: process_id,
+(B[m[32m+            number: descriptor,
+(B[m[32m+            endpoint: slot,
+(B[m             close_on_exec: kind & SOCK_CLOEXEC != 0,
+         });
+         self.entries[slot] = SocketEntry {
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/net.rs:668:
+     }
+ 
+     pub fn inherit(&mut self, parent: u64, child: u64) -> Result<(), NetworkError> {
+[31m-        if parent == child || self.descriptors.iter().flatten().any(|entry| entry.owner == child) {
+(B[m[32m+        if parent == child
+(B[m[32m+            || self
+(B[m[32m+                .descriptors
+(B[m[32m+                .iter()
+(B[m[32m+                .flatten()
+(B[m[32m+                .any(|entry| entry.owner == child)
+(B[m[32m+        {
+(B[m             return Err(NetworkError::InvalidState);
+         }
+[31m-        let count = self.descriptors.iter().flatten().filter(|entry| entry.owner == parent).count();
+(B[m[31m-        if self.descriptors.iter().filter(|entry| entry.is_none()).count() < count {
+(B[m[32m+        let count = self
+(B[m[32m+            .descriptors
+(B[m[32m+            .iter()
+(B[m[32m+            .flatten()
+(B[m[32m+            .filter(|entry| entry.owner == parent)
+(B[m[32m+            .count();
+(B[m[32m+        if self
+(B[m[32m+            .descriptors
+(B[m[32m+            .iter()
+(B[m[32m+            .filter(|entry| entry.is_none())
+(B[m[32m+            .count()
+(B[m[32m+            < count
+(B[m[32m+        {
+(B[m             return Err(NetworkError::InvalidState);
+         }
+         for slot in 0..N {
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/net.rs:679:
+[31m-            let Some(mut entry) = self.descriptors[slot].filter(|entry| entry.owner == parent) else {
+(B[m[32m+            let Some(mut entry) = self.descriptors[slot].filter(|entry| entry.owner == parent)
+(B[m[32m+            else {
+(B[m                 continue;
+             };
+             let target = self.descriptors.iter().position(Option::is_none).unwrap();
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/net.rs:694:
+         close_on_exec: bool,
+         reserved: impl Fn(u32) -> bool,
+     ) -> Result<u32, NetworkError> {
+[31m-        self.descriptor_slot(owner, fd).ok_or(NetworkError::BadDescriptor)?;
+(B[m[32m+        self.descriptor_slot(owner, fd)
+(B[m[32m+            .ok_or(NetworkError::BadDescriptor)?;
+(B[m         let target = (minimum..3 + N as u32)
+             .find(|&number| !reserved(number) && self.descriptor_slot(owner, number).is_none())
+             .ok_or(NetworkError::InvalidState)?;
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/net.rs:708:
+         target: u32,
+         close_on_exec: bool,
+     ) -> Result<u32, NetworkError> {
+[31m-        let source = self.descriptor_slot(process_id, fd).ok_or(NetworkError::BadDescriptor)?;
+(B[m[32m+        let source = self
+(B[m[32m+            .descriptor_slot(process_id, fd)
+(B[m[32m+            .ok_or(NetworkError::BadDescriptor)?;
+(B[m         if fd == target {
+             return Ok(fd);
+         }
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/net.rs:715:
+[31m-        let target_slot = self.descriptor_slot(process_id, target)
+(B[m[32m+        let target_slot = self
+(B[m[32m+            .descriptor_slot(process_id, target)
+(B[m             .or_else(|| self.descriptors.iter().position(Option::is_none))
+             .ok_or(NetworkError::InvalidState)?;
+         let mut alias = self.descriptors[source].ok_or(NetworkError::BadDescriptor)?;
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/net.rs:725:
+ 
+     fn close_slot(&mut self, slot: usize) {
+         if let Some(entry) = self.descriptors[slot].take() {
+[31m-            if !self.descriptors.iter().flatten().any(|other| other.endpoint == entry.endpoint) {
+(B[m[32m+            if !self
+(B[m[32m+                .descriptors
+(B[m[32m+                .iter()
+(B[m[32m+                .flatten()
+(B[m[32m+                .any(|other| other.endpoint == entry.endpoint)
+(B[m[32m+            {
+(B[m                 self.release_connections(entry.endpoint as u32 + 1);
+                 self.entries[entry.endpoint] = SocketEntry::EMPTY;
+             }
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/net.rs:733:
+     }
+ 
+     pub fn close(&mut self, process_id: u64, descriptor: u32) -> Result<(), NetworkError> {
+[31m-        let slot = self.descriptor_slot(process_id, descriptor).ok_or(NetworkError::BadDescriptor)?;
+(B[m[32m+        let slot = self
+(B[m[32m+            .descriptor_slot(process_id, descriptor)
+(B[m[32m+            .ok_or(NetworkError::BadDescriptor)?;
+(B[m         self.close_slot(slot);
+         Ok(())
+     }
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/net.rs:755:
+         fd: u32,
+         operation: crate::linux_abi::DescriptorControl,
+     ) -> Result<u64, NetworkError> {
+[31m-        let slot = self.descriptor_slot(process_id, fd).ok_or(NetworkError::BadDescriptor)?;
+(B[m[31m-        let descriptor = self.descriptors[slot].as_mut().ok_or(NetworkError::BadDescriptor)?;
+(B[m[31m-        Ok(operation.apply(2, &mut descriptor.close_on_exec,
+(B[m[31m-            &mut self.entries[descriptor.endpoint].info.nonblocking))
+(B[m[32m+        let slot = self
+(B[m[32m+            .descriptor_slot(process_id, fd)
+(B[m[32m+            .ok_or(NetworkError::BadDescriptor)?;
+(B[m[32m+        let descriptor = self.descriptors[slot]
+(B[m[32m+            .as_mut()
+(B[m[32m+            .ok_or(NetworkError::BadDescriptor)?;
+(B[m[32m+        Ok(operation.apply(
+(B[m[32m+            2,
+(B[m[32m+            &mut descriptor.close_on_exec,
+(B[m[32m+            &mut self.entries[descriptor.endpoint].info.nonblocking,
+(B[m[32m+        ))
+(B[m     }
+ 
+     pub fn close_on_exec(&mut self, process_id: u64) {
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/net.rs:765:
+         for slot in 0..N {
+[31m-            if self.descriptors[slot].is_some_and(|entry| entry.owner == process_id && entry.close_on_exec) {
+(B[m[32m+            if self.descriptors[slot]
+(B[m[32m+                .is_some_and(|entry| entry.owner == process_id && entry.close_on_exec)
+(B[m[32m+            {
+(B[m                 self.close_slot(slot);
+             }
+         }
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/net.rs:771:
+ 
+     pub fn info(&self, process_id: u64, descriptor: u32) -> Option<SocketInfo> {
+         let index = self.find(process_id, descriptor)?;
+[31m-        Some(SocketInfo { process_id, descriptor, ..self.entries[index].info })
+(B[m[32m+        Some(SocketInfo {
+(B[m[32m+            process_id,
+(B[m[32m+            descriptor,
+(B[m[32m+            ..self.entries[index].info
+(B[m[32m+        })
+(B[m     }
+ 
+     pub fn is_listening(&self, address: [u8; 4], port: u16) -> bool {
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/net.rs:784:
+     }
+ 
+     fn descriptor_slot(&self, process_id: u64, descriptor: u32) -> Option<usize> {
+[31m-        self.descriptors.iter().position(|entry| entry.is_some_and(|entry| {
+(B[m[31m-            entry.owner == process_id && entry.number == descriptor
+(B[m[31m-        }))
+(B[m[32m+        self.descriptors.iter().position(|entry| {
+(B[m[32m+            entry.is_some_and(|entry| entry.owner == process_id && entry.number == descriptor)
+(B[m[32m+        })
+(B[m     }
+ 
+     fn find(&self, process_id: u64, descriptor: u32) -> Option<usize> {
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/net.rs:793:
+         Some(self.descriptors[self.descriptor_slot(process_id, descriptor)?]?.endpoint)
+     }
+[31m-
+(B[m }
+ 
+ impl<const N: usize> Default for SocketTable<N> {
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/net_tcp.rs:1:
+ use super::{
+[31m-    NetworkError, SocketProtocol, SocketState, SocketTable, TcpSegment, local_tcp, tcp_frame,
+(B[m[32m+    local_tcp, tcp_frame, NetworkError, SocketProtocol, SocketState, SocketTable, TcpSegment,
+(B[m };
+ 
+ const FIN: u8 = 1;
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/net_tcp.rs:173:
+             }
+             return;
+         }
+[31m-        if !self.peer_fin && (self.read_shutdown || segment.payload.len() <= self.rx.len() - self.rx_len) {
+(B[m[32m+        if !self.peer_fin
+(B[m[32m+            && (self.read_shutdown || segment.payload.len() <= self.rx.len() - self.rx_len)
+(B[m[32m+        {
+(B[m             if !self.read_shutdown {
+                 let end = self.rx_len + segment.payload.len();
+                 self.rx[self.rx_len..end].copy_from_slice(segment.payload);
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/net_tcp.rs:221:
+             source_port: self.local_port,
+             destination_port: self.peer_port,
+             sequence: if flags == ACK && self.sent && self.state == State::Open {
+[31m-                self.next_tx
+(B[m[31m-                    .wrapping_add(self.tx_len as u32 + u32::from(self.write_shutdown && self.tx_len == 0))
+(B[m[32m+                self.next_tx.wrapping_add(
+(B[m[32m+                    self.tx_len as u32 + u32::from(self.write_shutdown && self.tx_len == 0),
+(B[m[32m+                )
+(B[m             } else {
+                 self.next_tx
+             },
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/net_tcp.rs:229:
+             acknowledgement: self.next_rx,
+             flags,
+[31m-            window: if self.read_shutdown { self.rx.len() } else { self.rx.len() - self.rx_len } as u16,
+(B[m[32m+            window: if self.read_shutdown {
+(B[m[32m+                self.rx.len()
+(B[m[32m+            } else {
+(B[m[32m+                self.rx.len() - self.rx_len
+(B[m[32m+            } as u16,
+(B[m             urgent_pointer: 0,
+             options: &[],
+             payload,
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/net_tcp.rs:297:
+         }
+         let Some((index, listener)) = self
+             .entries
+[31m-            .iter().enumerate()
+(B[m[32m+            .iter()
+(B[m[32m+            .enumerate()
+(B[m             .find(|(_, entry)| {
+                 entry.occupied
+                     && entry.info.state == SocketState::Listening
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/net_tcp.rs:314:
+         let pending = self
+             .connections
+             .iter()
+[31m-            .filter(|c| {
+(B[m[31m-                c.state != State::Free
+(B[m[31m-                    && c.fd == 0
+(B[m[31m-                    && c.listener == index
+(B[m[31m-                    && !c.closing
+(B[m[31m-            })
+(B[m[32m+            .filter(|c| c.state != State::Free && c.fd == 0 && c.listener == index && !c.closing)
+(B[m             .count();
+         if pending >= listener.backlog as usize {
+             return true;
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/net_tcp.rs:461:
+         {
+             return Err(NetworkError::InvalidState);
+         }
+[31m-        let listener = self.find(owner, listener).ok_or(NetworkError::BadDescriptor)? as u32 + 1;
+(B[m[32m+        let listener = self
+(B[m[32m+            .find(owner, listener)
+(B[m[32m+            .ok_or(NetworkError::BadDescriptor)? as u32
+(B[m[32m+            + 1;
+(B[m         let index = self
+             .connections
+             .iter()
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/net_tcp.rs:468:
+             .position(|c| {
+[31m-                c.state == State::Open
+(B[m[31m-                    && c.fd == 0
+(B[m[31m-                    && !c.closing
+(B[m[31m-                    && c.listener == listener
+(B[m[32m+                c.state == State::Open && c.fd == 0 && !c.closing && c.listener == listener
+(B[m             })
+             .ok_or(NetworkError::WouldBlock)?;
+         let fd = self.create_excluding(owner, 0, 2, 1 | flags, 6, reserved)?;
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/net_tcp.rs:494:
+             return Ok(None);
+         }
+         let endpoint = self.find(owner, fd).ok_or(NetworkError::BadDescriptor)? as u32 + 1;
+[31m-        Ok(self.connections.iter()
+(B[m[31m-            .find(|connection| connection.state == State::Open
+(B[m[31m-                && connection.fd == endpoint)
+(B[m[32m+        Ok(self
+(B[m[32m+            .connections
+(B[m[32m+            .iter()
+(B[m[32m+            .find(|connection| connection.state == State::Open && connection.fd == endpoint)
+(B[m             .map(|connection| (connection.peer, connection.peer_port)))
+     }
+ 
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/net_tcp.rs:516:
+         }
+     }
+ 
+[31m-    pub fn tcp_shutdown(&mut self, owner: u64, fd: u32, how: u32, now: u64) -> Result<(), NetworkError> {
+(B[m[32m+    pub fn tcp_shutdown(
+(B[m[32m+        &mut self,
+(B[m[32m+        owner: u64,
+(B[m[32m+        fd: u32,
+(B[m[32m+        how: u32,
+(B[m[32m+        now: u64,
+(B[m[32m+    ) -> Result<(), NetworkError> {
+(B[m         if how > 2 {
+             return Err(NetworkError::InvalidState);
+         }
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/net_tcp.rs:595:
+             } else if c.fd == fd {
+                 failed = matches!(c.state, State::Reset | State::Refused | State::TimedOut);
+                 readable = c.peer_fin || c.read_shutdown || c.rx_len != 0;
+[31m-                writable = c.state == State::Open && (c.write_shutdown || (c.tx_len == 0 && c.peer_window != 0));
+(B[m[32m+                writable = c.state == State::Open
+(B[m[32m+                    && (c.write_shutdown || (c.tx_len == 0 && c.peer_window != 0));
+(B[m             }
+         }
+         Ok((readable, writable, failed))
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/net_tcp.rs:637:
+         let fd = sockets.create(1, 1000, 2, 1, 6).unwrap();
+         let mac = [2, 0, 0, 0, 0, 1];
+         let peer = ([192, 0, 2, 20], 22, [2, 0, 0, 0, 0, 2]);
+[31m-        sockets.start_tcp_connect(1, fd, [192, 0, 2, 10], peer, 100, 0).unwrap();
+(B[m[32m+        sockets
+(B[m[32m+            .start_tcp_connect(1, fd, [192, 0, 2, 10], peer, 100, 0)
+(B[m[32m+            .unwrap();
+(B[m         sockets.entries[0].info.state = SocketState::Connected;
+         sockets.connections[0].state = State::Open;
+         sockets.connections[0].peer_window = 1024;
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/net_tcp.rs:644:
+         assert_eq!(sockets.tcp_write(1, fd, b"a", 1), Ok(1));
+         sockets.tcp_shutdown(1, fd, 1, 2).unwrap();
+[31m-        assert_eq!(sockets.tcp_write(1, fd, b"x", 2), Err(NetworkError::BrokenPipe));
+(B[m[32m+        assert_eq!(
+(B[m[32m+            sockets.tcp_write(1, fd, b"x", 2),
+(B[m[32m+            Err(NetworkError::BrokenPipe)
+(B[m[32m+        );
+(B[m 
+[31m-        for (tick, flags, sequence, payload) in [
+(B[m[31m-            (2, ACK | 8, 100, &b"a"[..]),
+(B[m[31m-            (3, ACK | FIN, 101, &b""[..]),
+(B[m[31m-        ] {
+(B[m[32m+        for (tick, flags, sequence, payload) in
+(B[m[32m+            [(2, ACK | 8, 100, &b"a"[..]), (3, ACK | FIN, 101, &b""[..])]
+(B[m[32m+        {
+(B[m             let mut sent = false;
+             sockets.tcp_transmit(mac, tick, |frame| {
+                 let ethernet = EthernetFrame::parse(frame).unwrap();
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/net_tcp.rs:655:
+                 let ip = Ipv4Packet::parse(ethernet.payload).unwrap();
+                 let segment = TcpSegment::parse(&ip).unwrap();
+[31m-                assert_eq!((segment.flags, segment.sequence, segment.payload), (flags, sequence, payload));
+(B[m[32m+                assert_eq!(
+(B[m[32m+                    (segment.flags, segment.sequence, segment.payload),
+(B[m[32m+                    (flags, sequence, payload)
+(B[m[32m+                );
+(B[m                 sent = true;
+                 true
+             });
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/net_tcp.rs:661:
+             assert!(sent);
+[31m-            sockets.connections[0].receive(TcpSegment {
+(B[m[31m-                source_port: 22, destination_port: sockets.entries[0].info.local_port,
+(B[m[31m-                sequence: 0, acknowledgement: sequence + 1,
+(B[m[31m-                flags: if tick == 3 { ACK | FIN } else { ACK }, window: 1024,
+(B[m[31m-                urgent_pointer: 0, options: &[],
+(B[m[31m-                payload: if tick == 3 { b"b" } else { b"" },
+(B[m[31m-            }, tick);
+(B[m[32m+            sockets.connections[0].receive(
+(B[m[32m+                TcpSegment {
+(B[m[32m+                    source_port: 22,
+(B[m[32m+                    destination_port: sockets.entries[0].info.local_port,
+(B[m[32m+                    sequence: 0,
+(B[m[32m+                    acknowledgement: sequence + 1,
+(B[m[32m+                    flags: if tick == 3 { ACK | FIN } else { ACK },
+(B[m[32m+                    window: 1024,
+(B[m[32m+                    urgent_pointer: 0,
+(B[m[32m+                    options: &[],
+(B[m[32m+                    payload: if tick == 3 { b"b" } else { b"" },
+(B[m[32m+                },
+(B[m[32m+                tick,
+(B[m[32m+            );
+(B[m         }
+         sockets.tcp_transmit(mac, 4, |_| true);
+         let mut byte = [0];
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/net_tcp.rs:682:
+         let mut sockets = SocketTable::<4>::new();
+         let fd = sockets.create(3, 1000, 2, 1, 6).unwrap();
+         let peer = ([192, 0, 2, 20], 22, [2, 0, 0, 0, 0, 2]);
+[31m-        sockets.start_tcp_connect(3, fd, [192, 0, 2, 10], peer, 100, 0).unwrap();
+(B[m[32m+        sockets
+(B[m[32m+            .start_tcp_connect(3, fd, [192, 0, 2, 10], peer, 100, 0)
+(B[m[32m+            .unwrap();
+(B[m         sockets.connections[0].state = State::Open;
+         sockets.connections[0].peer_window = 128;
+         sockets.inherit(3, 4).unwrap();
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/net_tcp.rs:689:
+[31m-        sockets.fcntl(4, fd, DescriptorControl::SetNonblocking(true)).unwrap();
+(B[m[32m+        sockets
+(B[m[32m+            .fcntl(4, fd, DescriptorControl::SetNonblocking(true))
+(B[m[32m+            .unwrap();
+(B[m         assert!(sockets.info(3, fd).unwrap().nonblocking);
+         sockets.close(3, fd).unwrap();
+         assert_eq!(sockets.create(3, 1000, 2, 1, 6), Ok(fd));
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/net_tcp.rs:693:
+[31m-        assert_eq!(sockets.tcp_write(3, fd, b"x", 1), Err(NetworkError::BadDescriptor));
+(B[m[32m+        assert_eq!(
+(B[m[32m+            sockets.tcp_write(3, fd, b"x", 1),
+(B[m[32m+            Err(NetworkError::BadDescriptor)
+(B[m[32m+        );
+(B[m         assert_eq!(sockets.tcp_write(4, fd, b"x", 1), Ok(1));
+         sockets.close(4, fd).unwrap();
+         assert!(sockets.connections[0].closing);
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/net_tcp.rs:702:
+         let local = [192, 0, 2, 10];
+         let peer = ([192, 0, 2, 20], 22, [2, 0, 0, 0, 0, 2]);
+         let fd = sockets.create(3, 1000, 2, 1, 6).unwrap();
+[31m-        sockets.start_tcp_connect(3, fd, local, peer, 100, 0).unwrap();
+(B[m[32m+        sockets
+(B[m[32m+            .start_tcp_connect(3, fd, local, peer, 100, 0)
+(B[m[32m+            .unwrap();
+(B[m         let first_port = sockets.info(3, fd).unwrap().local_port;
+         sockets.connections[0].state = State::Open;
+         sockets.close(3, fd).unwrap();
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/net_tcp.rs:709:
+ 
+         let fd = sockets.create(3, 1000, 2, 1, 6).unwrap();
+[31m-        sockets.start_tcp_connect(3, fd, local, peer, 200, 1).unwrap();
+(B[m[32m+        sockets
+(B[m[32m+            .start_tcp_connect(3, fd, local, peer, 200, 1)
+(B[m[32m+            .unwrap();
+(B[m         assert_ne!(sockets.info(3, fd).unwrap().local_port, first_port);
+     }
+ 
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/net_tcp.rs:754:
+             true
+         });
+         assert!(retransmitted);
+[31m-        connection.receive(TcpSegment { acknowledgement: 3, ..ack }, RETRY_TICKS + 1);
+(B[m[32m+        connection.receive(
+(B[m[32m+            TcpSegment {
+(B[m[32m+                acknowledgement: 3,
+(B[m[32m+                ..ack
+(B[m[32m+            },
+(B[m[32m+            RETRY_TICKS + 1,
+(B[m[32m+        );
+(B[m         assert_eq!((connection.next_tx, connection.tx_len), (3, 0));
+         assert!(!connection.sent);
+     }
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/open_files.rs:221:
+         target: u32,
+         close_on_exec: bool,
+     ) -> Result<u32, OpenFileError> {
+[31m-        let source = self.descriptor_slot(owner, fd).ok_or(OpenFileError::BadDescriptor)?;
+(B[m[31m-        let mut alias = self.descriptors[source].filter(|entry| entry.ready)
+(B[m[32m+        let source = self
+(B[m[32m+            .descriptor_slot(owner, fd)
+(B[m             .ok_or(OpenFileError::BadDescriptor)?;
+[32m+        let mut alias = self.descriptors[source]
+(B[m[32m+            .filter(|entry| entry.ready)
+(B[m[32m+            .ok_or(OpenFileError::BadDescriptor)?;
+(B[m         if fd == target {
+             return Ok(fd);
+         }
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/open_files.rs:230:
+[31m-        let target_slot = self.descriptor_slot(owner, target)
+(B[m[32m+        let target_slot = self
+(B[m[32m+            .descriptor_slot(owner, target)
+(B[m             .or_else(|| self.descriptors.iter().position(Option::is_none))
+             .ok_or(OpenFileError::TableFull)?;
+         self.close_slot(target_slot);
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/userland/accounts.rs:465:
+             .unwrap();
+         let mut image = [0u8; DATABASE_BYTES];
+         let length = database.encode(&mut image).unwrap();
+[31m-        assert!(
+(B[m[31m-            !image[..length]
+(B[m[31m-                .windows(7)
+(B[m[31m-                .any(|window| window == b"correct")
+(B[m[31m-        );
+(B[m[32m+        assert!(!image[..length]
+(B[m[32m+            .windows(7)
+(B[m[32m+            .any(|window| window == b"correct"));
+(B[m         let reopened = AccountDatabase::decode(&image[..length]).unwrap();
+         let mut login = LoginManager::new(AccountVerifier::new(&reopened, TestHash));
+         let session = login.authenticate("alice", b"correct").unwrap();
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/vfs_store.rs:1:
+ //! Two independently checksummed banks for the CarlioOS VFS overlay.
+[31m-use crate::block::{BlockDevice, BlockError, SECTOR_SIZE, crc32};
+(B[m[32m+use crate::block::{crc32, BlockDevice, BlockError, SECTOR_SIZE};
+(B[m 
+ const MAGIC: &[u8; 8] = b"CARVFSB1";
+ 
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/vma.rs:881:
+             (false, false) => {
+                 self.reserve_region()?;
+                 self.regions[index].end = start;
+[31m-                self.regions.insert(index + 1, Region { start: end, ..region });
+(B[m[32m+                self.regions.insert(
+(B[m[32m+                    index + 1,
+(B[m[32m+                    Region {
+(B[m[32m+                        start: end,
+(B[m[32m+                        ..region
+(B[m[32m+                    },
+(B[m[32m+                );
+(B[m             }
+         }
+         self.mmap_cursor = self.mmap_cursor.min(start);
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/vma.rs:1041:
+         let mut parent = process_vm::<8>();
+         let mut child = process_vm_with_frames::<8>(0x30_0000);
+         let image = 0x40_0000;
+[31m-        parent.address_space.map_zeroed(image, page_flags(0b101)).unwrap();
+(B[m[32m+        parent
+(B[m[32m+            .address_space
+(B[m[32m+            .map_zeroed(image, page_flags(0b101))
+(B[m[32m+            .unwrap();
+(B[m         parent.reserve_existing(image, PAGE_SIZE).unwrap();
+         let new_break = USER_HEAP_BASE + 17;
+         parent.brk(new_break).unwrap();
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/vma.rs:1049:
+         for (address, value) in [(image, 0x90), (USER_HEAP_BASE, 42)] {
+             bytes.insert(parent.mapping(address).unwrap().physical, value);
+         }
+[31m-        parent.copy_into(&mut child, |source, target| {
+(B[m[31m-            assert_ne!(source, target);
+(B[m[31m-            let byte = bytes[&source];
+(B[m[31m-            bytes.insert(target, byte);
+(B[m[31m-            Ok(())
+(B[m[31m-        }).unwrap();
+(B[m[32m+        parent
+(B[m[32m+            .copy_into(&mut child, |source, target| {
+(B[m[32m+                assert_ne!(source, target);
+(B[m[32m+                let byte = bytes[&source];
+(B[m[32m+                bytes.insert(target, byte);
+(B[m[32m+                Ok(())
+(B[m[32m+            })
+(B[m[32m+            .unwrap();
+(B[m         assert_ne!(parent.root(), child.root());
+         assert_eq!(child.program_break(), new_break);
+         for address in [image, USER_HEAP_BASE] {
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/vma.rs:1079:
+         assert_eq!(
+             parent.copy_into(&mut child, |_, _| {
+                 copied += 1;
+[31m-                if copied == 2 { Err(FrameError::CorruptTable) } else { Ok(()) }
+(B[m[32m+                if copied == 2 {
+(B[m[32m+                    Err(FrameError::CorruptTable)
+(B[m[32m+                } else {
+(B[m[32m+                    Ok(())
+(B[m[32m+                }
+(B[m             }),
+             Err(ProcessVmError::Memory(FrameError::CorruptTable))
+         );
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/arch/x86_64/ahci.rs:634:
+         if unsafe { read_reg(port, PORT_CI) } & 1 == 0 {
+             check_media(port)?;
+             compiler_fence(Ordering::SeqCst);
+[31m-            if transfer_data && unsafe { ptr::read_volatile(list.add(4).cast::<u32>()) } != byte_count {
+(B[m[32m+            if transfer_data
+(B[m[32m+                && unsafe { ptr::read_volatile(list.add(4).cast::<u32>()) } != byte_count
+(B[m[32m+            {
+(B[m                 return Err(KernelError::ControllerError);
+             }
+             return Ok(());
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/arch/x86_64/e1000.rs:4:
+ use carlio_os::{
+     errors::KernelError,
+     net::{
+[31m-        ArpPacket, EthernetFrame, Ipv4Packet, UdpDatagram, dns_a_answer, dns_a_query,
+(B[m[31m-        encode_ipv4_udp, ipv4_next_hop,
+(B[m[32m+        dns_a_answer, dns_a_query, encode_ipv4_udp, ipv4_next_hop, ArpPacket, EthernetFrame,
+(B[m[32m+        Ipv4Packet, UdpDatagram,
+(B[m     },
+     pci::PciFunction,
+     sync::SpinLock,
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/arch/x86_64/e1000.rs:13:
+ use core::{
+     arch::asm,
+     ptr,
+[31m-    sync::atomic::{Ordering, compiler_fence},
+(B[m[32m+    sync::atomic::{compiler_fence, Ordering},
+(B[m };
+ 
+ const RX_COUNT: usize = 16;
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/arch/x86_64/e1000.rs:453:
+ 
+ pub fn tcp_next_hop(lease: DhcpLease, peer: [u8; 4]) -> Result<[u8; 6], u16> {
+     use carlio_os::linux_abi::{EAGAIN, EIO, ENETUNREACH};
+[31m-    let next_hop = ipv4_next_hop(lease.address, lease.subnet_mask, lease.router, peer)
+(B[m[31m-        .ok_or(ENETUNREACH)?;
+(B[m[32m+    let next_hop =
+(B[m[32m+        ipv4_next_hop(lease.address, lease.subnet_mask, lease.router, peer).ok_or(ENETUNREACH)?;
+(B[m     let _controller = CONTROLLER.try_lock().ok_or(EAGAIN)?;
+[31m-    resolve_neighbor(lease.address, next_hop).map_err(|_| EIO)?.ok_or(ENETUNREACH)
+(B[m[32m+    resolve_neighbor(lease.address, next_hop)
+(B[m[32m+        .map_err(|_| EIO)?
+(B[m[32m+        .ok_or(ENETUNREACH)
+(B[m }
+ 
+ /// Consulta o DNS do DHCP. O chamador deve manter o PIT ativo.
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/arch/x86_64/e1000.rs:480:
+     let (length, source_port) = prepare_dns_query(name, &mut query)?;
+     let mut controller = CONTROLLER.try_lock().ok_or(EAGAIN)?;
+     let now = super::idt::uptime_ticks();
+[31m-    if controller.next_process_dns_query.is_some_and(|next| now < next) {
+(B[m[32m+    if controller
+(B[m[32m+        .next_process_dns_query
+(B[m[32m+        .is_some_and(|next| now < next)
+(B[m[32m+    {
+(B[m         return Err(EAGAIN);
+     }
+     let answer = exchange_dns_a(lease, &query[..length], source_port);
+Diff in /home/gabriel/Work/Patmos/carlio-os/src/arch/x86_64/e1000.rs:576:
+     server: Option<[u8; 4]>,
+     frame: &mut [u8; BUFFER_SIZE],
+ ) -> Result<usize, KernelError> {
+[31m-    use carlio_os::net::{ETHERNET_HEADER_LEN, checksum};
+(B[m[32m+    use carlio_os::net::{checksum, ETHERNET_HEADER_LEN};
+(B[m     let bootp = 42;
+     frame.fill(0);
+     frame[..6].fill(0xff);

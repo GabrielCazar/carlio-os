@@ -487,14 +487,9 @@ impl<D: BlockDevice> Ext4Volume<D> {
             .partition_start
             .checked_add(block * (self.block_size / SECTOR_SIZE) as u64)
             .ok_or(Ext4Error::CorruptMetadata)?;
-        for index in 0..self.block_size / SECTOR_SIZE {
-            let mut sector = [0u8; SECTOR_SIZE];
-            self.device
-                .read_sector(first + index as u64, &mut sector)
-                .map_err(|_| Ext4Error::Device)?;
-            output[index * SECTOR_SIZE..(index + 1) * SECTOR_SIZE].copy_from_slice(&sector);
-        }
-        Ok(())
+        self.device
+            .read_sectors(first, output)
+            .map_err(|_| Ext4Error::Device)
     }
 }
 

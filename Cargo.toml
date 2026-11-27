@@ -48,3 +48,10 @@ chacha20poly1305 = { version = "0.10.1", default-features = false }
 embedded-graphics = { version = "0.8.1", default-features = false, optional = true }
 zeroize = { version = "1", default-features = false }
 
+
+[[example]]
+name = "install-service-tcp"
+path = "scripts/fixtures/install-service-tcp.rs"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"

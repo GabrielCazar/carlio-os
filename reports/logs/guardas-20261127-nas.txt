@@ -1,0 +1,3 @@
+/tmp/carlioos-guards.ZHlzy9d0
+Processador parado.Teste QEMU aprovado (kvm); log: guardas-20261127-nas-bios.log
+Processador parado.Teste QEMU aprovado (kvm); log: guardas-20261127-nas-uefi.log

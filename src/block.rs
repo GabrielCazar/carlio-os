@@ -15,8 +15,38 @@ pub enum BlockError {
 pub trait BlockDevice {
     fn sector_count(&self) -> u64;
     fn read_sector(&mut self, lba: u64, out: &mut [u8; SECTOR_SIZE]) -> Result<(), BlockError>;
+    /// Lê setores consecutivos em um buffer alinhado em tamanho de setor.
+    /// Valida o intervalo inteiro antes de emitir a primeira leitura.
+    fn read_sectors(&mut self, lba: u64, out: &mut [u8]) -> Result<(), BlockError> {
+        checked_sector_range(lba, out.len(), self.sector_count())?;
+        for (offset, sector) in out.as_chunks_mut::<SECTOR_SIZE>().0.iter_mut().enumerate() {
+            self.read_sector(lba + offset as u64, sector)?;
+        }
+        Ok(())
+    }
     fn write_sector(&mut self, lba: u64, data: &[u8; SECTOR_SIZE]) -> Result<(), BlockError>;
+    /// Validate the entire range before issuing writes. A device error can
+    /// leave a prefix written. Callers control durability through `flush`.
+    fn write_sectors(&mut self, lba: u64, data: &[u8]) -> Result<(), BlockError> {
+        checked_sector_range(lba, data.len(), self.sector_count())?;
+        for (offset, sector) in data.as_chunks::<SECTOR_SIZE>().0.iter().enumerate() {
+            self.write_sector(lba + offset as u64, sector)?;
+        }
+        Ok(())
+    }
     fn flush(&mut self) -> Result<(), BlockError>;
+}
+
+fn checked_sector_range(lba: u64, bytes: usize, device_sectors: u64) -> Result<(), BlockError> {
+    let sectors = bytes / SECTOR_SIZE;
+    if !bytes.is_multiple_of(SECTOR_SIZE)
+        || lba
+            .checked_add(sectors as u64)
+            .is_none_or(|end| end > device_sectors)
+    {
+        return Err(BlockError::OutOfRange);
+    }
+    Ok(())
 }
 
 /// A bounded view of one partition or reserved block range. LBAs exposed by
@@ -61,6 +91,11 @@ impl<D: BlockDevice> BlockDevice for BlockRegion<D> {
         self.device.read_sector(physical, out)
     }
 
+    fn read_sectors(&mut self, lba: u64, out: &mut [u8]) -> Result<(), BlockError> {
+        checked_sector_range(lba, out.len(), self.sectors)?;
+        self.device.read_sectors(self.start_lba + lba, out)
+    }
+
     fn write_sector(&mut self, lba: u64, data: &[u8; SECTOR_SIZE]) -> Result<(), BlockError> {
         let physical = self
             .start_lba
@@ -72,6 +107,11 @@ impl<D: BlockDevice> BlockDevice for BlockRegion<D> {
 
     fn flush(&mut self) -> Result<(), BlockError> {
         self.device.flush()
+    }
+
+    fn write_sectors(&mut self, lba: u64, data: &[u8]) -> Result<(), BlockError> {
+        checked_sector_range(lba, data.len(), self.sectors)?;
+        self.device.write_sectors(self.start_lba + lba, data)
     }
 }
 
@@ -130,6 +170,15 @@ mod tests {
         let mut region = BlockRegion::new(disk, 4, 8).unwrap();
         region.write_sector(7, &[0x5a; SECTOR_SIZE]).unwrap();
         assert_eq!(region.device.last_write, Some(11));
+        let mut sectors = [0; SECTOR_SIZE * 2];
+        region.read_sectors(6, &mut sectors).unwrap();
+        assert_eq!(sectors[..SECTOR_SIZE], [0; SECTOR_SIZE]);
+        assert_eq!(sectors[SECTOR_SIZE..], [0x5a; SECTOR_SIZE]);
+        assert_eq!(
+            region.read_sectors(7, &mut sectors),
+            Err(BlockError::OutOfRange)
+        );
+        assert_eq!(sectors[..SECTOR_SIZE], [0; SECTOR_SIZE]);
         assert_eq!(
             region.read_sector(8, &mut [0; SECTOR_SIZE]),
             Err(BlockError::OutOfRange)
@@ -138,6 +187,20 @@ mod tests {
             region.write_sector(u64::MAX, &[0; SECTOR_SIZE]),
             Err(BlockError::OutOfRange)
         );
+        sectors.fill(0x6b);
+        assert_eq!(
+            region.write_sectors(7, &sectors),
+            Err(BlockError::OutOfRange)
+        );
+        assert_eq!(
+            region.write_sectors(6, &sectors[..513]),
+            Err(BlockError::OutOfRange)
+        );
+        assert_eq!(region.device.sectors[11], [0x5a; SECTOR_SIZE]);
+        region.write_sectors(6, &sectors).unwrap();
+        assert_eq!(region.device.sectors[10], [0x6b; SECTOR_SIZE]);
+        assert_eq!(region.device.sectors[11], [0x6b; SECTOR_SIZE]);
+        assert_eq!(region.device.sectors[12], [0; SECTOR_SIZE]);
         assert_eq!(
             BlockRegion::new(region.into_inner(), u64::MAX, 2).err(),
             Some(BlockError::OutOfRange)

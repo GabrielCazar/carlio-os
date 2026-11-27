@@ -2,6 +2,7 @@
 """Valida swap cifrado e persistência entre boots em imagem RAW descartável."""
 
 import argparse
+import hashlib
 import os
 import selectors
 import shutil
@@ -15,7 +16,7 @@ from pathlib import Path
 from provision_storage import provision
 
 
-def boot(qemu, command, marker, timeout, log, cut=False, swap_disabled=False, steps=(), verify=None):
+def boot(qemu, command, marker, timeout, log, cut=False, swap_disabled=False, steps=(), verify=None, after_verify=None):
     process = subprocess.Popen(
         qemu, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT, bufsize=0,
@@ -55,6 +56,10 @@ def boot(qemu, command, marker, timeout, log, cut=False, swap_disabled=False, st
                         break
                     if verify:
                         verify()
+                        verify = None
+                        if after_verify:
+                            marker = after_verify
+                            continue
                     return
                 if b"teste falhou." in output:
                     break
@@ -304,9 +309,22 @@ def main():
                 checksum = disk.read(1)
                 disk.seek(-1, os.SEEK_CUR)
                 disk.write(bytes([checksum[0] ^ 1]))
-            boot(qemu, b"vfs-teste-ler", "VFS: dados e permissões anteriores recuperados.".encode(),
-                 args.timeout, args.log_dir / f"fase3-vfs-{mode}-recuperar.log")
-            print(f"{mode}: overlay VFS recuperou dados e metadados")
+            with image.open("rb") as disk:
+                checksum_before = hashlib.file_digest(disk, "sha256").digest()
+            log = args.log_dir / f"fase3-vfs-{mode}-recuperar.log"
+            boot(qemu, b"vfs-teste-alterar", b"VFS: teste falhou.",
+                 args.timeout, log, swap_disabled=True)
+            boot_log = log.read_bytes()
+            for marker in (
+                "VFS: snapshot de recuperação disponível; montagem e contas bloqueadas.",
+                "VFS: reserva persistente recusada; alterações bloqueadas.",
+            ):
+                if marker.encode() not in boot_log:
+                    raise SystemExit(f"Bloqueio do overlay ausente. Consulte {log}.")
+            with image.open("rb") as disk:
+                if hashlib.file_digest(disk, "sha256").digest() != checksum_before:
+                    raise SystemExit(f"Overlay degradado sofreu alteração. Consulte {log}.")
+            print(f"{mode}: cabeçalho interrompido detectado e overlay degradado protegido")
             return
         if args.filesystem:
             label = f"fase3-{args.filesystem}-{mode}" + ("-meta" if args.metadata else "")

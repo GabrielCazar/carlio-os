@@ -15,6 +15,11 @@ mkdir "$fixture/root"
 
 linux_rootfs=${CARLIO_TEST_LINUX_ROOTFS:-}
 pegasus_root=${CARLIO_TEST_PEGASUS_ROOT:-}
+app_root=${CARLIO_TEST_DISK_APP_ROOT:-}
+if [[ -n $app_root && ( -n $linux_rootfs || -n $pegasus_root || ${CARLIO_TEST_EXEC_FS:-ext4} != ext4 || ${CARLIO_TEST_EXEC_INTERP:-0} == 1 ) ]]; then
+  echo "CARLIO_TEST_DISK_APP_ROOT exige ext4 e é um perfil independente." >&2
+  exit 2
+fi
 if [[ -n $pegasus_root && ( -n $linux_rootfs || ${CARLIO_TEST_EXEC_FS:-ext4} != ext4 || ${CARLIO_TEST_EXEC_INTERP:-0} == 1 ) ]]; then
   echo "CARLIO_TEST_PEGASUS_ROOT exige ext4, sem rootfs ou interpretador alternativo." >&2
   exit 2
@@ -36,9 +41,19 @@ if [[ ${CARLIO_TEST_EXEC_INTERP:-0} == 1 ]]; then
   exec_args=(-pie --dynamic-linker /carlio-interpreter)
 fi
 
+volume_mib=64
 case ${CARLIO_TEST_EXEC_FS:-ext4} in
   ext4)
-    if [[ -n $pegasus_root ]]; then
+    if [[ -n $app_root ]]; then
+      test -x "$app_root/carlio-disk-exec"
+      cp -a "$app_root/." "$fixture/root/"
+      # Larger host dependency trees need space for data and ext4 metadata.
+      read -r payload_mib _ < <(du -sm --apparent-size -- "$fixture/root")
+      if (( payload_mib + 32 > volume_mib )); then
+        volume_mib=$((payload_mib + 32))
+      fi
+      expect=
+    elif [[ -n $pegasus_root ]]; then
       cargo +stable rustc --manifest-path "$pegasus_root/Cargo.toml" --locked \
         --package pegasusd --features directory-diagnostic --release --target x86_64-unknown-linux-gnu \
         --target-dir "$fixture/pegasus-target" -- -C strip=symbols -C link-arg=-Wl,-rpath,/lib64
@@ -74,18 +89,19 @@ case ${CARLIO_TEST_EXEC_FS:-ext4} in
       printf B | dd of="$fixture/root/mmap-window" bs=1 seek=65536 conv=notrunc status=none
       mkdir -m 0700 "$fixture/root/carlio-privado"
       cp "$fixture/root/carlio-disk-exec" "$fixture/root/carlio-privado/probe"
+      install -m 0444 "$fixture/root/carlio-disk-exec" "$fixture/root/carlio-read-only"
       expect=--expect-disk-exec
     fi
-    truncate -s 64M "$fixture/volume"
+    truncate -s "${volume_mib}M" "$fixture/volume"
     mkfs.ext4 -q -F -O '^flex_bg,^metadata_csum_seed,^orphan_file' \
       -d "$fixture/root" "$fixture/volume"
-    if [[ -z $linux_rootfs && -z $pegasus_root ]]; then
+    if [[ -z $linux_rootfs && -z $pegasus_root && -z $app_root ]]; then
       debugfs -w -R "set_inode_field /carlio-privado uid 0" "$fixture/volume"
     fi
     partition_type=83
     ;;
   fat32)
-    truncate -s 64M "$fixture/volume"
+    truncate -s "${volume_mib}M" "$fixture/volume"
     mkfs.fat -F 32 "$fixture/volume"
     printf "CarlioOS SATA FAT32\n" > "$fixture/probe.bin"
     mcopy -i "$fixture/volume" "$fixture/probe.bin" ::/probe.bin
@@ -98,16 +114,16 @@ case ${CARLIO_TEST_EXEC_FS:-ext4} in
     ;;
 esac
 
-truncate -s 65M "$fixture/disk.raw"
+truncate -s "$((volume_mib + 1))M" "$fixture/disk.raw"
 sfdisk --quiet "$fixture/disk.raw" <<MBR
 label: dos
-start=2048,size=131072,type=$partition_type
+start=2048,size=$((volume_mib * 2048)),type=$partition_type
 MBR
 dd if="$fixture/volume" of="$fixture/disk.raw" bs=1M seek=1 conv=notrunc status=none
 qemu-img convert -f raw -O qcow2 "$fixture/disk.raw" "$fixture/disk.qcow2"
 
 python3 "$scripts_dir/qemu-smoke.py" --iso "$iso" --log "$log" \
-  --disk-image "$fixture/disk.qcow2" "$expect" "$@"
+  --disk-image "$fixture/disk.qcow2" ${expect:+"$expect"} "$@"
 
 if [[ ${CARLIO_TEST_EXEC_INTERP:-0} == 1 ]]; then
   if ! grep -Fq 'execve: PT_INTERP e auxv verificados em CPL3' "$log"; then

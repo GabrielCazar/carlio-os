@@ -106,6 +106,9 @@ fn provision() -> Result<(), String> {
     let region = reserve.vfs(image).map_err(|e| error(&e))?;
     let mut snapshot = vec![0; Overlay::SNAPSHOT_MAX];
     let (mut store, len) = VfsStore::open(region, &mut snapshot).map_err(|e| error(&e))?;
+    if store.recovery_only() {
+        return Err("Overlay degradado. Preserve a imagem antes de recuperar as contas.".into());
+    }
     let mut vfs = OVERLAY.lock().map_err(|e| error(&e))?;
     if len == 0 {
         vfs.create_fhs_layout().map_err(|e| error(&e))?;

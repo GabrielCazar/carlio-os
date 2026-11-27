@@ -8,8 +8,32 @@ done
 host=${CARLIO_TEST_SSH_TARGET:-nas-manjaro}
 stamp=$(date -u +%Y%m%d-%H%M%S)
 phase=${CARLIO_TEST_PHASE:-fase-1}
-iso=${CARLIO_TEST_ISO:-$root_dir/build/carlio-os.iso}
 qemu_only=${CARLIO_TEST_QEMU_ONLY:-0}
+tcp_blocking=${CARLIO_TEST_TCP_BLOCKING:-0}
+services=${CARLIO_TEST_SERVICES:-0}
+default_iso=$root_dir/build/carlio-os.iso
+if [[ ${CARLIO_TEST_STORAGE:-0} == 1 ]]; then
+  default_iso=$root_dir/build/carlio-os-storage-test.iso
+elif [[ $tcp_blocking == 1 ]]; then
+  default_iso=$root_dir/build/carlio-os-disk-exec-test.iso
+fi
+iso=${CARLIO_TEST_ISO:-$default_iso}
+if [[ $services != 0 && $services != 1 ]]; then
+  echo "CARLIO_TEST_SERVICES deve ser 0 ou 1." >&2
+  exit 2
+fi
+if [[ $services == 1 && ($tcp_blocking == 1 || ${CARLIO_TEST_STORAGE:-0} == 1 || $qemu_only == 1) ]]; then
+  echo "CARLIO_TEST_SERVICES requer Cargo e deve ser executado em separado." >&2
+  exit 2
+fi
+if [[ $tcp_blocking != 0 && $tcp_blocking != 1 ]]; then
+  echo "CARLIO_TEST_TCP_BLOCKING deve ser 0 ou 1." >&2
+  exit 2
+fi
+if [[ $tcp_blocking == 1 && ${CARLIO_TEST_STORAGE:-0} == 1 ]]; then
+  echo "Execute CARLIO_TEST_TCP_BLOCKING e CARLIO_TEST_STORAGE separadamente." >&2
+  exit 2
+fi
 [[ $qemu_only == 0 || $qemu_only == 1 ]] || {
   echo "CARLIO_TEST_QEMU_ONLY deve ser 0 ou 1." >&2
   exit 2
@@ -19,9 +43,11 @@ qemu_memory=${CARLIO_TEST_QEMU_MEMORY:-512M}
   echo "CARLIO_TEST_QEMU_MEMORY deve ter formato como 512M, 5G ou 32G." >&2
   exit 2
 }
-remote_dir="/tmp/carlioos-test-$stamp-$$"
-vm_disk=${CARLIO_TEST_VM_DISK:-$remote_dir/disk.qcow2}
+vm_disk=${CARLIO_TEST_VM_DISK:-}
 disk_size=40G
+if [[ $tcp_blocking == 1 || $services == 1 ]]; then
+  disk_size=20G
+fi
 if [[ ${CARLIO_TEST_STORAGE_2T:-0} == 1 ]]; then
   if [[ ${CARLIO_TEST_STORAGE:-0} != 1 || -n ${CARLIO_TEST_VM_DISK:-} ]]; then
     echo "CARLIO_TEST_STORAGE_2T requer CARLIO_TEST_STORAGE=1 e o disco descartável do runner." >&2
@@ -29,7 +55,7 @@ if [[ ${CARLIO_TEST_STORAGE_2T:-0} == 1 ]]; then
   fi
   disk_size=2T
 fi
-[[ $vm_disk == /* && $vm_disk != *"'"* && $vm_disk != *$'\n'* ]] || {
+[[ -z $vm_disk || ($vm_disk == /* && $vm_disk != *"'"* && $vm_disk != *$'\n'*) ]] || {
   echo "CARLIO_TEST_VM_DISK deve ser um caminho absoluto sem aspas simples ou quebras de linha." >&2
   exit 2
 }
@@ -37,6 +63,7 @@ archive="$root_dir/build/carlioos-source-$stamp.tar.gz"
 report_dir="$root_dir/reports/logs"
 report="$report_dir/$phase-nas-$stamp.txt"
 firmware=${CARLIO_TEST_OVMF:-/usr/share/edk2/x64/OVMF_CODE.4m.fd}
+firmware_vars=${CARLIO_TEST_OVMF_VARS:-${firmware%/*}/OVMF_VARS.4m.fd}
 ssh_config_arg=()
 if [[ -n ${CARLIO_TEST_SSH_CONFIG:-} ]]; then
   ssh_config_arg=(-F "$CARLIO_TEST_SSH_CONFIG")
@@ -45,8 +72,11 @@ elif [[ ( $host == nas-manjaro || $host == nas-manjaro-cabo ) && -f $HOME/.ssh/c
 fi
 mkdir -p "$root_dir/build" "$report_dir"
 
+remote_dir=
 cleanup() {
-  ssh "${ssh_config_arg[@]}" -o BatchMode=yes "$host" "rm -rf '$remote_dir'" >/dev/null 2>&1 || true
+  if [[ -n $remote_dir ]]; then
+    ssh "${ssh_config_arg[@]}" -o BatchMode=yes "$host" "rm -rf '$remote_dir'" >/dev/null 2>&1 || true
+  fi
   rm -f "$archive"
 }
 trap cleanup EXIT
@@ -55,6 +85,19 @@ test -s "$iso" || {
   echo "ISO ausente em $iso; execute scripts/build-iso.sh antes." >&2
   exit 1
 }
+
+run_path=$(ssh "${ssh_config_arg[@]}" -o BatchMode=yes "$host" '
+  set -eu
+  umask 077
+  mktemp -d /tmp/carlioos-test.XXXXXXXXXX
+')
+[[ $run_path =~ ^/tmp/carlioos-test\.[a-zA-Z0-9]{10}$ ]] || {
+  echo "O NAS devolveu um caminho de teste inválido." >&2
+  exit 1
+}
+remote_dir=$run_path
+vm_disk=${vm_disk:-$remote_dir/disk.qcow2}
+echo "Diretório de teste no NAS: $remote_dir"
 
 tar -czf "$archive" -C "$root_dir" \
   --exclude='./target' --exclude='./build' --exclude='./.git' \
@@ -94,6 +137,20 @@ ssh "${ssh_config_arg[@]}" -o BatchMode=yes "$host" "
     cargo run --locked --bin herm-fs -- status
   fi
   boot_failed=0
+  if test '$services' = 1; then
+    test -f '$firmware_vars'
+    export PYTHONDONTWRITEBYTECODE=1
+    python3 scripts/test-service-qemu.py '$remote_dir/carlio-os.iso' '$remote_dir/qemu-kvm-bios.log' --accel kvm --scratch-disk '$vm_disk' || boot_failed=1
+    python3 scripts/test-service-qemu.py '$remote_dir/carlio-os.iso' '$remote_dir/qemu-kvm-uefi.log' --accel kvm --scratch-disk '$vm_disk' --firmware '$firmware' --vars '$firmware_vars' || boot_failed=1
+    exit \$boot_failed
+  fi
+  if test '$tcp_blocking' = 1; then
+    test -f '$firmware_vars'
+    export PYTHONDONTWRITEBYTECODE=1
+    python3 scripts/test-tcp-qemu.py '$remote_dir/carlio-os.iso' '$remote_dir/qemu-kvm-bios.log' --blocking --accel kvm --scratch-disk '$vm_disk' || boot_failed=1
+    python3 scripts/test-tcp-qemu.py '$remote_dir/carlio-os.iso' '$remote_dir/qemu-kvm-uefi.log' --blocking --accel kvm --scratch-disk '$vm_disk' --firmware '$firmware' --vars '$firmware_vars' || boot_failed=1
+    exit \$boot_failed
+  fi
   python3 scripts/qemu-smoke.py --iso '$remote_dir/carlio-os.iso' --disk-image '$vm_disk' --accel kvm --memory '$qemu_memory' --timeout 25 --log '$remote_dir/qemu-kvm-bios.log' || boot_failed=1
   python3 scripts/qemu-smoke.py --iso '$remote_dir/carlio-os.iso' --disk-image '$vm_disk' --accel kvm --firmware '$firmware' --memory '$qemu_memory' --timeout 35 --log '$remote_dir/qemu-kvm-uefi.log' || boot_failed=1
   exit \$boot_failed

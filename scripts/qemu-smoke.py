@@ -5,11 +5,23 @@ import argparse
 import os
 import selectors
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
 import time
 from pathlib import Path
+
+
+def snapshot_drive(image: Path, image_format: str, overlay: Path) -> str:
+    """Keep guest writes in a qcow2 overlay with an explicit temporary location."""
+    subprocess.run(
+        ["qemu-img", "create", "-q", "-f", "qcow2", "-F", image_format,
+         "-b", str(image.resolve()), str(overlay)],
+        check=True,
+    )
+    drive_path = str(overlay).replace(",", ",,")
+    return f"if=ide,format=qcow2,file={drive_path}"
 
 
 def main() -> int:
@@ -35,6 +47,10 @@ def main() -> int:
                         help="exige saída do ELF CPL3 carregado do disco por execve")
     parser.add_argument("--expect-linux-uname", action="store_true",
                         help="exige que um uname com glibc escreva Linux no serial")
+    parser.add_argument("--expect-openssh", nargs="?", const="version", choices=("version", "config", "listen", "banner"),
+                        help="exige a versão, a configuração efetiva ou a abertura do listener ou banner TCP do sshd")
+    parser.add_argument("--expect-package-version", choices=("smbd", "pacman"),
+                        help="exige saída de versão e status zero em CPL3")
     parser.add_argument("--expect-pegasus", action="store_true",
                         help="exige que pegasusd conclua as operações locais de diretório e saia com status zero")
     parser.add_argument("--expect-lockdown", choices=("none", "integrity", "confidentiality"),
@@ -58,14 +74,23 @@ def main() -> int:
         parser.error("--expect-disk-exec exige --disk-image")
     if args.expect_linux_uname and not args.disk_image:
         parser.error("--expect-linux-uname exige --disk-image")
-    if args.expect_pegasus and not args.disk_image:
-        parser.error("--expect-pegasus exige --disk-image")
+    if args.expect_openssh and not args.disk_image:
+        parser.error("--expect-openssh exige --disk-image")
+    if (args.expect_pegasus or args.expect_package_version) and not args.disk_image:
+        parser.error("provas de Pegasus DS e pacotes exigem --disk-image")
     if args.expect_pegasus and (args.expect_disk_exec or args.expect_linux_uname or args.expect_disk_read):
         parser.error("--expect-pegasus é um modo de execução de disco independente")
     if args.expect_disk_read and not args.disk_image:
         parser.error("--expect-disk-read exige --disk-image")
     if args.expect_rootfs and not args.herm_image:
         parser.error("--expect-rootfs exige --herm-image")
+
+    network = "user,id=net0"
+    if args.expect_openssh == "banner":
+        with socket.socket() as reserved:
+            reserved.bind(("127.0.0.1", 0))
+            banner_port = reserved.getsockname()[1]
+        network += f",hostfwd=tcp:127.0.0.1:{banner_port}-:2222"
 
     command = [
         "qemu-system-x86_64",
@@ -74,7 +99,7 @@ def main() -> int:
         "-m", args.memory,
         "-smp", str(args.cpus),
         "-nic", "none",
-        "-netdev", "user,id=net0",
+        "-netdev", network,
         "-device", "e1000e,netdev=net0",
         "-serial", "stdio",
         "-monitor", "none",
@@ -82,14 +107,17 @@ def main() -> int:
         "-no-reboot",
         "-no-shutdown",
     ]
-    if args.expect_linux_uname or args.expect_pegasus:
+    if args.expect_linux_uname or args.expect_pegasus or args.expect_openssh or args.expect_package_version:
         command.extend(("-cpu", "host" if args.accel == "kvm" else "max"))
+    snapshots = None
+    if args.boot_image or args.disk_image:
+        args.log.parent.mkdir(parents=True, exist_ok=True)
+        snapshots = tempfile.TemporaryDirectory(prefix="carlio-qemu-", dir=args.log.parent)
     if args.iso:
         command.extend(("-cdrom", str(args.iso.resolve()), "-boot", "d"))
     else:
-        image = args.boot_image.resolve()
-        drive_path = str(image).replace(",", ",,")
-        command.extend(("-drive", f"if=ide,format=raw,file={drive_path},snapshot=on", "-boot", "c"))
+        boot_drive = snapshot_drive(args.boot_image, "raw", Path(snapshots.name) / "boot.qcow2")
+        command.extend(("-drive", boot_drive, "-boot", "c"))
     vars_copy = None
     if args.firmware:
         code_image = args.firmware.resolve()
@@ -113,7 +141,8 @@ def main() -> int:
         image_path = args.disk_image.resolve()
         if not image_path.is_file():
             parser.error(f"imagem de disco ausente: {image_path}")
-        command.extend(("-drive", f"if=ide,format=qcow2,file={image_path},snapshot=on"))
+        data_drive = snapshot_drive(image_path, "qcow2", Path(snapshots.name) / "data.qcow2")
+        command.extend(("-drive", data_drive))
     if args.qemu_debug_log:
         args.qemu_debug_log.parent.mkdir(parents=True, exist_ok=True)
         command.extend(("-d", "int", "-D", str(args.qemu_debug_log.resolve())))
@@ -142,17 +171,27 @@ def main() -> int:
         ("Sistema operacional experimental x86_64 escrito em Rust.".encode(), b"parar\r"),
         ("Processador parado.".encode(), None),
     )
+    application_result = None
     if args.expect_pegasus:
+        application_result = "Pegasus DS: operações locais de diretório verificadas.".encode()
+    elif args.expect_package_version:
+        application_result = {"smbd": b"Version ", "pacman": b"Pacman v"}[args.expect_package_version]
+    if application_result:
         checks = (
-            ("Pegasus DS: operações locais de diretório verificadas.".encode(), None),
+            (application_result, None),
             (b"Runtime: prova de execve encerrou com status=0.", None),
         )
-    pegasus_offset = 0
+    elif args.expect_openssh in ("listen", "banner"):
+        checks = ((b"Server listening on 0.0.0.0 port 2222.", None),)
+    application_offset = 0
     deadline = time.monotonic() + args.timeout
+    banner = b""
 
     try:
         while stage < len(checks) and time.monotonic() < deadline:
             for key, _ in selector.select(timeout=0.25):
+                if stage == len(checks):
+                    break
                 chunk = os.read(key.fileobj.fileno(), 4096)
                 if not chunk:
                     continue
@@ -167,24 +206,50 @@ def main() -> int:
                 else:
                     errors.extend(chunk)
                     haystack = bytes(errors)
-                if args.expect_pegasus:
+                if application_result:
                     if key.data == "serial":
                         while stage < len(checks):
                             expected, _ = checks[stage]
-                            position = haystack.find(expected, pegasus_offset)
+                            position = haystack.find(expected, application_offset)
                             if position < 0:
                                 break
-                            pegasus_offset = position + len(expected)
+                            application_offset = position + len(expected)
                             stage += 1
                     continue
                 expected, response = checks[stage]
-                if expected in haystack:
+                if key.data == "serial" and expected in haystack:
                     if response:
                         process.stdin.write(response)
                         process.stdin.flush()
                     stage += 1
             if process.poll() is not None and stage < len(checks):
                 break
+        if args.expect_openssh == "banner" and stage == len(checks):
+            try:
+                with socket.create_connection(("127.0.0.1", banner_port), timeout=5) as client:
+                    client.setblocking(False)
+                    selector.register(client, selectors.EVENT_READ, "client")
+                    while len(banner) < 256 and b"\n" not in banner:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            break
+                        for key, _ in selector.select(timeout=min(0.25, remaining)):
+                            chunk = os.read(key.fileobj.fileno(), 4096)
+                            if not chunk:
+                                selector.unregister(key.fileobj)
+                                if key.data == "client":
+                                    remaining = 0
+                                    break
+                                continue
+                            if key.data == "client":
+                                banner += chunk[:256 - len(banner)]
+                            else:
+                                (output if key.data == "serial" else errors).extend(chunk)
+                        if remaining == 0 or process.poll() is not None:
+                            break
+                    banner = banner.splitlines(keepends=True)[0] if banner else b""
+            except OSError as error:
+                errors.extend(f"Falha na leitura do banner SSH: {error}\n".encode())
     finally:
         if process.poll() is None:
             process.terminate()
@@ -198,6 +263,8 @@ def main() -> int:
         selector.close()
         if vars_copy and os.path.exists(vars_copy):
             os.unlink(vars_copy)
+        if snapshots:
+            snapshots.cleanup()
 
     if stage != len(checks):
         sys.stderr.write(f"Falha no teste QEMU: etapa {stage + 1}/{len(checks)}. Log: {args.log}\n")
@@ -209,7 +276,9 @@ def main() -> int:
             b"execve: ELF do disco executado em CPL3" not in output
             or b"execve: SSE iniciado e preservado em CPL3" not in output
             or b"ABI Linux: stat, mutacoes e fsync verificados em CPL3" not in output
-            or b"ABI Linux: socket IPv4 e porta efemera verificados em CPL3" not in output):
+            or b"ABI Linux: permissoes VFS e ancestrais verificados em CPL3" not in output
+            or b"ABI Linux: socket IPv4 e porta efemera verificados em CPL3" not in output
+            or b"Runtime: prova de execve encerrou com status=0." not in output):
         sys.stderr.write(f"Validação de ELF, SSE, VFS ou sockets ausente em CPL3. Log: {args.log}\n")
         return 1
 
@@ -222,6 +291,32 @@ def main() -> int:
     if args.expect_pegasus:
         print(f"Operações locais do Pegasus DS em CPL3 concluídas com status zero. Log: {args.log}")
         return 0
+
+    if args.expect_package_version:
+        print(f"{args.expect_package_version} executou --version em CPL3 com status zero. Log: {args.log}")
+        return 0
+
+    if args.expect_openssh == "banner":
+        if not banner.startswith(b"SSH-2.0-OpenSSH_") or not banner.endswith(b"\r\n"):
+            sys.stderr.write(f"Banner OpenSSH ausente ou incompleto. Log: {args.log}\n")
+            return 1
+        print(f"Cliente TCP recebeu {banner.decode('ascii', errors='replace').strip()}. Log: {args.log}")
+        return 0
+
+    if args.expect_openssh == "listen":
+        print(f"OpenSSH abriu o listener IPv4 na porta 2222. Log: {args.log}")
+        return 0
+
+    if args.expect_openssh:
+        lines = bytes(output).splitlines()
+        if args.expect_openssh == "version":
+            expected_output = any(line.startswith(b"OpenSSH_") for line in lines)
+        else:
+            effective = {line.lower() for line in lines}
+            expected_output = {b"port 2222", b"hostkey /etc/ssh/probe_ed25519"} <= effective
+        if not expected_output or b"Runtime: prova de execve encerrou com status=0." not in output:
+            sys.stderr.write(f"Saída ou status zero de sshd ausente. Log: {args.log}\n")
+            return 1
 
     if args.expect_disk_read and (
             "VFS: rootfs montado em / para leitura".encode() not in output
@@ -238,6 +333,8 @@ def main() -> int:
             return 1
 
     expected_signatures = (
+        "Pilhas do kernel: páginas de guarda instaladas=517.".encode(),
+        "IRQ stack: pilha por CPU e duas fatias aninhadas passaram.".encode(),
         b"SATA/AHCI", b" v\xc3\xaddeo", b" rede",
         b"NIC Intel 82574L: filas DMA TX/RX ativas",
         b"DHCP IPv4: concessao recebida",
@@ -264,9 +361,9 @@ def main() -> int:
     )
     # Each unmodified probe owns two user pages and four page-table pages.
     # The disk workload replaces the first probe's address space.
-    memory_probe = b"2/4/6/4096/16385"
+    memory_probe = b"2/4/6/16384/65537"
     memory_prefix = "Memória user por processo (folhas/tabelas/total/limite-folhas/limite-total): ".encode()
-    if args.expect_disk_exec or args.expect_linux_uname:
+    if args.expect_disk_exec or args.expect_linux_uname or args.expect_openssh:
         memory_signature = b" " + b" ".join((memory_probe,) * 2)
     else:
         memory_signature = memory_prefix + b" ".join((memory_probe,) * 3)

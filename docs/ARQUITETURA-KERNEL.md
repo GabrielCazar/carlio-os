@@ -92,24 +92,20 @@ ao layout, o allocator físico reserva frames contíguos e o kernel os anexa
 ao heap via HHDM. Novas arenas podem ocupar várias páginas e permanecem
 disponíveis para reúso após a liberação dos blocos.
 
-IRQs salvam o frame na pilha interrompida e usam uma pilha de 64 KiB por CPU,
-com quatro fatias de 16 KiB. `SYSCALL` e `int 0x80` das tarefas escalonadas
+IRQs salvam o frame na pilha interrompida e usam quatro fatias de 16 KiB por
+CPU, cada uma com uma página inferior de guarda. `SYSCALL` e `int 0x80` das tarefas escalonadas
 executam na pilha da tarefa. O diagnóstico `stack-watermark` registra a marca
 acumulada observada após cada tipo de entrada. Nos APs de stress, a varredura
 ocorre ao fim da carga para reduzir interferência. A marca inclui a execução
 da instrumentação, e o build padrão mantém a medição desabilitada.
 
-Cada tarefa tem uma pilha de kernel de 128 KiB. O caminho de `execve` de disco
-excedeu a reserva anterior de 64 KiB durante a validação. A pool ainda usa armazenamento estático
-contíguo e, portanto, não tem guard pages. O próximo desenho deve reservar uma
-faixa virtual exclusiva por pilha, mapear frames físicos somente na região de
-uso e deixar ao menos uma página inferior sem mapeamento. A pilha de IRQ por CPU
-já é separada da pilha da tarefa e deve continuar independente. A migração
-depende de um alocador de frames de kernel com rollback, uma faixa virtual que
-não colida com os mapeamentos Limine/HHDM, teardown após quiescência de todas as
-CPUs que possam usar a pilha e diagnóstico de #PF que identifique guard-page
-faults. Até esses contratos estarem ligados, as pilhas atuais permanecem sem
-proteção por guarda virtual.
+Cada tarefa tem uma pilha de kernel estática de 128 KiB. O BSP remove o
+mapeamento de uma página abaixo de cada pilha antes de iniciar os APs e
+criar raízes de paginação de usuário. A proteção cobre as pilhas de boot,
+de lançamento, de tarefas, de entrada RSP0, de IRQ e de double fault. As
+raízes de usuário compartilham esses mapeamentos superiores com o kernel.
+O perfil `crash-test` verifica a entrega de double fault pela IST quando
+uma escrita ultrapassa a base da pilha do BSP.
 
 O descritor `Process` carrega um manifesto `ProcessResourceBundle` com token
 para VM no backend, raiz CR3 e stack user. Syscalls e reaper consultam o

@@ -1,0 +1,79 @@
+   Compiling cfg-if v1.0.5
+   Compiling libc v0.2.191
+   Compiling proc-macro2 v1.0.107
+   Compiling getrandom v0.3.4
+   Compiling unicode-ident v1.0.27
+   Compiling quote v1.0.47
+   Compiling find-msvc-tools v0.1.15
+   Compiling shlex v2.0.1
+   Compiling cc v1.11.3
+   Compiling thiserror v2.0.21
+   Compiling zerocopy v0.8.66
+   Compiling arrayvec v0.7.8
+   Compiling bitflags v2.13.2
+   Compiling syn v3.0.10
+   Compiling arrayref v0.3.9
+   Compiling constant_time_eq v0.3.1
+   Compiling rand_core v0.9.5
+   Compiling autocfg v1.5.1
+   Compiling xxhash-rust v0.8.21
+   Compiling num-traits v0.2.19
+   Compiling rustix v1.1.6
+   Compiling blake3 v1.8.2
+   Compiling rand v0.9.5
+   Compiling rand_xorshift v0.4.0
+   Compiling lazy_static v1.5.1
+   Compiling linux-raw-sys v0.12.1
+   Compiling regex-syntax v0.8.12
+   Compiling unarray v0.1.4
+   Compiling thiserror-impl v2.0.21
+   Compiling pegasus-fs v0.1.0-dev (/home/gabriel/Work/Patmos/pegasus_fs/crates/pegasus-fs)
+   Compiling ppv-lite86 v0.2.21
+   Compiling fastrand v2.5.0
+   Compiling rand_chacha v0.9.0
+   Compiling once_cell v1.21.4
+   Compiling proptest v1.7.0
+   Compiling tempfile v3.27.0
+   Compiling pegasus-fs-daemon v0.1.0-dev (/home/gabriel/Work/Patmos/pegasus_fs/crates/pegasus-fs-daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 28.83s
+     Running unittests src/lib.rs (/tmp/carlio-pegasus-fs-target/debug/build/pegasus-fs/21e69466e9564912/out/pegasus_fs-21e69466e9564912)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/superblock.rs (/tmp/carlio-pegasus-fs-target/debug/build/pegasus-fs/e2396bd0c11e7eaa/out/superblock-e2396bd0c11e7eaa)
+
+running 6 tests
+test preserves_v1_disk_layout ... ok
+test chooses_b_after_interrupted_commit_and_rejects_rollback ... ok
+test falls_back_to_intact_copy_and_reports_checksum_disagreement ... ok
+test rejects_conflicting_copies_and_future_format ... ok
+test rejects_any_single_byte_damage ... ok
+test selects_maximum_generation ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.31s
+
+     Running unittests src/lib.rs (/tmp/carlio-pegasus-fs-target/debug/build/pegasus-fs-daemon/c5f9b1adcb3c4b93/out/pegasus_fs_daemon-c5f9b1adcb3c4b93)
+
+running 5 tests
+test image::tests::recovers_after_partial_write_to_a ... ok
+test image::tests::recovers_after_partial_write_to_b ... ok
+test image::tests::reopens_image_with_both_copies_at_the_new_generation ... ok
+test image::tests::refuses_existing_path_and_nonsequential_generation ... ok
+test image::tests::uses_a_when_b_is_truncated_and_rejects_two_truncated_copies ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+   Doc-tests pegasus_fs
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests pegasus_fs_daemon
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

@@ -98,3 +98,13 @@ persistência. São validações de modelo host; ainda faltam persistência de
 contas/processos no kernel e boot físico. RTL8111/I219-LM estão identificadas;
 drivers Ethernet físicos RTL8111/I219, TCP, DNS e serviços de rede continuam
 pendentes. O polling QEMU está documentado acima.
+
+Em 26/11/2026, o inventário do NAS em funcionamento confirmou AHCI
+`8086:1c02` rev. 05 com o driver Linux `ahci` e RTL8111 `10ec:8168`
+rev. 15 com `r8169`. A Ethernet reportou link ativo. O host tinha dois
+discos com partições montadas e um dispositivo que reportava 0 B. A prova
+física do CarlioOS começa pelo boot do perfil `physical-test`, que omite
+a inicialização do armazenamento persistente. A prova de escrita e
+recuperação exige um disco descartável identificado antes do boot. A
+validação de TX/RX e DHCP na RTL8111 depende do driver CarlioOS para esse
+controlador.

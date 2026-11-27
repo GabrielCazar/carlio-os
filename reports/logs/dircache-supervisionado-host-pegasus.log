@@ -1,0 +1,20 @@
+   Compiling pegasus-protocol v0.1.0 (/home/gabriel/Work/Patmos/pegasus_ds/crates/protocol)
+   Compiling pegasus-domain v0.1.0 (/home/gabriel/Work/Patmos/pegasus_ds/crates/domain)
+   Compiling rustix v1.1.4
+   Compiling bitflags v2.13.2
+   Compiling pegasus-core v0.1.0 (/home/gabriel/Work/Patmos/pegasus_ds/crates/pegasus-core)
+   Compiling linux-raw-sys v0.12.1
+   Compiling pegasus-ldap v0.1.0 (/home/gabriel/Work/Patmos/pegasus_ds/crates/pegasus-ldap)
+   Compiling pegasusd v0.1.0 (/home/gabriel/Work/Patmos/pegasus_ds/services/pegasusd)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.28s
+     Running unittests src/main.rs (/tmp/carlioos-pegasus.hHzDVnpB/ds-test/debug/build/pegasusd/f712e790092f627f/out/pegasusd-f712e790092f627f)
+
+running 5 tests
+test diagnostic::tests::local_directory_diagnostic ... ok
+test dircache::tests::preserves_kernel_ticket_and_returns_explicit_identity ... ok
+test dircache::tests::rejects_bad_frames_and_privileged_or_ambiguous_mappings ... ok
+test dircache::tests::serves_one_record_over_seqpacket ... ok
+test checkpoint::tests::retains_committed_checkpoint_after_interrupted_write ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

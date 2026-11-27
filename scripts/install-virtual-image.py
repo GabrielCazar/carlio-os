@@ -47,17 +47,23 @@ def main() -> None:
             if input("Digite o caminho de destino exibido para confirmar.\n> ") != str(destination):
                 raise ValueError("Confirmação divergente. Operação cancelada.")
             source.seek(0)
-            with tempfile.NamedTemporaryFile(
-                dir=destination.parent, prefix=".carlio-", mode="w+b"
-            ) as temporary:
-                shutil.copyfileobj(source, temporary)
-                temporary.flush()
-                temporary.seek(0)
-                if hashlib.file_digest(temporary, "sha256").hexdigest() != digest:
-                    raise ValueError("A origem mudou durante a cópia.")
-                os.fsync(temporary.fileno())
-                # Publish the verified file atomically and fail if the destination appeared.
-                os.link(temporary.name, destination)
+            parent_fd = os.open(destination.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                with tempfile.NamedTemporaryFile(
+                    dir=destination.parent, prefix=".carlio-", mode="w+b"
+                ) as temporary:
+                    shutil.copyfileobj(source, temporary)
+                    temporary.flush()
+                    temporary.seek(0)
+                    if hashlib.file_digest(temporary, "sha256").hexdigest() != digest:
+                        raise ValueError("A origem mudou durante a cópia.")
+                    os.fsync(temporary.fileno())
+                    # Publish without overwriting a destination created concurrently.
+                    os.link(temporary.name, destination.name, dst_dir_fd=parent_fd)
+                # Ensure the verified destination survives a restart after success.
+                os.fsync(parent_fd)
+            finally:
+                os.close(parent_fd)
     except (OSError, ValueError, EOFError) as error:
         parser.exit(1, f"{error}\n")
     print(f"Imagem virtual criada em {destination}")

@@ -19,7 +19,8 @@ pub fn tcp_closed_port_reply(
     const RST: u8 = 0x04;
     const ACK: u8 = 0x10;
 
-    let (peer_mac, peer_ip, request) = local_tcp(frame, mac, address, mask)?;
+    let (peer_mac, peer_ip, request) = local_tcp(frame, mac, address)?;
+    ipv4_next_hop(address, Some(mask), None, peer_ip)?;
     if request.flags & RST != 0 || is_listening(request.destination_port) {
         return None;
     }
@@ -49,7 +50,6 @@ fn local_tcp(
     frame: &[u8],
     mac: [u8; 6],
     address: [u8; 4],
-    mask: [u8; 4],
 ) -> Option<([u8; 6], [u8; 4], TcpSegment<'_>)> {
     let ethernet = EthernetFrame::parse(frame).ok()?;
     if ethernet.ethertype != 0x0800
@@ -61,10 +61,7 @@ fn local_tcp(
         return None;
     }
     let ip = Ipv4Packet::parse(ethernet.payload).ok()?;
-    if ip.destination != address
-        || ip.ttl == 0
-        || ipv4_next_hop(address, Some(mask), None, ip.source).is_none()
-    {
+    if ip.destination != address || ip.ttl == 0 {
         return None;
     }
     Some((ethernet.source, ip.source, TcpSegment::parse(&ip).ok()?))
@@ -456,6 +453,12 @@ pub enum NetworkError {
     InvalidState,
     WouldBlock,
     ConnectionReset,
+    BrokenPipe,
+    NotConnected,
+    ConnectionRefused,
+    ConnectionTimedOut,
+    InProgress,
+    AlreadyConnected,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -469,6 +472,7 @@ pub enum SocketState {
     Created,
     Bound,
     Listening,
+    Connecting,
     Connected,
 }
 
@@ -492,8 +496,16 @@ const EPHEMERAL_PORTS: core::ops::RangeInclusive<u16> = 49152..=65535;
 struct SocketEntry {
     info: SocketInfo,
     occupied: bool,
+}
+
+#[derive(Clone, Copy)]
+struct SocketDescriptor {
+    owner: u64,
+    number: u32,
+    endpoint: usize,
     close_on_exec: bool,
 }
+
 impl SocketEntry {
     const EMPTY: Self = Self {
         info: SocketInfo {
@@ -507,7 +519,6 @@ impl SocketEntry {
             nonblocking: false,
         },
         occupied: false,
-        close_on_exec: false,
     };
 }
 
@@ -518,12 +529,14 @@ use tcp::Connection;
 /// Tabela limitada de endpoints IPv4 e conexões por processo.
 pub struct SocketTable<const N: usize> {
     entries: [SocketEntry; N],
+    descriptors: [Option<SocketDescriptor>; N],
     connections: [Connection; 16],
 }
 impl<const N: usize> SocketTable<N> {
     pub const fn new() -> Self {
         Self {
             entries: [SocketEntry::EMPTY; N],
+            descriptors: [None; N],
             connections: [Connection::EMPTY; 16],
         }
     }
@@ -535,6 +548,18 @@ impl<const N: usize> SocketTable<N> {
         domain: u64,
         kind: u64,
         protocol: u64,
+    ) -> Result<u32, NetworkError> {
+        self.create_excluding(process_id, uid, domain, kind, protocol, |_| false)
+    }
+
+    pub fn create_excluding(
+        &mut self,
+        process_id: u64,
+        uid: u32,
+        domain: u64,
+        kind: u64,
+        protocol: u64,
+        reserved: impl Fn(u32) -> bool,
     ) -> Result<u32, NetworkError> {
         if domain != 2 {
             return Err(NetworkError::UnsupportedSocket);
@@ -550,18 +575,17 @@ impl<const N: usize> SocketTable<N> {
             .iter()
             .position(|entry| !entry.occupied)
             .ok_or(NetworkError::InvalidState)?;
-        let descriptor = (3..3 + N as u32)
-            .find(|fd| {
-                !self.entries.iter().any(|entry| {
-                    entry.occupied
-                        && entry.info.process_id == process_id
-                        && entry.info.descriptor == *fd
-                })
-            })
+        let descriptor_slot = self.descriptors.iter().position(Option::is_none)
             .ok_or(NetworkError::InvalidState)?;
+        let descriptor = (3..3 + N as u32)
+            .find(|&fd| !reserved(fd) && self.descriptor_slot(process_id, fd).is_none())
+            .ok_or(NetworkError::InvalidState)?;
+        self.descriptors[descriptor_slot] = Some(SocketDescriptor {
+            owner: process_id, number: descriptor, endpoint: slot,
+            close_on_exec: kind & SOCK_CLOEXEC != 0,
+        });
         self.entries[slot] = SocketEntry {
             occupied: true,
-            close_on_exec: kind & SOCK_CLOEXEC != 0,
             info: SocketInfo {
                 process_id,
                 descriptor,
@@ -607,7 +631,11 @@ impl<const N: usize> SocketTable<N> {
         let port = if port == 0 {
             let mut ports = EPHEMERAL_PORTS;
             ports
-                .find(|port| !port_in_use(*port))
+                .find(|port| {
+                    !port_in_use(*port)
+                        && (candidate.protocol != SocketProtocol::Tcp
+                            || !self.tcp_closing_port_in_use(address, *port))
+                })
                 .ok_or(NetworkError::PortsExhausted)?
         } else if port_in_use(port) {
             return Err(NetworkError::AddressInUse);
@@ -639,43 +667,111 @@ impl<const N: usize> SocketTable<N> {
         Ok(())
     }
 
+    pub fn inherit(&mut self, parent: u64, child: u64) -> Result<(), NetworkError> {
+        if parent == child || self.descriptors.iter().flatten().any(|entry| entry.owner == child) {
+            return Err(NetworkError::InvalidState);
+        }
+        let count = self.descriptors.iter().flatten().filter(|entry| entry.owner == parent).count();
+        if self.descriptors.iter().filter(|entry| entry.is_none()).count() < count {
+            return Err(NetworkError::InvalidState);
+        }
+        for slot in 0..N {
+            let Some(mut entry) = self.descriptors[slot].filter(|entry| entry.owner == parent) else {
+                continue;
+            };
+            let target = self.descriptors.iter().position(Option::is_none).unwrap();
+            entry.owner = child;
+            self.descriptors[target] = Some(entry);
+        }
+        Ok(())
+    }
+
+    pub fn duplicate_excluding(
+        &mut self,
+        owner: u64,
+        fd: u32,
+        minimum: u32,
+        close_on_exec: bool,
+        reserved: impl Fn(u32) -> bool,
+    ) -> Result<u32, NetworkError> {
+        self.descriptor_slot(owner, fd).ok_or(NetworkError::BadDescriptor)?;
+        let target = (minimum..3 + N as u32)
+            .find(|&number| !reserved(number) && self.descriptor_slot(owner, number).is_none())
+            .ok_or(NetworkError::InvalidState)?;
+        self.duplicate_to(owner, fd, target, close_on_exec)
+    }
+
+    pub fn duplicate_to(
+        &mut self,
+        process_id: u64,
+        fd: u32,
+        target: u32,
+        close_on_exec: bool,
+    ) -> Result<u32, NetworkError> {
+        let source = self.descriptor_slot(process_id, fd).ok_or(NetworkError::BadDescriptor)?;
+        if fd == target {
+            return Ok(fd);
+        }
+        let target_slot = self.descriptor_slot(process_id, target)
+            .or_else(|| self.descriptors.iter().position(Option::is_none))
+            .ok_or(NetworkError::InvalidState)?;
+        let mut alias = self.descriptors[source].ok_or(NetworkError::BadDescriptor)?;
+        self.close_slot(target_slot);
+        alias.number = target;
+        alias.close_on_exec = close_on_exec;
+        self.descriptors[target_slot] = Some(alias);
+        Ok(target)
+    }
+
+    fn close_slot(&mut self, slot: usize) {
+        if let Some(entry) = self.descriptors[slot].take() {
+            if !self.descriptors.iter().flatten().any(|other| other.endpoint == entry.endpoint) {
+                self.release_connections(entry.endpoint as u32 + 1);
+                self.entries[entry.endpoint] = SocketEntry::EMPTY;
+            }
+        }
+    }
+
     pub fn close(&mut self, process_id: u64, descriptor: u32) -> Result<(), NetworkError> {
-        let index = self
-            .find(process_id, descriptor)
-            .ok_or(NetworkError::BadDescriptor)?;
-        self.release_connections(process_id, Some(descriptor));
-        self.entries[index] = SocketEntry::EMPTY;
+        let slot = self.descriptor_slot(process_id, descriptor).ok_or(NetworkError::BadDescriptor)?;
+        self.close_slot(slot);
         Ok(())
     }
 
     pub fn close_process(&mut self, process_id: u64) -> usize {
-        if process_id == 0 {
-            return 0;
-        }
-        self.release_connections(process_id, None);
-        let mut closed = 0usize;
-        for entry in &mut self.entries {
-            if entry.occupied && entry.info.process_id == process_id {
-                *entry = SocketEntry::EMPTY;
+        let mut closed = 0;
+        for slot in 0..N {
+            if self.descriptors[slot].is_some_and(|entry| entry.owner == process_id) {
+                self.close_slot(slot);
                 closed += 1;
             }
         }
         closed
     }
 
+    pub fn fcntl(
+        &mut self,
+        process_id: u64,
+        fd: u32,
+        operation: crate::linux_abi::DescriptorControl,
+    ) -> Result<u64, NetworkError> {
+        let slot = self.descriptor_slot(process_id, fd).ok_or(NetworkError::BadDescriptor)?;
+        let descriptor = self.descriptors[slot].as_mut().ok_or(NetworkError::BadDescriptor)?;
+        Ok(operation.apply(2, &mut descriptor.close_on_exec,
+            &mut self.entries[descriptor.endpoint].info.nonblocking))
+    }
+
     pub fn close_on_exec(&mut self, process_id: u64) {
-        for index in 0..N {
-            let entry = self.entries[index];
-            if entry.occupied && entry.info.process_id == process_id && entry.close_on_exec {
-                self.release_connections(process_id, Some(entry.info.descriptor));
-                self.entries[index] = SocketEntry::EMPTY;
+        for slot in 0..N {
+            if self.descriptors[slot].is_some_and(|entry| entry.owner == process_id && entry.close_on_exec) {
+                self.close_slot(slot);
             }
         }
     }
 
     pub fn info(&self, process_id: u64, descriptor: u32) -> Option<SocketInfo> {
-        self.find(process_id, descriptor)
-            .map(|index| self.entries[index].info)
+        let index = self.find(process_id, descriptor)?;
+        Some(SocketInfo { process_id, descriptor, ..self.entries[index].info })
     }
 
     pub fn is_listening(&self, address: [u8; 4], port: u16) -> bool {
@@ -687,13 +783,16 @@ impl<const N: usize> SocketTable<N> {
         })
     }
 
-    fn find(&self, process_id: u64, descriptor: u32) -> Option<usize> {
-        self.entries.iter().position(|entry| {
-            entry.occupied
-                && entry.info.process_id == process_id
-                && entry.info.descriptor == descriptor
-        })
+    fn descriptor_slot(&self, process_id: u64, descriptor: u32) -> Option<usize> {
+        self.descriptors.iter().position(|entry| entry.is_some_and(|entry| {
+            entry.owner == process_id && entry.number == descriptor
+        }))
     }
+
+    fn find(&self, process_id: u64, descriptor: u32) -> Option<usize> {
+        Some(self.descriptors[self.descriptor_slot(process_id, descriptor)?]?.endpoint)
+    }
+
 }
 
 impl<const N: usize> Default for SocketTable<N> {

@@ -29,6 +29,8 @@ const SSTS_DET_ESTABLISHED: u32 = 3;
 const SERR_PHY_READY_CHANGED: u32 = 1 << 16;
 const HBA_IS_TFES: u32 = 1 << 30;
 const POLL_LIMIT: usize = 10_000_000;
+// One PRDT entry covers an ext4 block without issuing eight SATA commands.
+const DMA_READ_BYTES: usize = 4096;
 const PAGE_PRESENT: u64 = 1;
 const PAGE_WRITE: u64 = 1 << 1;
 const PAGE_PWT: u64 = 1 << 3;
@@ -47,7 +49,7 @@ struct DmaMemory {
     received_fis: [u8; 256],
     command_table: [u8; 256],
     identify: [u8; 512],
-    sector: [u8; 512],
+    sector: [u8; DMA_READ_BYTES],
 }
 
 static mut DMA: DmaMemory = DmaMemory {
@@ -55,7 +57,7 @@ static mut DMA: DmaMemory = DmaMemory {
     received_fis: [0; 256],
     command_table: [0; 256],
     identify: [0; 512],
-    sector: [0; 512],
+    sector: [0; DMA_READ_BYTES],
 };
 
 #[derive(Clone, Copy)]
@@ -107,14 +109,31 @@ impl carlio_os::block::BlockDevice for AhciBlockDevice {
         lba: u64,
         out: &mut [u8; carlio_os::hermione::SECTOR_SIZE],
     ) -> Result<(), carlio_os::block::BlockError> {
-        if lba >= self.sectors {
-            return Err(carlio_os::block::BlockError::OutOfRange);
+        self.read_sectors(lba, out)
+    }
+
+    fn read_sectors(
+        &mut self,
+        lba: u64,
+        out: &mut [u8],
+    ) -> Result<(), carlio_os::block::BlockError> {
+        use carlio_os::block::{BlockError, SECTOR_SIZE};
+        if !out.len().is_multiple_of(SECTOR_SIZE)
+            || lba
+                .checked_add((out.len() / SECTOR_SIZE) as u64)
+                .is_none_or(|end| end > self.sectors)
+        {
+            return Err(BlockError::OutOfRange);
         }
-        let _guard = BLOCK_IO_LOCK.lock();
-        command(&self.map, 0x25, lba, false, false, true).map_err(map_block_error)?;
-        let source = unsafe { core::ptr::addr_of!(DMA.sector).cast::<u8>() };
-        for (index, byte) in out.iter_mut().enumerate() {
-            *byte = unsafe { ptr::read_volatile(source.add(index)) };
+        for (index, chunk) in out.chunks_mut(DMA_READ_BYTES).enumerate() {
+            let _guard = BLOCK_IO_LOCK.lock();
+            let first = lba + (index * (DMA_READ_BYTES / SECTOR_SIZE)) as u64;
+            let sectors = (chunk.len() / SECTOR_SIZE) as u16;
+            command(&self.map, 0x25, first, false, false, sectors).map_err(map_block_error)?;
+            let source = unsafe { core::ptr::addr_of!(DMA.sector).cast::<u8>() };
+            for (offset, byte) in chunk.iter_mut().enumerate() {
+                *byte = unsafe { ptr::read_volatile(source.add(offset)) };
+            }
         }
         Ok(())
     }
@@ -134,12 +153,12 @@ impl carlio_os::block::BlockDevice for AhciBlockDevice {
             unsafe { ptr::write_volatile(target.add(index), *byte) };
         }
         compiler_fence(Ordering::SeqCst);
-        command(&self.map, 0x35, lba, true, false, true).map_err(map_block_error)
+        command(&self.map, 0x35, lba, true, false, 1).map_err(map_block_error)
     }
 
     fn flush(&mut self) -> Result<(), carlio_os::block::BlockError> {
         let _guard = BLOCK_IO_LOCK.lock();
-        command(&self.map, 0xea, 0, false, false, false).map_err(map_block_error)
+        command(&self.map, 0xea, 0, false, false, 0).map_err(map_block_error)
     }
 }
 
@@ -398,7 +417,7 @@ pub unsafe fn disposable_disk_test() -> Result<(), KernelError> {
         super::write("AHCI: limite de 2 TiB verificado.\r\n");
     }
     let _guard = BLOCK_IO_LOCK.lock();
-    match command(&disk.map, 0xff, 0, false, false, false) {
+    match command(&disk.map, 0xff, 0, false, false, 0) {
         Err(KernelError::ControllerError) => Ok(()),
         Err(error) => Err(error),
         Ok(()) => Err(KernelError::ControllerError),
@@ -470,7 +489,7 @@ fn prepare_port(port: *mut u32, map: &AddressMap) -> Result<(), KernelError> {
 }
 
 fn identify(map: &AddressMap) -> Result<(), KernelError> {
-    command(map, 0xec, 0, false, true, true)
+    command(map, 0xec, 0, false, true, 1)
 }
 
 #[cfg(feature = "storage-test")]
@@ -521,7 +540,7 @@ fn command(
     lba: u64,
     write: bool,
     identify: bool,
-    transfer_data: bool,
+    sectors: u16,
 ) -> Result<(), KernelError> {
     let controller = unsafe { CONTROLLER }.ok_or(KernelError::DeviceNotFound)?;
     let port = controller.port;
@@ -537,12 +556,18 @@ fn command(
     let table = unsafe { core::ptr::addr_of_mut!(DMA.command_table).cast::<u8>() };
     let data = unsafe {
         if identify {
-            core::ptr::addr_of_mut!(DMA.identify)
+            core::ptr::addr_of_mut!(DMA.identify).cast::<u8>()
         } else {
-            core::ptr::addr_of_mut!(DMA.sector)
+            core::ptr::addr_of_mut!(DMA.sector).cast::<u8>()
         }
     };
     unsafe { ptr::write_bytes(table, 0, 256) };
+    let transfer_data = sectors != 0;
+    let byte_count = u32::from(sectors) * carlio_os::block::SECTOR_SIZE as u32;
+    let dma_capacity = if identify { 512 } else { DMA_READ_BYTES };
+    if byte_count as usize > dma_capacity {
+        return Err(KernelError::ControllerError);
+    }
     let data_phys = if transfer_data {
         map.dma(data as u64)?
     } else {
@@ -568,11 +593,12 @@ fn command(
         ptr::write_volatile(table.add(8), (lba >> 24) as u8);
         ptr::write_volatile(table.add(9), (lba >> 32) as u8);
         ptr::write_volatile(table.add(10), (lba >> 40) as u8);
-        ptr::write_volatile(table.add(12), 1);
+        ptr::write_volatile(table.add(12), sectors as u8);
+        ptr::write_volatile(table.add(13), (sectors >> 8) as u8);
         if transfer_data {
             ptr::write_volatile(table.add(128).cast::<u32>(), data_phys as u32);
             ptr::write_volatile(table.add(132).cast::<u32>(), (data_phys >> 32) as u32);
-            ptr::write_volatile(table.add(140).cast::<u32>(), 511);
+            ptr::write_volatile(table.add(140).cast::<u32>(), byte_count - 1);
         }
     }
     compiler_fence(Ordering::SeqCst);
@@ -592,6 +618,9 @@ fn command(
     } else {
         poll_limit
     };
+    // IRQ handlers do not use the disk or its DMA buffer. Keep interrupts
+    // deliverable across the MMIO reads so KVM can inject a pending IPI.
+    let _interrupts = CommandPollInterrupts::enable();
     for iteration in 0..poll_limit {
         if iteration & 0x3fff == 0 {
             super::idt::heartbeat();
@@ -605,7 +634,7 @@ fn command(
         if unsafe { read_reg(port, PORT_CI) } & 1 == 0 {
             check_media(port)?;
             compiler_fence(Ordering::SeqCst);
-            if transfer_data && unsafe { ptr::read_volatile(list.add(4).cast::<u32>()) } != 512 {
+            if transfer_data && unsafe { ptr::read_volatile(list.add(4).cast::<u32>()) } != byte_count {
                 return Err(KernelError::ControllerError);
             }
             return Ok(());
@@ -615,6 +644,30 @@ fn command(
     check_media(port)?;
     reset_after_error(port, map)?;
     Err(KernelError::IoTimeout)
+}
+
+struct CommandPollInterrupts {
+    restore_mask: bool,
+}
+
+impl CommandPollInterrupts {
+    fn enable() -> Self {
+        let flags: u64;
+        unsafe { asm!("pushfq", "pop {}", out(reg) flags, options(preserves_flags)) };
+        let restore_mask = super::lapic::is_initialized() && flags & (1 << 9) == 0;
+        if restore_mask {
+            unsafe { asm!("sti", options(nostack)) };
+        }
+        Self { restore_mask }
+    }
+}
+
+impl Drop for CommandPollInterrupts {
+    fn drop(&mut self) {
+        if self.restore_mask {
+            unsafe { asm!("cli", options(nostack)) };
+        }
+    }
 }
 
 fn check_media(port: *mut u32) -> Result<(), KernelError> {

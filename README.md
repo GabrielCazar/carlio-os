@@ -68,6 +68,9 @@ são os filesystems prioritários. Consulte o registro técnico preservado em
 [`docs/HERMIONE.md`](docs/HERMIONE.md). O código e os testes de Hermione ficam
 no repositório para referência, sem novos gates de produto.
 
+O `carlio-service` administra serviços em hosts Linux por systemd ou OpenRC.
+Consulte os [comandos e requisitos de integração](docs/SERVICOS.md).
+
 `carlio-logs` agrega capturas `.log`/`.txt` em Markdown com tabela, gráficos
 textuais e eventos relevantes; `carlio-logs ver <arquivo.md>` abre o
 visualizador Rust paginado. No kernel, `logs` imprime a tabela Markdown do
@@ -134,7 +137,7 @@ e a imagem de boot também precisará de uma cadeia de confiança.
 ## Construção e validação
 
 No Arch Linux, dependências: `rust`, `rustup`, `qemu-system-x86`, `limine` e
-`xorriso`. Para o kernel bare-metal é necessário o toolchain nightly com
+`xorriso`, além do `flock` de `util-linux`. Para o kernel bare-metal é necessário o toolchain nightly com
 `rust-src` e o alvo `x86_64-unknown-none`; os testes host rodam com stable.
 
 ```sh
@@ -152,6 +155,9 @@ scripts/test-local-iso.sh
 
 `scripts/test-local-iso.sh` roda os testes host, reconstrói a ISO e valida BIOS
 e UEFI em QEMU local, salvando logs com timestamp em `reports/logs/`.
+O builder publica a ISO depois de instalar o boot BIOS na imagem temporária.
+`CARLIO_DISK_EXEC_TEST=1` e `CARLIO_DISK_READ_TEST=1` acrescentam,
+respectivamente, `-disk-exec-test` e `-disk-read-test` ao nome da imagem.
 
 Comandos do terminal, em pt_BR: `ajuda`, `sobre`, `usuario`, `permissoes`,
 `erros`, `logs`, `limpar`, `parar`. Toda alteração que afete comportamento deve passar pelos
@@ -177,15 +183,18 @@ Para testar AHCI no limite de 2 TiB, gere a ISO com
 `CARLIO_STORAGE_TEST=1 ./scripts/build-iso.sh` e execute:
 
 ```bash
-CARLIO_TEST_STORAGE=1 CARLIO_TEST_STORAGE_2T=1 ./scripts/test-nas.sh
+CARLIO_TEST_ISO="$PWD/build/carlio-os-storage-test.iso" \
+  CARLIO_TEST_STORAGE=1 CARLIO_TEST_STORAGE_2T=1 ./scripts/test-nas.sh
 ```
 
 Para testar o overlay VFS persistente, crie uma imagem dedicada com
 `python3 scripts/provision_storage.py --vfs --size-mib 16 overlay.raw` e
 anexe-a ao AHCI virtual. O teste automatizado cria a própria imagem e
 valida reinício e recuperação com
-`python3 scripts/test-persistence-qemu.py --vfs --iso build/carlio-os.iso --log-dir /tmp/carlioos-overlay-logs`.
-O teste usa uma ISO construída com `CARLIO_STORAGE_TEST=1`.
+`python3 scripts/test-persistence-qemu.py --vfs --iso build/carlio-os-storage-test.iso --log-dir /tmp/carlioos-overlay-logs`.
+A opção `CARLIO_STORAGE_TEST=1` gera `build/carlio-os-storage-test.iso`.
+Reserve essa ISO para VMs com discos descartáveis. A opção
+`CARLIO_CRASH_TEST=1` gera `build/carlio-os-crash-test.iso`.
 
 Durante o boot, o terminal
 serial mantém uma barra de progresso numa linha fixa e registra as mensagens
@@ -199,6 +208,11 @@ Executar seus programas requer ABI, syscalls, bibliotecas e sandbox. O Windows
 Mode será uma VM Windows licenciada; não promete executar agentes proprietários
 com Wine. Isso permite testar os agentes no sistema convidado para o qual foram
 feitos.
+
+## Documentação do projeto
+
+- [Roadmap](ROADMAP.md) e [changelog](CHANGELOG.md).
+- [Contribuição](CONTRIBUTING.md) e [código de conduta](CODE_OF_CONDUCT.md).
 
 ## Licença
 

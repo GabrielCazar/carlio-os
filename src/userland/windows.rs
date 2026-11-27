@@ -3,6 +3,11 @@
 //! A preparação da imagem escreve em um buffer comum. A execução exige
 //! integração com o espaço de usuário e a camada Win32/NT.
 
+pub mod registry;
+pub mod registry_client;
+#[cfg(target_os = "linux")]
+pub mod registry_vm;
+
 pub const PE_MACHINE_AMD64: u16 = 0x8664;
 pub const PE_OPTIONAL_MAGIC_64: u16 = 0x20b;
 pub const PE_SECTION_EXECUTE: u32 = 0x2000_0000;

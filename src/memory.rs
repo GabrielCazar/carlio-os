@@ -189,6 +189,32 @@ impl<A: PageTableAccess, const PAGES: usize> OwnedAddressSpace<A, PAGES> {
         self.space.tables.user_page_table_pages()
     }
 
+    /// Copy only owned user leaves into an empty destination. The caller
+    /// must keep the source quiescent until the copy is complete.
+    pub(crate) fn copy_user_pages_into(
+        &self,
+        destination: &mut Self,
+        mut copy_frame: impl FnMut(u64, u64) -> Result<(), FrameError>,
+    ) -> Result<(), FrameError> {
+        if destination.owned_user_pages() != 0 {
+            return Err(FrameError::AlreadyMapped);
+        }
+        for &address in &self.space.user_mappings {
+            let result = self.mapping(address).and_then(|mapping| {
+                destination.map_initialized(address, mapping.flags, |physical| {
+                    copy_frame(mapping.physical, physical)
+                })
+            });
+            if let Err(error) = result {
+                while let Some(&address) = destination.space.user_mappings.last() {
+                    destination.unmap(address)?;
+                }
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
     /// Aloca, zera e mapeia uma página de usuário. Em falha de mapeamento o
     /// frame recém-alocado é devolvido imediatamente ao backend.
     pub fn map_zeroed(&mut self, virtual_address: u64, flags: u64) -> Result<u64, FrameError> {
@@ -516,10 +542,11 @@ impl<A: PageTableAccess> PageTableManager<A> {
                 }
                 Ok(frame) => {
                     let _ = self.access.release_table(frame);
+                    self.rollback_created(virtual_address, &created[..created_len]);
                     return Err(FrameError::InvalidPhysicalAddress);
                 }
                 Err(error) => {
-                    self.rollback_created(&created[..created_len]);
+                    self.rollback_created(virtual_address, &created[..created_len]);
                     return Err(error);
                 }
             };
@@ -529,7 +556,7 @@ impl<A: PageTableAccess> PageTableManager<A> {
                 child | ENTRY_PRESENT | 2 | if user_mapping { ENTRY_USER } else { 0 },
             ) {
                 let _ = self.access.release_table(child);
-                self.rollback_created(&created[..created_len]);
+                self.rollback_created(virtual_address, &created[..created_len]);
                 return Err(error);
             }
             created[created_len] = (table, index, child);
@@ -539,11 +566,11 @@ impl<A: PageTableAccess> PageTableManager<A> {
         let leaf = indices[3];
         match self.access.read_entry(table, leaf) {
             Ok(entry) if entry & ENTRY_PRESENT != 0 => {
-                self.rollback_created(&created[..created_len]);
+                self.rollback_created(virtual_address, &created[..created_len]);
                 Err(FrameError::AlreadyMapped)
             }
             Err(error) => {
-                self.rollback_created(&created[..created_len]);
+                self.rollback_created(virtual_address, &created[..created_len]);
                 Err(error)
             }
             _ => match self.access.write_entry(table, leaf, physical | flags) {
@@ -552,7 +579,7 @@ impl<A: PageTableAccess> PageTableManager<A> {
                     Ok(())
                 }
                 Err(error) => {
-                    self.rollback_created(&created[..created_len]);
+                    self.rollback_created(virtual_address, &created[..created_len]);
                     Err(error)
                 }
             },
@@ -594,6 +621,9 @@ impl<A: PageTableAccess> PageTableManager<A> {
             }
             self.access
                 .write_entry(tables[level - 1], indices[level - 1], 0)?;
+            // A page walk can cache this parent link after the leaf flush.
+            // Invalidate after unlinking before returning the table to the allocator.
+            self.access.invalidate_page(virtual_address);
             if let Err(error) = self.access.release_table(table) {
                 // The table may predate this manager. Restore its parent link
                 // and leave the now-empty table allocated rather than freeing
@@ -728,9 +758,13 @@ impl<A: PageTableAccess> PageTableManager<A> {
         Ok(())
     }
 
-    fn rollback_created(&mut self, created: &[(u64, usize, u64)]) {
+    fn rollback_created(&mut self, virtual_address: u64, created: &[(u64, usize, u64)]) {
         for &(parent, index, child) in created.iter().rev() {
-            let _ = self.access.write_entry(parent, index, 0);
+            if self.access.write_entry(parent, index, 0).is_err() {
+                // The child may still be reachable from the root.
+                break;
+            }
+            self.access.invalidate_page(virtual_address);
             let _ = self.access.release_table(child);
         }
     }
@@ -1313,7 +1347,7 @@ mod tests {
         assert_eq!(manager.unmap(va), Err(FrameError::NotMapped));
         let access = manager.into_access();
         assert!(access.allocated.is_empty());
-        assert_eq!(access.invalidated, [va, va]);
+        assert_eq!(access.invalidated, [va; 5]);
     }
 
     #[test]

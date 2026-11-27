@@ -20,7 +20,13 @@ const RX_COUNT: usize = 16;
 const TX_COUNT: usize = 16;
 const BUFFER_SIZE: usize = 2048;
 // Exclusive ownership across a foreground exchange or one timer poll.
-static CONTROLLER: SpinLock<()> = SpinLock::new(());
+struct ControllerAccess {
+    next_process_dns_query: Option<u64>,
+}
+
+static CONTROLLER: SpinLock<ControllerAccess> = SpinLock::new(ControllerAccess {
+    next_process_dns_query: None,
+});
 const POLL_LIMIT: usize = 2_000_000;
 const CTRL: usize = 0x0000;
 const RCTL: usize = 0x0100;
@@ -356,6 +362,10 @@ pub fn poll_network(lease: DhcpLease, status_enabled: bool) {
     let (Some(nic), Some(mask)) = (unsafe { NIC }, lease.subnet_mask) else {
         return;
     };
+    // Leave RX descriptors queued when another CPU is using the socket table.
+    let Some(mut sockets) = crate::NETWORK_SOCKETS.try_lock() else {
+        return;
+    };
     let now = super::idt::uptime_ticks();
     let mut frame = [0; BUFFER_SIZE];
     let mut reply = [0; 60];
@@ -364,12 +374,10 @@ pub fn poll_network(lease: DhcpLease, status_enabled: bool) {
             break;
         };
         let frame = &frame[..length];
-        let handled = crate::NETWORK_SOCKETS.try_lock().is_none_or(|mut sockets| {
-            sockets.tcp_receive(frame, nic.mac, lease.address, mask, now, || {
-                let mut sequence = [0; 4];
-                super::entropy::fill_random(&mut sequence)?;
-                Some(u32::from_ne_bytes(sequence))
-            })
+        let handled = sockets.tcp_receive(frame, nic.mac, lease.address, mask, now, || {
+            let mut sequence = [0; 4];
+            super::entropy::fill_random(&mut sequence)?;
+            Some(u32::from_ne_bytes(sequence))
         });
         if handled {
             continue;
@@ -396,9 +404,7 @@ pub fn poll_network(lease: DhcpLease, status_enabled: bool) {
             }
         }
     }
-    if let Some(mut sockets) = crate::NETWORK_SOCKETS.try_lock() {
-        sockets.tcp_transmit(nic.mac, now, |frame| enqueue_transmit(frame).is_ok());
-    }
+    sockets.tcp_transmit(nic.mac, now, |frame| enqueue_transmit(frame).is_ok());
 }
 
 fn resolve_neighbor(
@@ -445,15 +451,61 @@ fn resolve_neighbor(
     Ok(None)
 }
 
+pub fn tcp_next_hop(lease: DhcpLease, peer: [u8; 4]) -> Result<[u8; 6], u16> {
+    use carlio_os::linux_abi::{EAGAIN, EIO, ENETUNREACH};
+    let next_hop = ipv4_next_hop(lease.address, lease.subnet_mask, lease.router, peer)
+        .ok_or(ENETUNREACH)?;
+    let _controller = CONTROLLER.try_lock().ok_or(EAGAIN)?;
+    resolve_neighbor(lease.address, next_hop).map_err(|_| EIO)?.ok_or(ENETUNREACH)
+}
+
 /// Consulta o DNS do DHCP. O chamador deve manter o PIT ativo.
 pub fn resolve_dns_a(lease: DhcpLease, name: &str) -> Result<Option<[u8; 4]>, KernelError> {
     let _controller = CONTROLLER.lock();
     let mut query = [0; 271];
     let stamp = unsafe { core::arch::x86_64::_rdtsc() };
     let source_port = 49152 | ((stamp >> 16) as u16 & 0x3fff);
-    let query_len =
+    let length =
         dns_a_query(name, stamp as u16, &mut query).map_err(|_| KernelError::ControllerError)?;
-    let query = &query[..query_len];
+    exchange_dns_a(lease, &query[..length], source_port)
+}
+
+pub fn resolve_process_dns_a(lease: DhcpLease, name: &str) -> Result<[u8; 4], u16> {
+    use carlio_os::linux_abi::{EAGAIN, EIO, ENETUNREACH, ETIMEDOUT};
+
+    if lease.dns_server.is_none() {
+        return Err(ENETUNREACH);
+    }
+    let mut query = [0; 271];
+    let (length, source_port) = prepare_dns_query(name, &mut query)?;
+    let mut controller = CONTROLLER.try_lock().ok_or(EAGAIN)?;
+    let now = super::idt::uptime_ticks();
+    if controller.next_process_dns_query.is_some_and(|next| now < next) {
+        return Err(EAGAIN);
+    }
+    let answer = exchange_dns_a(lease, &query[..length], source_port);
+    // Leave time for the normal TCP/UDP polling path even under repeated calls.
+    controller.next_process_dns_query =
+        Some(super::idt::uptime_ticks().saturating_add(super::idt::TICK_RATE_HZ));
+    answer.map_err(|_| EIO)?.ok_or(ETIMEDOUT)
+}
+
+fn prepare_dns_query(name: &str, query: &mut [u8; 271]) -> Result<(usize, u16), u16> {
+    use carlio_os::linux_abi::{EAGAIN, EINVAL};
+
+    let mut random = [0; 4];
+    super::entropy::fill_random(&mut random).ok_or(EAGAIN)?;
+    let id = u16::from_le_bytes([random[0], random[1]]);
+    let source_port = 49152 | (u16::from_le_bytes([random[2], random[3]]) & 0x3fff);
+    let length = dns_a_query(name, id, query).map_err(|_| EINVAL)?;
+    Ok((length, source_port))
+}
+
+fn exchange_dns_a(
+    lease: DhcpLease,
+    query: &[u8],
+    source_port: u16,
+) -> Result<Option<[u8; 4]>, KernelError> {
     let Some(server) = lease.dns_server else {
         return Ok(None);
     };
