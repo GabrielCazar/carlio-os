@@ -39,16 +39,30 @@ conexão anterior e reabertura após reinício. [BIOS](logs/revisao-servicos-bio
   `scripts/qemu-smoke.py`. [Formatação](logs/revisao-host-fmt.txt) ·
   [Clippy](logs/revisao-host-clippy.txt)
 
-## Critérios em aberto
+## Validação do pegasusd no perfil de serviço
 
-O teste do kernel cobre a fronteira de registro, consulta e parada com um
-backend sintético. A homologação da execução do `pegasusd` no perfil de
-serviço, o isolamento completo, o listener LDAP com TLS, a persistência
-transacional e NSS/PAM continuam pendentes. O ELF estático do daemon excede
-o limite de arquivo do overlay testado. A VM com a reserva persistente no
-primeiro disco AHCI não montou o ext4 do segundo disco.
+A ISO incorporou o ELF estático `ET_EXEC` de `pegasusd --dircache`, compilado
+a partir da árvore corrente do Pegasus DS, baseada em `51d72ef`. O
+SHA-256 do ELF de teste foi
+`89f7f23965a99cfca910eb12ce32871b7feb782e7519fb93a799e43ebb81f5bd`.
+O disco descartável forneceu a conta UID 1000 e a tabela de leitura
+`/etc/pegasusds/identities.tsv`.
 
-Os resultados foram obtidos na árvore de trabalho corrente, com mudanças
-preexistentes de várias áreas. O código de lançamento supervisionado
-depende da supervisão ainda em desenvolvimento nessa árvore. As evidências
-registram a configuração exercitada e não homologam uma revisão de distribuição.
+| Ambiente | Firmware | Resultado com 4 vCPUs |
+| --- | --- | --- |
+| Host, QEMU TCG | BIOS e UEFI | 6 consultas e 2 ciclos de início e parada por firmware |
+| NAS Manjaro, QEMU KVM | BIOS e UEFI | 6 consultas e 2 ciclos de início e parada por firmware |
+
+Em cada VM, o console recusou o lançamento em primeiro plano e o
+argumento com caminho de tabela alternativo. O cliente CPL3 tentou
+registrar o endpoint, recebeu `EACCES` e depois consultou o daemon,
+obtendo `alice	1001	1002` e status zero. A parada liberou o endpoint
+para o próximo ciclo. A suíte do kernel com `--features dircache`
+passou com 261 testes, incluindo recusas de acesso a outro caminho e
+de syscalls proibidas no perfil.
+
+Os testes usaram a árvore em desenvolvimento e uma chave efêmera.
+O perfil usa as cotas comuns de memória e o escalonador compartilhado.
+Ficam em aberto a homologação para distribuição, o listener LDAP com
+TLS, a persistência transacional do diretório e NSS/PAM. Consulte os
+[diagramas do perfil de serviço](../docs/PEGASUSD-ISOLAMENTO.md).
